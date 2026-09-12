@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -354,6 +355,7 @@ func (c *Client) Models(ctx context.Context, accountID string) ([]providers.Mode
 	if len(out) == 0 {
 		return nil, fmt.Errorf("workbuddy model catalog returned no cli models")
 	}
+	out = appendExtraModels(out)
 	c.rememberCatalog(out)
 	return out, nil
 }
@@ -935,4 +937,72 @@ type classifier struct{}
 
 func (classifier) Classify(status int, body string) providers.ClassifiedError {
 	return Classify(status, body)
+}
+
+
+// ExtraModelConfig is one entry from WORKBUDDY_EXTRA_MODELS. Grayscale models
+// such as deepseek-v4.1-flash are shown in the WorkBuddy UI but absent from
+// the upstream catalog endpoint; this injects them so the OpenAI gateway can
+// route to them through the CLI channel. Duplicate IDs are ignored.
+type ExtraModelConfig struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Context int    `json:"context"`
+	Output  int    `json:"output"`
+	Tools   *bool  `json:"tools,omitempty"`
+	Images  *bool  `json:"images,omitempty"`
+}
+
+func appendExtraModels(out []providers.ModelInfo) []providers.ModelInfo {
+	raw := strings.TrimSpace(os.Getenv("WORKBUDDY_EXTRA_MODELS"))
+	if raw == "" {
+		return out
+	}
+	var extras []ExtraModelConfig
+	if err := json.Unmarshal([]byte(raw), &extras); err != nil {
+		return out
+	}
+	seen := make(map[string]bool, len(out))
+	for _, model := range out {
+		seen[model.PublicModel] = true
+	}
+	for _, extra := range extras {
+		id := strings.TrimSpace(extra.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		tools, images := true, true
+		if extra.Tools != nil {
+			tools = *extra.Tools
+		}
+		if extra.Images != nil {
+			images = *extra.Images
+		}
+		ctx := extra.Context
+		if ctx <= 0 {
+			ctx = 300000
+		}
+		output := extra.Output
+		if output <= 0 {
+			output = 32768
+		}
+		name := extra.Name
+		if name == "" {
+			name = id
+		}
+		out = append(out, providers.ModelInfo{
+			NativeModel: id,
+			PublicModel: id,
+			DisplayName: name,
+			Capabilities: providers.ModelCapabilities{
+				ContextWindow:    ctx,
+				ContextWindowMax: ctx,
+				MaxOutput:        output,
+				Tools:            tools,
+				Images:           images,
+			},
+		})
+		seen[id] = true
+	}
+	return out
 }

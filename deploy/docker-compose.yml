@@ -11,6 +11,7 @@ services:
       QODER_DATA_DIR: "/data"
       QODER_RUNTIME_DIR: "/run/cli2api"
       QODER_SSE_DIAGNOSTIC_MODELS: "${QODER_SSE_DIAGNOSTIC_MODELS:-}"
+      WORKBUDDY_EXTRA_MODELS: '[{"id":"deepseek-v4.1-flash","name":"DeepSeek-V4.1-Flash","context":300000,"output":32768}]'
       QODER_WORKER_BASE_PORT: "${QODER_WORKER_BASE_PORT:-32100}"
       UPDATE_SOCKET_PATH: "/run/cli2api-updater/updater.sock"
       UPDATE_AGENT_URL: "${UPDATE_AGENT_URL:-}"
