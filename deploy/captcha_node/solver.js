@@ -33,6 +33,10 @@ const LAUNCH_TIMEOUT_MS = Number(process.env.CAPTCHA_LAUNCH_TIMEOUT_MS || 90000)
 const MIN_FREE_MB = Number(process.env.CAPTCHA_MIN_FREE_MB || 400);
 const ATTEMPTS = Number(process.env.CAPTCHA_SOLVE_ATTEMPTS || 2);
 const STARTED_AT = Date.now();
+// A unique profile directory doubles as a marker: the gateway reaps any browser
+// left behind by looking for this path in /proc/<pid>/cmdline.
+const RUN_DIR =
+  process.env.ZCODE_CAPTCHA_RUN_DIR || path.join("/tmp", `cli2api-captcha-${process.pid}-${Date.now()}`);
 
 const CHROME_FLAGS = [
   "--no-sandbox",
@@ -119,7 +123,8 @@ try {
 async function mint(executablePath) {
   const started = Date.now();
   const proxy = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || "";
-  const args = proxy ? CHROME_FLAGS.concat([`--proxy-server=${proxy}`]) : CHROME_FLAGS;
+  const args = CHROME_FLAGS.concat([`--user-data-dir=${RUN_DIR}`]);
+  if (proxy) args.push(`--proxy-server=${proxy}`);
   const browser = await puppeteer.launch({
     executablePath,
     headless: true,
@@ -198,20 +203,29 @@ async function mint(executablePath) {
       SOLVE_TIMEOUT_MS,
     ).then((token) => ({ browser, token }));
   } catch (error) {
-    stopBrowser(browser);
+    await stopBrowser(browser);
     throw error;
   }
 }
 
 // The browser is killed rather than closed: shutting down a --single-process
 // Chromium can block for minutes, and a verification token is only valid for
-// about two minutes.
-function stopBrowser(browser) {
+// about two minutes. The close() call is still started, bounded by a short
+// grace period, so helper processes that survived the kill are reaped too.
+async function stopBrowser(browser) {
   try {
     const child = browser.process();
     if (child && child.pid) process.kill(child.pid, "SIGKILL");
   } catch {
     /* already gone */
+  }
+  try {
+    await Promise.race([
+      browser.close().catch(() => {}),
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]);
+  } catch {
+    /* the caller is about to exit anyway */
   }
 }
 
@@ -240,11 +254,13 @@ function stopBrowser(browser) {
       const { browser, token } = await mint(executablePath);
       if (token && token.trim()) {
         log(`solved in ${Date.now() - STARTED_AT}ms`);
-        process.stdout.write("VERIFY_PARAM=" + token.trim() + "\n");
-        stopBrowser(browser);
+        // Written synchronously: the process may be killed the instant the
+        // gateway has the token, and a buffered write would be lost.
+        fs.writeSync(1, "VERIFY_PARAM=" + token.trim() + "\n");
+        await stopBrowser(browser);
         process.exit(0);
       }
-      stopBrowser(browser);
+      await stopBrowser(browser);
       log(`attempt ${attempt}: no token`);
     } catch (error) {
       log(`attempt ${attempt}: ${(error && error.message) || error}`);

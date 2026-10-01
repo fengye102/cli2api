@@ -279,7 +279,8 @@ func (p *captchaPool) solve(ctx context.Context, cfg captchaConfig) (captchaToke
 
 	cmd := exec.CommandContext(solveCtx, p.node, script, cfg.SceneID, cfg.Region, cfg.Prefix)
 	cmd.Dir = p.dir
-	cmd.Env = os.Environ()
+	runDir := filepath.Join(os.TempDir(), fmt.Sprintf("cli2api-captcha-%d-%d", os.Getpid(), time.Now().UnixNano()))
+	cmd.Env = append(os.Environ(), "ZCODE_CAPTCHA_RUN_DIR="+runDir)
 	isolateProcess(cmd)
 
 	stdout, err := cmd.StdoutPipe()
@@ -306,10 +307,16 @@ func (p *captchaPool) solve(ctx context.Context, cfg captchaConfig) (captchaToke
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
 
-	select {
-	case param := <-tokens:
+	cleanup := func() {
 		killProcessGroup(cmd)
 		<-exited
+		reapLeftovers(runDir)
+		_ = os.RemoveAll(runDir)
+	}
+
+	select {
+	case param := <-tokens:
+		cleanup()
 		return captchaToken{param: param, region: cfg.Region, born: time.Now()}, nil
 	case err := <-exited:
 		detail := lastNonEmptyLine(errOut.String())
@@ -318,8 +325,7 @@ func (p *captchaPool) solve(ctx context.Context, cfg captchaConfig) (captchaToke
 		}
 		return captchaToken{}, fmt.Errorf("zcode captcha solve produced no token%s", suffix(detail))
 	case <-solveCtx.Done():
-		killProcessGroup(cmd)
-		<-exited
+		cleanup()
 		if ctx.Err() != nil {
 			return captchaToken{}, ctx.Err()
 		}
