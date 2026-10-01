@@ -770,6 +770,12 @@ func TestProviderDescriptorShipsBothRealms(t *testing.T) {
 	if !strings.Contains(zai.ChatBase, "api.z.ai") {
 		t.Errorf("zai chat base=%q want api.z.ai", zai.ChatBase)
 	}
+	// The pay-as-you-go host rejects a ZCode JWT, so the OAuth path must be
+	// the plan gateway. Dropping this field silently sends every signed-in
+	// account back to a 401.
+	if !strings.Contains(zai.PlanChatBase, "zcode.z.ai/api/v1/zcode-plan/anthropic") {
+		t.Errorf("zai plan chat base=%q want the zcode plan gateway", zai.PlanChatBase)
+	}
 	bigmodel, ok := providers.ZCode.Region(RegionBigModel)
 	if !ok {
 		t.Fatal("the bigmodel region must be advertised")
