@@ -110,4 +110,3 @@ func traceHeaders() map[string]string {
 		"x-zcode-trace-id":     randomUUID(),
 	}
 }
-

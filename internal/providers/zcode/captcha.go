@@ -67,6 +67,9 @@ type captchaPool struct {
 	cfg     captchaConfig
 	cfgAt   time.Time
 	lastErr string
+	// lastUse gates the idle refills: an unused server must not keep solving
+	// captchas, both to save memory and to stay under Aliyun's radar.
+	lastUse time.Time
 
 	startOnce sync.Once
 	stopOnce  sync.Once
@@ -79,7 +82,7 @@ func newCaptchaPool(client *http.Client) *captchaPool {
 		node:    envOr("ZCODE_NODE_BINARY", envOr("QODER_NODE_BINARY", "node")),
 		dir:     envOr("ZCODE_CAPTCHA_DIR", defaultCaptchaDir),
 		timeout: time.Duration(envInt("ZCODE_CAPTCHA_TIMEOUT", 240)) * time.Second,
-		ttl:     time.Duration(envInt("ZCODE_CAPTCHA_TTL", 100)) * time.Second,
+		ttl:     time.Duration(envInt("ZCODE_CAPTCHA_TTL", 60)) * time.Second,
 		min:     envInt("ZCODE_CAPTCHA_POOL_MIN", 1),
 		max:     envInt("ZCODE_CAPTCHA_POOL_MAX", 2),
 		stopCh:  make(chan struct{}),
@@ -141,6 +144,9 @@ func (p *captchaPool) param(ctx context.Context) (string, string, error) {
 		return "", "", err
 	}
 	p.setErr("")
+	p.mu.Lock()
+	p.lastUse = time.Now()
+	p.mu.Unlock()
 	return token.param, token.region, nil
 }
 
@@ -163,6 +169,46 @@ func (p *captchaPool) take() (captchaToken, bool) {
 		}
 	}
 	return captchaToken{}, false
+}
+
+func (p *captchaPool) noteUse() {
+	p.mu.Lock()
+	p.lastUse = time.Now()
+	p.mu.Unlock()
+	p.kickRefill()
+}
+
+// kickRefill tops the pool back up in the background so the next request does
+// not pay for a browser launch.
+func (p *captchaPool) kickRefill() {
+	if !p.enabled() {
+		return
+	}
+	p.mu.Lock()
+	pending := len(p.tokens)
+	p.mu.Unlock()
+	if pending >= p.min {
+		return
+	}
+	go func() {
+		p.solveMu.Lock()
+		defer p.solveMu.Unlock()
+		p.mu.Lock()
+		now := len(p.tokens)
+		p.mu.Unlock()
+		if now >= p.min {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), p.timeout+30*time.Second)
+		defer cancel()
+		token, err := p.solve(ctx, p.config(ctx))
+		if err != nil {
+			p.setErr(err.Error())
+			return
+		}
+		p.setErr("")
+		p.put(token)
+	}()
 }
 
 func (p *captchaPool) put(token captchaToken) {
@@ -205,8 +251,13 @@ func (p *captchaPool) refillLoop() {
 		}
 		p.mu.Lock()
 		pending := len(p.tokens)
+		lastUse := p.lastUse
 		p.mu.Unlock()
 		if pending >= p.min {
+			continue
+		}
+		// Only keep a token warm while the channel is actually in use.
+		if lastUse.IsZero() || time.Since(lastUse) > 10*time.Minute {
 			continue
 		}
 		p.solveMu.Lock()
