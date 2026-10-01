@@ -3,6 +3,7 @@ package zcode
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,13 +19,14 @@ import (
 // endpoints here so no test can ever reach a real upstream.
 const deadURL = "http://127.0.0.1:1/unreachable"
 
-// loginServers carries the local stand-ins for the four endpoints a login
-// round can touch. An empty field is replaced by deadURL.
+// loginServers carries the local stand-ins for the endpoints a login round can
+// touch. An empty field is replaced by deadURL.
 type loginServers struct {
 	token    string
 	identity string
 	business string
 	customer string
+	cli      string
 }
 
 // newLoginClient returns a client whose login endpoints all point at local
@@ -42,6 +44,7 @@ func newLoginClient(t *testing.T, store Store, servers loginServers) *Client {
 	client.userInfoURL = local(servers.identity)
 	client.businessLoginURL = local(servers.business)
 	client.customerURL = local(servers.customer)
+	client.cliBaseURL = local(servers.cli)
 	return client
 }
 
@@ -59,11 +62,8 @@ func TestLoginRealmAuthorizeURLs(t *testing.T) {
 	if query.Get("client_id") != zaiClientID {
 		t.Errorf("client_id=%q want %q", query.Get("client_id"), zaiClientID)
 	}
-	if query.Get("redirect_uri") != zaiLoopbackRedirectURI {
-		t.Errorf("redirect_uri=%q want the registered loopback %q", query.Get("redirect_uri"), zaiLoopbackRedirectURI)
-	}
-	if !zai.loopbackAuthorizeHint() {
-		t.Error("the zai realm should report that its authorize target cannot serve a page")
+	if query.Get("redirect_uri") != zaiRedirectURI {
+		t.Errorf("redirect_uri=%q want the registered callback %q", query.Get("redirect_uri"), zaiRedirectURI)
 	}
 	if query.Get("response_type") != "code" {
 		t.Errorf("response_type=%q want code", query.Get("response_type"))
@@ -95,9 +95,6 @@ func TestLoginRealmAuthorizeURLs(t *testing.T) {
 	if query.Get("client_id") != "" {
 		t.Errorf("bigmodel authorize URL must not carry client_id, got %q", query.Get("client_id"))
 	}
-	if bigmodel.loopbackAuthorizeHint() {
-		t.Error("the bigmodel realm should not claim a loopback authorize target")
-	}
 
 	// An unknown or empty region falls back to the default (Z.ai) realm.
 	if loginRealmFor("").region != providers.ZCode.DefaultRegion {
@@ -118,24 +115,24 @@ func TestParseCallbackURL(t *testing.T) {
 		wantURI string
 		wantErr string
 	}{
-		{name: "zai loopback callback", region: RegionZAI, raw: zaiLoopbackRedirectURI + "?code=abc&state=s1", state: "s1", want: "abc", wantURI: zaiLoopbackRedirectURI},
-		{name: "loopback trailing slash", region: RegionZAI, raw: "http://127.0.0.1:9999/callback/?code=abc&state=s1", state: "s1", want: "abc", wantURI: zaiLoopbackRedirectURI},
-		{name: "zai deep link still accepted", region: RegionZAI, raw: zaiRedirectURI + "?code=abc&state=s1", state: "s1", want: "abc", wantURI: zaiRedirectURI},
+		{name: "zai deep link callback", region: RegionZAI, raw: zaiRedirectURI + "?code=abc&state=s1", state: "s1", want: "abc", wantURI: zaiRedirectURI},
 		{name: "zai legacy deep link", region: RegionZAI, raw: zaiLegacyRedirectURI + "?code=abc&state=s1", state: "s1", want: "abc", wantURI: zaiLegacyRedirectURI},
 		{name: "zai rejects bigmodel callback", region: RegionZAI, raw: bigmodelLegacyRedirect + "?code=abc&state=s1", state: "s1", wantErr: "unexpected callback target"},
 		{name: "bigmodel callback", region: RegionBigModel, raw: bigmodelRedirectURI + "?code=abc&state=s1", state: "s1", want: "abc", wantURI: bigmodelRedirectURI},
 		{name: "bigmodel legacy callback", region: RegionBigModel, raw: bigmodelLegacyRedirect + "?code=abc&state=s1", state: "s1", want: "abc", wantURI: bigmodelLegacyRedirect},
-		{name: "bigmodel rejects zai loopback", region: RegionBigModel, raw: zaiLoopbackRedirectURI + "?code=abc&state=s1", state: "s1", wantErr: "unexpected callback target"},
-		{name: "authCode spelling", region: RegionZAI, raw: zaiLoopbackRedirectURI + "?authCode=xyz&state=s1", state: "s1", want: "xyz", wantURI: zaiLoopbackRedirectURI},
-		{name: "urlencoded code", region: RegionZAI, raw: zaiLoopbackRedirectURI + "?code=a%2Bb%2Fc%3D&state=s1", state: "s1", want: "a+b/c=", wantURI: zaiLoopbackRedirectURI},
-		{name: "browser fragment tolerated", region: RegionZAI, raw: zaiLoopbackRedirectURI + "?code=abc&state=s1#section", state: "s1", want: "abc", wantURI: zaiLoopbackRedirectURI},
+		{name: "zai rejects a bigmodel deep link", region: RegionZAI, raw: bigmodelLegacyRedirect + "?code=abc&state=s1", state: "s1", wantErr: "unexpected callback target"},
+		{name: "authCode spelling", region: RegionZAI, raw: zaiRedirectURI + "?authCode=xyz&state=s1", state: "s1", want: "xyz", wantURI: zaiRedirectURI},
+		{name: "urlencoded code", region: RegionZAI, raw: zaiRedirectURI + "?code=a%2Bb%2Fc%3D&state=s1", state: "s1", want: "a+b/c=", wantURI: zaiRedirectURI},
+		{name: "browser fragment tolerated", region: RegionZAI, raw: zaiRedirectURI + "?code=abc&state=s1#section", state: "s1", want: "abc", wantURI: zaiRedirectURI},
 		{name: "empty", region: RegionZAI, raw: "   ", wantErr: "paste the callback URL"},
 		{name: "unregistered https url", region: RegionZAI, raw: "https://chat.z.ai/api/oauth/authorize?code=abc&state=s1", wantErr: "unexpected callback target"},
+		// Z.ai registers no loopback: only the plan gateway's own callback and
+		// the two custom schemes are registered, so a local URL is rejected.
 		{name: "unregistered loopback port", region: RegionZAI, raw: "http://127.0.0.1:8123/callback?code=abc&state=s1", wantErr: "unexpected callback target"},
-		{name: "no state", region: RegionZAI, raw: zaiLoopbackRedirectURI + "?code=abc", wantErr: "no state"},
-		{name: "state mismatch", region: RegionZAI, raw: zaiLoopbackRedirectURI + "?code=abc&state=other", state: "s1", wantErr: "state mismatch"},
-		{name: "provider error", region: RegionZAI, raw: zaiLoopbackRedirectURI + "?error=access_denied&state=s1", state: "s1", wantErr: "rejected"},
-		{name: "no code", region: RegionZAI, raw: zaiLoopbackRedirectURI + "?state=s1", state: "s1", wantErr: "no code"},
+		{name: "no state", region: RegionZAI, raw: zaiRedirectURI + "?code=abc", wantErr: "no state"},
+		{name: "state mismatch", region: RegionZAI, raw: zaiRedirectURI + "?code=abc&state=other", state: "s1", wantErr: "state mismatch"},
+		{name: "provider error", region: RegionZAI, raw: zaiRedirectURI + "?error=access_denied&state=s1", state: "s1", wantErr: "rejected"},
+		{name: "no code", region: RegionZAI, raw: zaiRedirectURI + "?state=s1", state: "s1", wantErr: "no code"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -162,23 +159,190 @@ func TestParseCallbackURL(t *testing.T) {
 	}
 }
 
-func TestStartLoginReturnsAuthorizeSessionAndPendingState(t *testing.T) {
-	client := newLoginClient(t, &memStore{region: RegionZAI}, loginServers{})
+// TestStartLoginZaiRunsTheCLIFlow covers the Z.ai round: StartLogin asks the
+// plan gateway to mint a sign-in flow and hands the console the gateway's own
+// authorize URL, so nothing about the login reaches the operator's machine.
+func TestStartLoginZaiRunsTheCLIFlow(t *testing.T) {
+	var initBody map[string]string
+	var initAuth string
+	cliServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != zaiCLIInitPath {
+			t.Errorf("%s %s want POST %s", r.Method, r.URL.Path, zaiCLIInitPath)
+		}
+		initAuth = r.Header.Get("Authorization")
+		raw, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(raw, &initBody); err != nil {
+			t.Errorf("init body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"data":{"flow_id":"flow-1","poll_token":"pt-1",` +
+			`"authorize_url":"https://chat.z.ai/api/oauth/authorize?client_id=` + zaiClientID +
+			`&redirect_uri=https%3A%2F%2Fzcode.z.ai%2Fapi%2Fv1%2Foauth%2Fcli%2Fcallback%2Fzai&state=gw",` +
+			`"expires_at":` + fmt.Sprint(time.Now().Add(10*time.Minute).Unix()) + `,"poll_interval_sec":2}}`))
+	}))
+	defer cliServer.Close()
+
+	client := newLoginClient(t, &memStore{region: RegionZAI}, loginServers{cli: cliServer.URL})
 	session, err := client.StartLogin(context.Background(), "acc1")
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
-	if session.AuthURL == "" || session.State == "" {
-		t.Fatalf("session=%+v want auth URL and state", session)
+	// The gateway's authorize URL encodes its own callback as the redirect.
+	if !strings.Contains(session.AuthURL, url.QueryEscape("https://zcode.z.ai/api/v1/oauth/cli/callback/zai")) {
+		t.Fatalf("auth URL %q should be the gateway's own sign-in URL", session.AuthURL)
 	}
-	if !strings.Contains(session.AuthURL, "state="+session.State) {
-		t.Fatalf("auth URL %q does not carry state %q", session.AuthURL, session.State)
+	if !strings.Contains(session.AuthURL, "state=gw") {
+		t.Fatalf("auth URL %q should keep the gateway's state", session.AuthURL)
 	}
-	if !strings.Contains(session.AuthURL, "chat.z.ai") {
-		t.Fatalf("auth URL %q should target the account's Z.ai realm", session.AuthURL)
+	if initBody["provider"] != zaiCLIProvider {
+		t.Errorf("init body=%v want provider %q", initBody, zaiCLIProvider)
 	}
-	if !strings.Contains(session.AuthURL, url.QueryEscape(zaiLoopbackRedirectURI)) {
-		t.Fatalf("auth URL %q should ask for the loopback redirect", session.AuthURL)
+	// The poll token is ours, hex encoded, and travels as the bearer of that
+	// one round.
+	if !strings.HasPrefix(initAuth, "Bearer ") || len(strings.TrimPrefix(initAuth, "Bearer ")) != 64 {
+		t.Errorf("Authorization=%q want a bearer holding this round's poll token", initAuth)
+	}
+	pending := client.loginPendingFor("acc1")
+	if pending == nil || pending.cli == nil {
+		t.Fatalf("pending=%+v want a CLI round", pending)
+	}
+	if pending.cli.flowID != "flow-1" || pending.cli.pollToken != "pt-1" {
+		t.Errorf("flow=%+v want the gateway's flow id and poll token", pending.cli)
+	}
+}
+
+// TestPollLoginCLIWritesCredentialWhenTheGatewaySaysReady is the round's end:
+// pending only moves the console's message, ready stores what the gateway
+// minted (the ZCode JWT, the provider token and the identity).
+func TestPollLoginCLIWritesCredentialWhenTheGatewaySaysReady(t *testing.T) {
+	jwt := jwtForTest(t, map[string]any{"user_id": "u-4", "provider": RegionZAI})
+	calls := 0
+	cliServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == zaiCLIInitPath:
+			_, _ = w.Write([]byte(`{"code":0,"data":{"flow_id":"flow-9","poll_token":"pt-9",` +
+				`"authorize_url":"https://chat.z.ai/api/oauth/authorize?state=gw",` +
+				`"expires_at":` + fmt.Sprint(time.Now().Add(time.Minute).Unix()) + `,"poll_interval_sec":2}}`))
+		case r.Method == http.MethodGet:
+			if r.URL.Path != zaiCLIPollPath+"flow-9" {
+				t.Errorf("poll path=%s want %s", r.URL.Path, zaiCLIPollPath+"flow-9")
+			}
+			if got := r.Header.Get("Authorization"); got != "Bearer pt-9" {
+				t.Errorf("poll Authorization=%q want the round's poll token", got)
+			}
+			calls++
+			if calls == 1 {
+				_, _ = w.Write([]byte(`{"code":0,"data":{"status":"pending"}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":0,"data":{"status":"ready","token":"` + jwt + `",` +
+				`"user":{"user_id":"u-4","email":"zai@example.com"},"zai":{"access_token":"zai-at"}}}`))
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer cliServer.Close()
+
+	store := &memStore{region: RegionZAI}
+	client := newLoginClient(t, store, loginServers{cli: cliServer.URL})
+	if _, err := client.StartLogin(context.Background(), "acc1"); err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	done, message, err := client.PollLogin(context.Background(), "acc1")
+	if err != nil {
+		t.Fatalf("PollLogin: %v", err)
+	}
+	if done {
+		t.Fatal("the first poll answered pending and must not report done")
+	}
+	if !strings.Contains(message, "不用粘贴") {
+		t.Errorf("message %q should tell the operator not to paste anything", message)
+	}
+	if len(store.items) != 0 {
+		t.Errorf("store=%v want nothing stored while the round is pending", store.items)
+	}
+
+	done, message, err = client.PollLogin(context.Background(), "acc1")
+	if err != nil {
+		t.Fatalf("PollLogin: %v", err)
+	}
+	if !done {
+		t.Fatalf("PollLogin done=false message=%q want a completed round", message)
+	}
+	credential, err := DecodeCredential(store.items["acc1"])
+	if err != nil {
+		t.Fatalf("stored credential does not decode: %v", err)
+	}
+	if credential.ZCodeJWT != jwt || credential.AccessToken != "zai-at" || !credential.IsOAuth() {
+		t.Errorf("credential=%+v want the OAuth credential the gateway minted", credential)
+	}
+	if credential.Email != "zai@example.com" || credential.UserID != "u-4" || credential.Provider != RegionZAI {
+		t.Errorf("credential identity=%q/%q provider=%q want zai@example.com/u-4/zai", credential.Email, credential.UserID, credential.Provider)
+	}
+	if client.loginPendingFor("acc1") != nil {
+		t.Error("the round should be cleared once the credential is stored")
+	}
+}
+
+func TestPollLoginCLIReportsFailureAndExpiry(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		status    string
+		expiresIn time.Duration
+		wantErr   string
+	}{
+		{name: "rejected in the browser", status: "failed", expiresIn: time.Minute, wantErr: "rejected"},
+		{name: "round expired", status: "pending", expiresIn: -time.Minute, wantErr: "expired"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cliServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					_, _ = w.Write([]byte(`{"code":0,"data":{"flow_id":"f","poll_token":"p","authorize_url":"https://chat.z.ai/x",` +
+						`"expires_at":` + fmt.Sprint(time.Now().Add(tc.expiresIn).Unix()) + `,"poll_interval_sec":2}}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"code":0,"data":{"status":"` + tc.status + `"}}`))
+			}))
+			defer cliServer.Close()
+
+			client := newLoginClient(t, &memStore{region: RegionZAI}, loginServers{cli: cliServer.URL})
+			if _, err := client.StartLogin(context.Background(), "acc1"); err != nil {
+				t.Fatalf("StartLogin: %v", err)
+			}
+			_, _, err := client.PollLogin(context.Background(), "acc1")
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err=%v want a %q failure", err, tc.wantErr)
+			}
+			if client.loginPendingFor("acc1") != nil {
+				t.Error("a failed or expired round should be cleared")
+			}
+		})
+	}
+}
+
+// TestStartLoginZaiFallsBackToPaste keeps the paste round trip reachable: when
+// the gateway cannot mint a flow, the console still gets a browser URL, and the
+// pasted callback is what completes the round.
+func TestStartLoginZaiFallsBackToPaste(t *testing.T) {
+	cliServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer cliServer.Close()
+
+	client := newLoginClient(t, &memStore{region: RegionZAI}, loginServers{cli: cliServer.URL})
+	session, err := client.StartLogin(context.Background(), "acc1")
+	if err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	if !strings.Contains(session.AuthURL, "chat.z.ai/api/oauth/authorize") {
+		t.Fatalf("auth URL %q should fall back to the paste round trip's authorize page", session.AuthURL)
+	}
+	if !strings.Contains(session.AuthURL, url.QueryEscape(zaiRedirectURI)) {
+		t.Fatalf("auth URL %q should ask for the registered custom scheme", session.AuthURL)
+	}
+	pending := client.loginPendingFor("acc1")
+	if pending == nil || pending.cli != nil {
+		t.Fatalf("pending=%+v want the paste round", pending)
 	}
 	done, message, err := client.PollLogin(context.Background(), "acc1")
 	if err != nil {
@@ -187,11 +351,51 @@ func TestStartLoginReturnsAuthorizeSessionAndPendingState(t *testing.T) {
 	if done {
 		t.Fatal("PollLogin reported done before any callback was pasted")
 	}
-	if !strings.Contains(message, zaiLoopbackRedirectURI) {
+	if !strings.Contains(message, zaiRedirectURI) {
 		t.Fatalf("PollLogin message %q should tell the operator what to paste", message)
 	}
-	if !strings.Contains(message, "打不开是正常的") {
-		t.Fatalf("PollLogin message %q should say the loopback page cannot load", message)
+}
+
+// TestCompleteLoginRefusesPasteDuringACLIRound keeps the two flows from
+// crossing: the Z.ai round completes on the poll, so a paste there is a wrong
+// turn rather than a second way in.
+func TestCompleteLoginRefusesPasteDuringACLIRound(t *testing.T) {
+	cliServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":0,"data":{"flow_id":"f","poll_token":"p","authorize_url":"https://chat.z.ai/x",` +
+			`"expires_at":` + fmt.Sprint(time.Now().Add(time.Minute).Unix()) + `,"poll_interval_sec":2}}`))
+	}))
+	defer cliServer.Close()
+
+	store := &memStore{region: RegionZAI}
+	client := newLoginClient(t, store, loginServers{cli: cliServer.URL})
+	session, err := client.StartLogin(context.Background(), "acc1")
+	if err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	err = client.CompleteLogin(context.Background(), "acc1", zaiRedirectURI+"?code=c&state="+session.State)
+	if err == nil || !strings.Contains(err.Error(), "不用粘贴") {
+		t.Fatalf("err=%v want the paste to be refused while the CLI round runs", err)
+	}
+	if len(store.items) != 0 {
+		t.Errorf("store=%v want nothing stored", store.items)
+	}
+}
+
+// TestStartLoginZaiFallsBackWhenTheFlowIsUnusable pins the other init failure
+// mode: a 200 that carries no flow id is no flow either.
+func TestStartLoginZaiFallsBackWhenTheFlowIsUnusable(t *testing.T) {
+	cliServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":0,"data":{"authorize_url":""}}`))
+	}))
+	defer cliServer.Close()
+
+	client := newLoginClient(t, &memStore{region: RegionZAI}, loginServers{cli: cliServer.URL})
+	session, err := client.StartLogin(context.Background(), "acc1")
+	if err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	if !strings.Contains(session.AuthURL, "chat.z.ai/api/oauth/authorize") {
+		t.Fatalf("auth URL %q should fall back to the paste round trip", session.AuthURL)
 	}
 }
 
@@ -203,7 +407,7 @@ func TestStartLoginFollowsAccountRegion(t *testing.T) {
 		host   string
 		hint   string
 	}{
-		{region: RegionZAI, host: "chat.z.ai", hint: zaiLoopbackRedirectURI},
+		{region: RegionZAI, host: "chat.z.ai", hint: zaiRedirectURI},
 		{region: RegionBigModel, host: "bigmodel.cn", hint: bigmodelRedirectURI},
 	} {
 		t.Run(tc.region, func(t *testing.T) {
@@ -231,7 +435,7 @@ func TestPollLoginRejectsUnknownAndExpiredSessions(t *testing.T) {
 	if _, _, err := client.PollLogin(context.Background(), "missing"); err == nil {
 		t.Fatal("PollLogin should fail for an account with no started login")
 	}
-	if err := client.CompleteLogin(context.Background(), "missing", zaiLoopbackRedirectURI+"?code=a&state=s"); err == nil {
+	if err := client.CompleteLogin(context.Background(), "missing", zaiRedirectURI+"?code=a&state=s"); err == nil {
 		t.Fatal("CompleteLogin should fail for an account with no started login")
 	}
 	if _, err := client.StartLogin(context.Background(), "acc1"); err != nil {
@@ -300,7 +504,7 @@ func TestCompleteLoginZaiMintsJWTThroughBusinessLogin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
-	callback := zaiLoopbackRedirectURI + "?code=CODE-Z&state=" + url.QueryEscape(session.State)
+	callback := zaiRedirectURI + "?code=CODE-Z&state=" + url.QueryEscape(session.State)
 	if err := client.CompleteLogin(context.Background(), "acc1", callback); err != nil {
 		t.Fatalf("CompleteLogin: %v", err)
 	}
@@ -311,8 +515,8 @@ func TestCompleteLoginZaiMintsJWTThroughBusinessLogin(t *testing.T) {
 	if tokenBody["code"] != "CODE-Z" {
 		t.Errorf("exchange code=%q want CODE-Z", tokenBody["code"])
 	}
-	if tokenBody["redirect_uri"] != zaiLoopbackRedirectURI {
-		t.Errorf("exchange redirect_uri=%q want the pasted callback's %q", tokenBody["redirect_uri"], zaiLoopbackRedirectURI)
+	if tokenBody["redirect_uri"] != zaiRedirectURI {
+		t.Errorf("exchange redirect_uri=%q want the pasted callback's %q", tokenBody["redirect_uri"], zaiRedirectURI)
 	}
 	if tokenBody["state"] != session.State {
 		t.Errorf("exchange state=%q want %q", tokenBody["state"], session.State)
@@ -460,7 +664,7 @@ func TestCompleteLoginRejectsStateFromAnotherRound(t *testing.T) {
 	if _, err := client.StartLogin(context.Background(), "acc1"); err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
-	err := client.CompleteLogin(context.Background(), "acc1", zaiLoopbackRedirectURI+"?code=c&state=stale")
+	err := client.CompleteLogin(context.Background(), "acc1", zaiRedirectURI+"?code=c&state=stale")
 	if err == nil || !strings.Contains(err.Error(), "state mismatch") {
 		t.Fatalf("err=%v want a state mismatch failure", err)
 	}
@@ -484,7 +688,7 @@ func TestCompleteLoginSurfacesExchangeErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
-	err = client.CompleteLogin(context.Background(), "acc1", zaiLoopbackRedirectURI+"?code=c&state="+session.State)
+	err = client.CompleteLogin(context.Background(), "acc1", zaiRedirectURI+"?code=c&state="+session.State)
 	if err == nil {
 		t.Fatal("CompleteLogin should fail when the token endpoint rejects the code")
 	}
@@ -512,7 +716,7 @@ func TestZaiExchangeRejectsMissingProviderToken(t *testing.T) {
 	defer tokenServer.Close()
 
 	client := newLoginClient(t, &memStore{region: RegionZAI}, loginServers{token: tokenServer.URL})
-	_, err := client.exchangeAuthorizationCode(context.Background(), loginRealmFor(RegionZAI), "c", "s", zaiLoopbackRedirectURI)
+	_, err := client.exchangeAuthorizationCode(context.Background(), loginRealmFor(RegionZAI), "c", "s", zaiRedirectURI)
 	if err == nil {
 		t.Fatal("exchange should fail when the realm returns no provider access token to mint a JWT from")
 	}
@@ -532,7 +736,7 @@ func TestZaiExchangeFallsBackToTokenResponse(t *testing.T) {
 	defer tokenServer.Close()
 
 	client := newLoginClient(t, &memStore{region: RegionZAI}, loginServers{token: tokenServer.URL})
-	credential, err := client.exchangeAuthorizationCode(context.Background(), loginRealmFor(RegionZAI), "c", "s", zaiLoopbackRedirectURI)
+	credential, err := client.exchangeAuthorizationCode(context.Background(), loginRealmFor(RegionZAI), "c", "s", zaiRedirectURI)
 	if err != nil {
 		t.Fatalf("exchange: %v", err)
 	}
@@ -601,11 +805,10 @@ func TestImportAcceptsBothRealmsAndRejectsUnknownRegion(t *testing.T) {
 	}
 }
 
-// TestZaiExchangeEchoesPastedDeepLink pins the redirect echo in the other
-// direction: a callback that came from the zcode:// deep link is exchanged with
-// that redirect, not with the loopback the console asked for. The token
-// endpoint rejects a mismatch, so echoing the wrong one would break the flow for
-// operators whose machine still routes the scheme to a real client.
+// TestZaiExchangeEchoesPastedDeepLink pins the redirect echo: a callback that
+// came from the zcode:// deep link is exchanged with that redirect, not with the
+// one the console would have asked for. The token endpoint rejects a mismatch,
+// so echoing the wrong one would fail the round.
 func TestZaiExchangeEchoesPastedDeepLink(t *testing.T) {
 	var tokenBody map[string]string
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

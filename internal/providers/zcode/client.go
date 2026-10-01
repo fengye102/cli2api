@@ -84,6 +84,10 @@ type Client struct {
 	// login.go realmIdentity); tests point this at a local server.
 	customerURL string
 
+	// cliBaseURL overrides the plan-gateway base the Z.ai CLI sign-in runs on
+	// (see login.go startCLILogin); tests point this at a local server.
+	cliBaseURL string
+
 	// mu guards pending, the in-flight browser-login rounds keyed by account
 	// id (see login.go).
 	mu      sync.Mutex
