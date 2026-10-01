@@ -239,6 +239,35 @@ var Codex = ProviderDescriptor{
 	DefaultRegion: "global",
 }
 
+// ZCode descriptor. Z.ai / BigModel Coding Plan via the Anthropic Messages
+// upstream; the official desktop client is a hybrid OAuth/API-key plan.
+var ZCode = ProviderDescriptor{
+	ID:                "zcode",
+	Label:             "ZCode (Z.ai / BigModel)",
+	Runtime:           RuntimeInProcess,
+	AuthTypes:         []AuthType{AuthOAuth, AuthPAT},
+	CredentialFormats: []string{"zcode-credential-v1"},
+	Capabilities: ProviderCapabilities{
+		Chat: true, Stream: true, Tools: true, Images: true, Reasoning: true,
+		ModelCatalog: true, Usage: true, ImportExport: true,
+	},
+	Regions: []RegionDescriptor{
+		{
+			ID: "zai", Label: "Z.ai",
+			ChatBase:    "https://api.z.ai/api/anthropic",
+			AuthBase:    "https://zcode.z.ai/api/v1/oauth/token",
+			BillingBase: "https://api.z.ai",
+		},
+		{
+			ID: "bigmodel", Label: "BigModel",
+			ChatBase:    "https://open.bigmodel.cn/api/anthropic",
+			AuthBase:    "https://zcode.z.ai/api/v1/oauth/token",
+			BillingBase: "https://open.bigmodel.cn",
+		},
+	},
+	DefaultRegion: "zai",
+}
+
 var registry = map[string]ProviderDescriptor{
 	Qoder.ID:     Qoder,
 	WorkBuddy.ID: WorkBuddy,
@@ -246,6 +275,7 @@ var registry = map[string]ProviderDescriptor{
 	Devin.ID:     Devin,
 	Command.ID:   Command,
 	Codex.ID:     Codex,
+	ZCode.ID:     ZCode,
 }
 
 func Get(id string) (ProviderDescriptor, bool) {
@@ -254,7 +284,7 @@ func Get(id string) (ProviderDescriptor, bool) {
 }
 
 func List() []ProviderDescriptor {
-	return []ProviderDescriptor{Qoder, WorkBuddy, Trae, Devin, Command, Codex}
+	return []ProviderDescriptor{Qoder, WorkBuddy, Trae, Devin, Command, Codex, ZCode}
 }
 
 // Resolve validates a provider/region pair. Empty values fall back to the

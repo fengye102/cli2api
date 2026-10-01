@@ -260,6 +260,7 @@ func TestProviderPrefixRecognizesCommand(t *testing.T) {
 		"trae/kimi-k2.6":                   "trae",
 		"devin/swe-2":                      "devin",
 		"codex/gpt-5.5":                    "codex",
+		"zcode/GLM-5.3":                    "zcode",
 		"command/deepseek/deepseek-v4-pro": "command",
 		"command/moonshotai/Kimi-K3":       "command",
 		// A bare org-namespaced Command Code id must NOT be read as a provider.

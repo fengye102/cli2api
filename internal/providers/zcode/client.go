@@ -1,0 +1,105 @@
+package zcode
+
+import (
+	"context"
+	"net/http"
+	"runtime"
+	"strings"
+
+	"github.com/caigee-cmd/cli2api/internal/accounts"
+	"github.com/caigee-cmd/cli2api/internal/providers"
+)
+
+// Version is the pinned ZCode client build the upstream still accepts. The
+// console reports the same string via X-ZCode-App-Version.
+const Version = "3.10.2"
+
+// userAgent is the pinned ZCode desktop UA. The upstream WAF rejects unknown
+// UAs on some endpoints, so keep this string verbatim.
+func userAgent() string { return "ZCode/" + Version }
+
+// defaultHeaders returns the header set every ZCode API call sends. The
+// upstream logs these for routing decisions; do not add new ones.
+func defaultHeaders() map[string]string {
+	return map[string]string{
+		"User-Agent":          userAgent(),
+		"HTTP-Referer":        "https://zcode.z.ai",
+		"X-Title":             "Z Code@electron",
+		"X-ZCode-App-Version": Version,
+		"X-Release-Channel":   "production",
+		"X-Platform":          platformID(),
+		"X-Client-Language":   "en-US",
+		"X-Client-Timezone":   "UTC",
+	}
+}
+
+func platformID() string {
+	os := strings.ToLower(runtime.GOOS)
+	arch := runtime.GOARCH
+	switch arch {
+	case "amd64":
+		arch = "x64"
+	case "arm64":
+		arch = "arm64"
+	}
+	return os + "-" + arch
+}
+
+// Store is the persistence surface the adapter needs. An in-process provider
+// talks to the account store through this narrow interface and never imports
+// internal/store. Mirrors command.Store.
+type Store interface {
+	Get(ctx context.Context, id string) (accounts.Account, error)
+	LoadCredentialPayload(ctx context.Context, accountID string) (string, []byte, error)
+	SaveCredentialPayload(ctx context.Context, accountID, format string, payload []byte) error
+	Observe(ctx context.Context, id, remoteUID, status, lastError, lastKind string) error
+}
+
+// Client is the ZCode in-process adapter. It owns the credential codec, the
+// live catalogue fetch, chat against the Anthropic Messages upstream, and
+// the liveness / quota probe backed by the plan-gateway balance endpoint.
+type Client struct {
+	store Store
+	http  *http.Client
+
+	// catalogURL overrides the catalogue endpoint; tests point this at a
+	// local server.
+	catalogURL string
+}
+
+// NewClient builds the adapter. The http client has no global timeout so
+// streaming responses can stay open; per-request timeouts are set by the
+// caller.
+func NewClient(store Store) *Client {
+	return &Client{
+		store: store,
+		http: &http.Client{
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+	}
+}
+
+// SetBase satisfies the executor's optional base-override hook; ZCode
+// upstreams come from the region descriptor and the credential's base_url,
+// so the hook is a no-op here.
+func (c *Client) SetBase(_ string) {}
+
+// Adapter wires the capability surface: credential decode/validate, the
+// live+static catalogue, the import/export wizard, chat against the Anthropic
+// Messages upstream, and a Prober backed by the plan-gateway balance
+// endpoint.
+func (c *Client) Adapter() providers.Adapter {
+	return providers.Adapter{
+		ID:           "zcode",
+		Credential:   credentialCodec{},
+		Models:       c,
+		Chat:         c,
+		Classifier:   classifier{},
+		ImportExport: importer{},
+		Prober:       c,
+	}
+}
+
+func (c *Client) String() string { return "zcode" }
