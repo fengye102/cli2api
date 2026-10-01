@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/caigee-cmd/cli2api/internal/providers"
 )
 
 const (
@@ -138,10 +140,76 @@ func DecodeCredential(payload []byte) (Credential, error) {
 		EnterpriseID string `json:"enterpriseId"`
 		Nickname     string `json:"nickname"`
 	}
-	if err := json.Unmarshal(payload, &camel); err != nil && camel.AccessToken != "" {
+	if err := json.Unmarshal(payload, &camel); err == nil && camel.AccessToken != "" {
 		return Credential(camel), nil
 	}
+	// Raw CodeBuddy state.vscdb auth value: nested auth/session blobs and
+	// whole objects serialized as JSON strings, including the "uid+token"
+	// packed token format (mirrors cockpit-tools' codebuddy_account.rs).
+	if value, err := providers.UnwrapJSONValue(payload); err == nil {
+		if credential, ok := credentialFromVscdbValue(value); ok {
+			return credential, nil
+		}
+	}
 	return Credential{}, fmt.Errorf("workbuddy credential requires access_token")
+}
+
+// credentialFromVscdbValue extracts a credential from the CodeBuddy desktop
+// auth blob: the outermost object that carries an access token wins; uid
+// comes from account/root fields or the "uid+token" packed form.
+func credentialFromVscdbValue(value any) (Credential, bool) {
+	auth := providers.DeepFindAuthObject(value)
+	if auth == nil {
+		return Credential{}, false
+	}
+	access := pickLocalField(auth, "accessToken", "access_token", "token")
+	uid, access := splitPackedToken(access)
+	if access == "" {
+		return Credential{}, false
+	}
+	credential := Credential{
+		AccessToken:  access,
+		RefreshToken: pickLocalField(auth, "refreshToken", "refresh_token"),
+		ExpiresAt:    unixSeconds(providers.DeepPickInt(value, "expiresAt", "expires_at")),
+		Domain:       providers.DeepPickString(value, "domain"),
+		Nickname:     providers.DeepPickString(value, "nickname", "name", "label"),
+		EnterpriseID: providers.DeepPickString(value, "enterpriseId", "enterprise_id"),
+	}
+	if uid == "" {
+		uid = providers.DeepPickString(value, "uid")
+	}
+	credential.UID = uid
+	return credential, true
+}
+
+// pickLocalField reads a field from the auth blob itself or one level down
+// (auth.accessToken / session patterns).
+func pickLocalField(auth map[string]any, names ...string) string {
+	for _, name := range names {
+		if s, ok := auth[name].(string); ok && strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+	}
+	for _, seg := range []string{"auth", "session", "data"} {
+		if inner, ok := auth[seg].(map[string]any); ok {
+			for _, name := range names {
+				if s, ok := inner[name].(string); ok && strings.TrimSpace(s) != "" {
+					return strings.TrimSpace(s)
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// splitPackedToken handles CodeBuddy's local token format "uid+token".
+func splitPackedToken(token string) (uid string, value string) {
+	token = strings.TrimSpace(token)
+	prefix, suffix, found := strings.Cut(token, "+")
+	if !found || strings.TrimSpace(suffix) == "" {
+		return "", token
+	}
+	return strings.TrimSpace(prefix), strings.TrimSpace(suffix)
 }
 
 func (c Credential) Encode() ([]byte, error) {
@@ -202,4 +270,11 @@ func (c Credential) IsGlobal() bool {
 		return false
 	}
 	return strings.Contains(domain, DomainGlobal) || strings.Contains(domain, "workbuddy")
+}
+
+func unixSeconds(value int64) int64 {
+	if value > 1e12 {
+		return value / 1000
+	}
+	return value
 }

@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/caigee-cmd/cli2api/internal/providers"
 )
 
 const (
@@ -91,7 +93,90 @@ func DecodeCredential(payload []byte) (Credential, error) {
 			LastRefresh:  nested.LastRefresh,
 		}, nil
 	}
+	// Raw ~/.codex/auth.json (official CLI): OAuth tokens sit under "tokens".
+	var authFile struct {
+		AuthMode     string `json:"auth_mode"`
+		OpenAIAPIKey string `json:"OPENAI_API_KEY"`
+		Tokens       struct {
+			IDToken      string `json:"id_token"`
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+			AccountID    string `json:"account_id"`
+		} `json:"tokens"`
+		LastRefresh string `json:"last_refresh"`
+	}
+	if err := json.Unmarshal(payload, &authFile); err == nil &&
+		(authFile.Tokens.AccessToken != "" || authFile.Tokens.RefreshToken != "") {
+		credential := Credential{
+			IDToken:      authFile.Tokens.IDToken,
+			AccessToken:  authFile.Tokens.AccessToken,
+			RefreshToken: authFile.Tokens.RefreshToken,
+			AccountID:    authFile.Tokens.AccountID,
+			LastRefresh:  authFile.LastRefresh,
+		}
+		fillFromJWTClaims(&credential)
+		return credential, nil
+	}
+	// cockpit-tools backup export: {"email": …, "token": {access_token, refresh_token, id_token, …}}.
+	var cockpit struct {
+		Email string `json:"email"`
+		Name  string `json:"name"`
+		Token struct {
+			IDToken      string `json:"id_token"`
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+			AccountID    string `json:"account_id"`
+		} `json:"token"`
+	}
+	if err := json.Unmarshal(payload, &cockpit); err == nil &&
+		(cockpit.Token.AccessToken != "" || cockpit.Token.RefreshToken != "") {
+		credential := Credential{
+			IDToken:      cockpit.Token.IDToken,
+			AccessToken:  cockpit.Token.AccessToken,
+			RefreshToken: cockpit.Token.RefreshToken,
+			AccountID:    cockpit.Token.AccountID,
+			Email:        cockpit.Email,
+		}
+		fillFromJWTClaims(&credential)
+		return credential, nil
+	}
+	// Generic tolerant scan: any nested blob carrying codex token fields.
+	if value, err := providers.UnwrapJSONValue(payload); err == nil {
+		if auth := providers.DeepFindAuthObject(value); auth != nil {
+			credential := Credential{
+				AccessToken:  firstJSONString(auth, "access_token", "accessToken"),
+				RefreshToken: firstJSONString(auth, "refresh_token", "refreshToken"),
+				IDToken:      firstJSONString(auth, "id_token", "idToken"),
+				AccountID:    firstJSONString(auth, "account_id", "accountId"),
+			}
+			if credential.AccessToken != "" || credential.RefreshToken != "" {
+				fillFromJWTClaims(&credential)
+				return credential, nil
+			}
+		}
+	}
 	return Credential{}, fmt.Errorf("codex credential requires access_token or refresh_token")
+}
+
+// fillFromJWTClaims derives AccountID/Email from id_token or access_token
+// claims when the pasted payload does not carry them, mirroring what the
+// official auth.json and cockpit-tools backups provide separately.
+func fillFromJWTClaims(credential *Credential) {
+	for _, token := range []string{credential.IDToken, credential.AccessToken} {
+		applyJWTIdentity(credential, token)
+		if credential.AccountID != "" && credential.Email != "" {
+			return
+		}
+	}
+}
+
+func firstJSONString(obj map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if s, ok := obj[key].(string); ok && strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
 }
 
 func (c Credential) Encode() ([]byte, error) {

@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/caigee-cmd/cli2api/internal/providers"
 )
 
 const (
@@ -158,7 +160,98 @@ func DecodeCredential(payload []byte) (Credential, error) {
 			DeviceID:         camel.DeviceID,
 		}, nil
 	}
+	// Raw Trae IDE storage.json: auth blobs sit behind keys like
+	// "iCubeAuthInfo://<provider>" and whole objects may be JSON-encoded
+	// strings (mirrors cockpit-tools' trae_account_import_payload.rs).
+	if value, err := providers.UnwrapJSONValue(payload); err == nil {
+		if credential, ok := credentialFromStorage(value); ok {
+			return credential, nil
+		}
+	}
 	return Credential{}, fmt.Errorf("trae credential requires refresh_token or access_token")
+}
+
+// credentialFromStorage extracts a credential from the Trae client
+// storage.json shape: the outermost blob that carries access/refresh tokens
+// wins; identity fields are picked anywhere under the same blob.
+func credentialFromStorage(value any) (Credential, bool) {
+	auth := providers.DeepFindAuthObject(value)
+	if auth == nil {
+		return Credential{}, false
+	}
+	credential := Credential{
+		AccessToken:  pickAuthField(auth, "accessToken", "access_token", "token"),
+		RefreshToken: pickAuthField(auth, "refreshToken", "refresh_token", "RefreshToken"),
+		ExpiresAt:    pickAuthInt(auth, "expiresAt", "expiredAt", "expires_at"),
+		Domain:       pickAuthField(auth, "domain"),
+		APIHost:      pickAuthField(auth, "apiHost", "api_host"),
+		UID:          pickAuthField(auth, "userId", "user_id", "uid", "id"),
+		EnterpriseID: pickAuthField(auth, "enterpriseId", "enterprise_id"),
+		Nickname:     pickAuthField(auth, "nickname", "name", "displayName"),
+	}
+	// Identity fields often sit in a sibling account/server blob rather than
+	// inside the token blob; scan the whole storage payload as a fallback.
+	if credential.UID == "" {
+		credential.UID = providers.DeepPickString(value, "userId", "user_id", "uid")
+	}
+	if credential.Nickname == "" {
+		credential.Nickname = providers.DeepPickString(value, "nickname")
+	}
+	if credential.EnterpriseID == "" {
+		credential.EnterpriseID = providers.DeepPickString(value, "enterpriseId", "enterprise_id")
+	}
+	credential.ExpiresAt = unixSeconds(credential.ExpiresAt)
+	if credential.AccessToken == "" && credential.RefreshToken == "" {
+		return Credential{}, false
+	}
+	return credential, true
+}
+
+// pickAuthField reads a field from the auth blob itself (including common
+// one-level nesting such as data.refreshToken or exchangeResponse.Result
+//.RefreshToken), falling back to a deep scan of the whole storage blob.
+func pickAuthField(auth map[string]any, names ...string) string {
+	for _, name := range names {
+		if s, ok := auth[name].(string); ok && strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+	}
+	for _, path := range [][]string{
+		{"data"}, {"auth"}, {"account"}, {"user"}, {"userInfo"}, {"exchangeResponse", "Result"},
+	} {
+		node := any(auth)
+		for _, seg := range path {
+			next, ok := node.(map[string]any)
+			if !ok {
+				node = nil
+				break
+			}
+			node = next[seg]
+		}
+		if m, ok := node.(map[string]any); ok {
+			for _, name := range names {
+				if s, ok := m[name].(string); ok && strings.TrimSpace(s) != "" {
+					return strings.TrimSpace(s)
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func pickAuthInt(auth map[string]any, names ...string) int64 {
+	for _, name := range names {
+		switch raw := auth[name].(type) {
+		case float64:
+			return int64(raw)
+		case string:
+			var parsed int64
+			if _, err := fmt.Sscanf(strings.TrimSpace(raw), "%d", &parsed); err == nil {
+				return parsed
+			}
+		}
+	}
+	return 0
 }
 
 func (c Credential) Encode() ([]byte, error) {
