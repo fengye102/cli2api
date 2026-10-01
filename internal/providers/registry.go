@@ -239,15 +239,16 @@ var Codex = ProviderDescriptor{
 	DefaultRegion: "global",
 }
 
-// ZCode descriptor. The channel ships the domestic service only: BigModel
-// (bigmodel.cn), which is what a user in China signs in to. Z.ai (z.ai /
-// chat.z.ai) is the international service with its own authorize host,
-// redirect scheme and API base; importing an international credential is
-// rejected with an actionable message rather than silently pointed at the
-// wrong upstream.
+// ZCode descriptor. The channel ships both services the desktop client signs
+// in to, because they are separate OAuth realms rather than two endpoints of
+// one: Z.ai (chat.z.ai — international, the client's default, redirect
+// zcode://zai-auth/callback) and BigModel (bigmodel.cn — domestic, redirect
+// zcode://oauth/callback). Each region carries its own authorize host, callback
+// scheme and API base, so an account is created for one service and stays
+// there.
 var ZCode = ProviderDescriptor{
 	ID:                "zcode",
-	Label:             "ZCode (BigModel 国内版)",
+	Label:             "ZCode",
 	Runtime:           RuntimeInProcess,
 	AuthTypes:         []AuthType{AuthOAuth, AuthPAT},
 	CredentialFormats: []string{"zcode-credential-v1"},
@@ -258,13 +259,19 @@ var ZCode = ProviderDescriptor{
 	},
 	Regions: []RegionDescriptor{
 		{
+			ID: "zai", Label: "Z.ai（国际版）",
+			ChatBase:    "https://api.z.ai/api/anthropic",
+			AuthBase:    "https://zcode.z.ai/api/v1/oauth/token",
+			BillingBase: "https://api.z.ai",
+		},
+		{
 			ID: "bigmodel", Label: "BigModel（国内版）",
 			ChatBase:    "https://open.bigmodel.cn/api/anthropic",
 			AuthBase:    "https://zcode.z.ai/api/v1/oauth/token",
 			BillingBase: "https://open.bigmodel.cn",
 		},
 	},
-	DefaultRegion: "bigmodel",
+	DefaultRegion: "zai",
 }
 
 var registry = map[string]ProviderDescriptor{

@@ -28,14 +28,16 @@ const (
 )
 
 // Credential is the canonical storage payload for provider=zcode. API-key
-// mode carries the BigModel key from bigmodel.cn (plain key; an international
-// z.ai "key.secret" pair is not accepted by this channel). OAuth mode carries
-// the ZCode JWT (zcodejwttoken, 3 segments) plus the provider access/refresh
-// tokens from the plan gateway.
+// mode carries a plain key (a BigModel key from bigmodel.cn, or a Z.ai
+// "id.secret" pair from z.ai) and is sent as x-api-key. OAuth mode carries the
+// ZCode JWT (zcodejwttoken, 3 segments) plus the provider access/refresh tokens
+// from the plan gateway. Provider names the region the credential belongs to:
+// the two ZCode services have different authorize hosts, redirect schemes and
+// API bases, so a credential is only ever sent to its own.
 type Credential struct {
 	Format        string `json:"format"`
 	AuthMode      string `json:"auth_mode"`
-	Provider      string `json:"provider"` // always bigmodel; zai is recognised only to be rejected
+	Provider      string `json:"provider"` // zai | bigmodel
 	APIKey        string `json:"api_key,omitempty"`
 	ZCodeJWT      string `json:"zcode_jwt_token,omitempty"`
 	AccessToken   string `json:"access_token,omitempty"`
@@ -411,31 +413,30 @@ func normalizeRegion(s string) string {
 	}
 }
 
-// normalize applies defaults so encoded payloads are canonical.
+// normalize applies defaults so encoded payloads are canonical. A credential
+// that names no region falls back to the Z.ai service, the one the desktop
+// client signs in to by default.
 func normalize(c *Credential) {
 	if c.AuthMode == "" {
 		c.AuthMode = AuthModeAPIKey
 	}
 	if c.Provider == "" {
-		c.Provider = RegionBigModel
+		c.Provider = RegionZAI
 	}
 	c.AuthMode = strings.ToLower(strings.TrimSpace(c.AuthMode))
 	c.Provider = normalizeRegion(c.Provider)
 }
 
-// ensureDomesticRegion rejects credentials minted for the international
-// service. This channel ships BigModel (bigmodel.cn) only: the two services
-// have different authorize hosts, redirect schemes and API bases, so an
-// international credential would authenticate nowhere and only surface as a
-// confusing upstream 401 later.
-func ensureDomesticRegion(c Credential) error {
+// ensureSupportedRegion rejects credentials that name neither ZCode service.
+// The two realms have different authorize hosts, redirect schemes and API
+// bases, so an unrecognised region would authenticate nowhere and only surface
+// as a confusing upstream 401 later.
+func ensureSupportedRegion(c Credential) error {
 	switch normalizeRegion(c.Provider) {
-	case RegionBigModel, "":
+	case RegionZAI, RegionBigModel, "":
 		return nil
-	case RegionZAI:
-		return fmt.Errorf("this credential belongs to the international service Z.ai (z.ai / chat.z.ai); this channel ships the domestic BigModel service only — sign in with a bigmodel.cn account or paste a BigModel API key")
 	default:
-		return fmt.Errorf("unknown zcode provider %q: this channel ships the domestic BigModel service only", c.Provider)
+		return fmt.Errorf("unknown zcode provider %q: use %s (Z.ai) or %s (BigModel)", c.Provider, RegionZAI, RegionBigModel)
 	}
 }
 
@@ -457,14 +458,14 @@ func (c Credential) Encode() ([]byte, error) {
 }
 
 // ValidateCredential enforces the import contract: a usable plaintext chat
-// credential for the domestic service must exist; sealed enc:v1: payloads and
-// international (Z.ai) credentials fail with the actionable message.
+// credential for a known service must exist; sealed enc:v1: payloads and
+// unknown regions fail with the actionable message.
 func ValidateCredential(payload []byte) error {
 	credential, err := DecodeCredential(payload)
 	if err != nil {
 		return err
 	}
-	if err := ensureDomesticRegion(credential); err != nil {
+	if err := ensureSupportedRegion(credential); err != nil {
 		return err
 	}
 	if !credential.hasUsableCredential() {

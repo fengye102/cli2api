@@ -58,8 +58,8 @@ type Store interface {
 
 // Client is the ZCode in-process adapter. It owns the credential codec, the
 // live catalogue fetch, chat against the Anthropic Messages upstream, the
-// browser-login round for the domestic (BigModel) service, and the liveness /
-// quota probe backed by the plan-gateway balance endpoint.
+// browser-login rounds for both ZCode services (see login.go), and the liveness
+// / quota probe backed by the plan-gateway balance endpoint.
 type Client struct {
 	store Store
 	http  *http.Client
@@ -72,9 +72,17 @@ type Client struct {
 	// local server.
 	tokenURL string
 
-	// userInfoURL overrides the BigModel customer-info endpoint used to fill
-	// the account identity after login; tests point this at a local server.
+	// businessLoginURL overrides the Z.ai business-login endpoint that mints
+	// the ZCode JWT; tests point this at a local server.
+	businessLoginURL string
+
+	// userInfoURL overrides the realm userinfo endpoint used to fill the
+	// account identity after login; tests point this at a local server.
 	userInfoURL string
+
+	// customerURL overrides the BigModel customer-info fallback endpoint (see
+	// login.go realmIdentity); tests point this at a local server.
+	customerURL string
 
 	// mu guards pending, the in-flight browser-login rounds keyed by account
 	// id (see login.go).
@@ -102,7 +110,7 @@ func NewClient(store Store) *Client {
 func (c *Client) SetBase(_ string) {}
 
 // Adapter wires the capability surface: credential decode/validate, the
-// browser login for the domestic service, the live+static catalogue, the
+// browser login for both ZCode services, the live+static catalogue, the
 // import/export wizard, chat against the Anthropic Messages upstream, and a
 // Prober backed by the plan-gateway balance endpoint.
 func (c *Client) Adapter() providers.Adapter {
