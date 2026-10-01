@@ -297,7 +297,13 @@ func (c *Client) pollCLILogin(ctx context.Context, accountID string, pending *lo
 	}
 	switch status := strings.ToLower(envelope.str("status")); status {
 	case "pending":
-		return false, fmt.Sprintf("授权页已打开：在页面里完成登录就行，这个窗口会自己变成「已完成」，不用粘贴任何链接（登录有效期到 %s）", pending.cli.expiresAt.Local().Format("15:04")), nil
+		// A remaining-minutes count reads the same whatever timezone the
+		// container runs in.
+		minutes := int(time.Until(pending.cli.expiresAt).Minutes())
+		if minutes < 1 {
+			minutes = 1
+		}
+		return false, fmt.Sprintf("授权页已打开：在页面里完成登录就行，这个窗口会自己变成「已完成」，不用粘贴任何链接（这轮登录约 %d 分钟内有效）", minutes), nil
 	case "failed":
 		c.clearLoginPending(accountID)
 		return false, "", fmt.Errorf("authorization was rejected in the browser; start the login again")
