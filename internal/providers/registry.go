@@ -43,6 +43,12 @@ type RegionDescriptor struct {
 	AuthBase      string         `json:"auth_base"`
 	DefaultDomain string         `json:"default_domain"`
 	Checkin       *CheckinPolicy `json:"checkin,omitempty"`
+	// PlanChatBase is the Anthropic Messages base an OAuth/JWT credential
+	// talks to (the plan gateway). It differs from ChatBase, which is the
+	// pay-as-you-go endpoint an API key is accepted on: the two take
+	// different credentials, so a JWT sent to ChatBase is rejected. Empty
+	// means the region has no separate plan gateway.
+	PlanChatBase string `json:"plan_chat_base,omitempty"`
 }
 
 type ProviderDescriptor struct {
@@ -260,9 +266,10 @@ var ZCode = ProviderDescriptor{
 	Regions: []RegionDescriptor{
 		{
 			ID: "zai", Label: "Z.ai（国际版）",
-			ChatBase:    "https://api.z.ai/api/anthropic",
-			AuthBase:    "https://zcode.z.ai/api/v1/oauth/token",
-			BillingBase: "https://api.z.ai",
+			ChatBase:     "https://api.z.ai/api/anthropic",
+			PlanChatBase: "https://zcode.z.ai/api/v1/zcode-plan/anthropic",
+			AuthBase:     "https://zcode.z.ai/api/v1/oauth/token",
+			BillingBase:  "https://api.z.ai",
 		},
 		{
 			ID: "bigmodel", Label: "BigModel（国内版）",

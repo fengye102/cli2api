@@ -339,7 +339,7 @@ func TestChatStream_HeadersAndBody(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&sawBody); err != nil {
 			t.Errorf("decode body: %v", err)
 		}
-		if r.URL.Path != "/api/anthropic/v1/messages" {
+		if r.URL.Path != "/api/v1/zcode-plan/anthropic/v1/messages" {
 			t.Errorf("path=%s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")

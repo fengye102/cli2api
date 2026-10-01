@@ -14,12 +14,19 @@ import (
 	"github.com/caigee-cmd/cli2api/internal/translate"
 )
 
-// chatURL picks the upstream /v1/messages URL for the credential: an
-// explicit base_url override wins, then the region's ChatBase, then the
-// zai default. The credential carries only the base; the path is fixed.
+// chatURL picks the upstream /v1/messages URL for the credential. An OAuth
+// credential always goes to its region's plan gateway (PlanChatBase): the
+// ZCode JWT is only accepted there, while the credential's stored base_url is
+// the pay-as-you-go endpoint the desktop client exports and answers a JWT with
+// 401. An API key goes to the stored base_url, then the region's ChatBase.
+// The credential carries only the base; the path is fixed.
 func chatURL(cred Credential) string {
-	base := strings.TrimRight(strings.TrimSpace(cred.BaseURL), "/")
-	if base != "" {
+	if region, ok := providers.ZCode.Region(cred.Provider); ok && cred.IsOAuth() {
+		if plan := strings.TrimSpace(region.PlanChatBase); plan != "" {
+			return strings.TrimRight(plan, "/") + "/v1/messages"
+		}
+	}
+	if base := strings.TrimRight(strings.TrimSpace(cred.BaseURL), "/"); base != "" {
 		return base + "/v1/messages"
 	}
 	if region, ok := providers.ZCode.Region(cred.Provider); ok && strings.TrimSpace(region.ChatBase) != "" {
@@ -284,12 +291,53 @@ func classifiedHTTPError(status int, body []byte) error {
 	}
 }
 
+// zcodeRiskText reports the plan gateway's risk-control block. The gateway
+// answers an OAuth call it distrusts with HTTP 405 and
+// {"code":3012,"msg":"request has been blocked due to unusual activity."} —
+// the client is expected to solve an Aliyun 无痕验证 challenge and retry with
+// X-Aliyun-Captcha-Verify-Param. It is a temporary upstream block, not a dead
+// credential, so it must never be classified as auth.
+func zcodeRiskText(text string) bool {
+	return strings.Contains(text, "unusual activity") ||
+		strings.Contains(text, `"code":3012`) ||
+		strings.Contains(text, "captcha") ||
+		strings.Contains(text, "verify token")
+}
+
+// zcodeQuotaText reports "this credential has no plan/balance left". The
+// pay-as-you-go endpoint reports an unfunded account as a rate_limit_error
+// envelope with code 1113, so the check runs before the envelope's own type
+// mapping.
+func zcodeQuotaText(text string) bool {
+	for _, signal := range []string{
+		"insufficient balance", "no resource package", "insufficient_quota",
+		"quota exceeded", "余额不足", "no available quota", "resource package",
+	} {
+		if strings.Contains(text, signal) {
+			return true
+		}
+	}
+	return false
+}
+
 // Classify maps ZCode upstream failures to the shared taxonomy. Anthropic
 // errors carry a {type:"error",error:{type,message}} envelope; the ZCode
 // gateway uses {"code":N,"msg":"..."} for plan errors.
 func Classify(status int, body string) providers.ClassifiedError {
 	text := strings.ToLower(body)
 	message := strings.TrimSpace(body)
+	// Risk control outranks every other reading: a blocked request says
+	// nothing about the credential's validity.
+	if zcodeRiskText(text) {
+		return providers.ClassifiedError{
+			Kind:    accounts.KindRateLimit,
+			Status:  firstNonEmptyStatus(status, 429),
+			Message: firstNonEmptyString(message, "request has been blocked due to unusual activity"),
+		}
+	}
+	if zcodeQuotaText(text) {
+		return providers.ClassifiedError{Kind: accounts.KindQuota, Status: firstNonEmptyStatus(status, 402), Message: message}
+	}
 	// Anthropic error envelope.
 	var anthropicErr struct {
 		Error struct {

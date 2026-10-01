@@ -31,6 +31,10 @@ func defaultHeaders() map[string]string {
 		"X-Platform":          platformID(),
 		"X-Client-Language":   "en-US",
 		"X-Client-Timezone":   "UTC",
+		// X-ZCode-Agent marks the calling product (glm = the ZCode agent
+		// runtime the plan gateway serves). The desktop client sends it on
+		// every plan-gateway call.
+		"X-ZCode-Agent": "glm",
 	}
 }
 

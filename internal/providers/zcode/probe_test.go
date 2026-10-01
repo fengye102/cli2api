@@ -54,10 +54,11 @@ func newProbeClient(t *testing.T, handler http.Handler, store *observeStore) *Cl
 	return client
 }
 
-func TestProbe_Balance200_OAuth(t *testing.T) {
-	var sawAuth, sawAPIKey, sawVersion string
+func TestProbe_Plans200_OAuth(t *testing.T) {
+	var sawAuth, sawAPIKey, sawVersion, sawPath string
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/api/v1/zcode-plan/billing/balance") {
+		sawPath = r.URL.Path
+		if !strings.HasPrefix(r.URL.Path, "/api/v1/zcode-plan/billing/current") {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -65,7 +66,12 @@ func TestProbe_Balance200_OAuth(t *testing.T) {
 		sawAPIKey = r.Header.Get("x-api-key")
 		sawVersion = r.URL.Query().Get("app_version")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"code":0,"data":{"balance":42.5,"currency":"CNY","plan":"pro"}}`))
+		_, _ = w.Write([]byte(`{"code":0,"msg":"","data":{"server_time":1790885289,"plans":[` +
+			`{"user_plan_id":"upl_1","plan_id":"zcode-v3-start-plan-trust-1002",` +
+			`"name":"ZCode Trust Build","status":"active","priority":110,"ends_at":1790956800,` +
+			`"entitlements":[{"entitlement_id":"zcode-v3-start-plan-trust-1002",` +
+			`"show_name":"GLM-5.3-Flash","meter":"model_usage","unit_type":"token",` +
+			`"grant_units":100000000,"period":"one_time"}]}]}}`))
 	})
 	store := &observeStore{memStore: memStore{items: map[string][]byte{
 		"acc1": []byte(`{"format":"zcode-credential-v1","auth_mode":"oauth","provider":"zai","zcode_jwt_token":"jwt-abc","email":"u@example.com"}`),
@@ -82,6 +88,9 @@ func TestProbe_Balance200_OAuth(t *testing.T) {
 	if health.UID != "u@example.com" {
 		t.Errorf("UID=%q", health.UID)
 	}
+	if sawPath != "/api/v1/zcode-plan/billing/current" {
+		t.Errorf("probe path=%q want /api/v1/zcode-plan/billing/current", sawPath)
+	}
 	if sawAuth != "Bearer jwt-abc" {
 		t.Errorf("Authorization=%q", sawAuth)
 	}
@@ -92,7 +101,7 @@ func TestProbe_Balance200_OAuth(t *testing.T) {
 		t.Errorf("app_version=%q want %q", sawVersion, Version)
 	}
 
-	// Quota should parse the balance payload.
+	// Quota should report the served plan and its granted entitlement.
 	info, err := client.Quota(context.Background(), "acc1")
 	if err != nil {
 		t.Fatalf("Quota: %v", err)
@@ -100,14 +109,17 @@ func TestProbe_Balance200_OAuth(t *testing.T) {
 	if info == nil {
 		t.Fatalf("Quota returned nil")
 	}
-	if info.Remaining != 42.5 {
-		t.Errorf("Remaining=%v", info.Remaining)
+	if info.Plan != "ZCode Trust Build" {
+		t.Errorf("Plan=%q", info.Plan)
 	}
-	if info.Unit != "CNY" {
+	if info.Total != 100000000 {
+		t.Errorf("Total=%v", info.Total)
+	}
+	if info.Unit != "tokens" {
 		t.Errorf("Unit=%q", info.Unit)
 	}
-	if info.Plan != "pro" {
-		t.Errorf("Plan=%q", info.Plan)
+	if info.ExpiresAt != 1790956800 {
+		t.Errorf("ExpiresAt=%d", info.ExpiresAt)
 	}
 	if info.ProviderID != "zcode" {
 		t.Errorf("ProviderID=%q", info.ProviderID)
@@ -115,11 +127,48 @@ func TestProbe_Balance200_OAuth(t *testing.T) {
 	if len(info.Windows) != 1 {
 		t.Fatalf("Windows=%v", info.Windows)
 	}
-	if info.Windows[0].ID != "balance" {
-		t.Errorf("window id=%q", info.Windows[0].ID)
+	if info.Windows[0].Label != "GLM-5.3-Flash" {
+		t.Errorf("window label=%q", info.Windows[0].Label)
+	}
+	if info.Windows[0].Total != 100000000 {
+		t.Errorf("window total=%v", info.Windows[0].Total)
 	}
 	if info.Exceeded {
-		t.Errorf("Exceeded=true on positive balance")
+		t.Errorf("Exceeded=true on a granted plan")
+	}
+}
+
+// A Start-Plan account answers /billing/balance with
+// {"code":3001,"msg":"parameter error"} (HTTP 400). That is the endpoint not
+// serving this credential class, not a dead login: the account must stay
+// usable instead of being flipped to "登录失败".
+func TestProbe_NonAuthRejection_KeepsAccountReady(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"code":3001,"msg":"parameter error","logid":"2026100120080973"}`))
+	})
+	store := &observeStore{memStore: memStore{items: map[string][]byte{
+		"acc1": []byte(`{"format":"zcode-credential-v1","auth_mode":"oauth","provider":"zai","zcode_jwt_token":"jwt-abc","email":"u@example.com"}`),
+	}}}
+	client := newProbeClient(t, handler, store)
+
+	health, err := client.Probe(context.Background(), "acc1")
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if !health.Ready {
+		t.Errorf("Ready=false on a non-auth rejection; LastError=%q", health.LastError)
+	}
+	if health.LastError != "" {
+		t.Errorf("LastError=%q want empty", health.LastError)
+	}
+	if _, err := client.Refresh(context.Background(), "acc1", Credential{
+		AuthMode: AuthModeOAuth, Provider: RegionZAI, ZCodeJWT: "jwt-abc",
+	}); err != nil {
+		t.Errorf("Refresh err=%v on a non-auth rejection", err)
+	}
+	if obs, ok := store.lastObserved(); ok {
+		t.Errorf("observed %+v; a non-auth rejection must not record an account state", obs)
 	}
 }
 
