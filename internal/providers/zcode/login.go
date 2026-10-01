@@ -21,26 +21,35 @@ import (
 // driven from a per-region profile rather than from shared constants:
 //
 //   - zai (chat.z.ai) — the client's default service. Authorize on
-//     chat.z.ai/api/oauth/authorize, callback zcode://zai-auth/callback, and an
-//     extra business exchange (api.z.ai/api/auth/z/login) that mints the ZCode
-//     JWT from the provider access token.
-//   - bigmodel (bigmodel.cn) — authorize on bigmodel.cn/login, callback
-//     zcode://oauth/callback; its token response already carries the ZCode JWT.
+//     chat.z.ai/api/oauth/authorize, and an extra business exchange
+//     (api.z.ai/api/auth/z/login) that mints the ZCode JWT from the provider
+//     access token.
+//   - bigmodel (bigmodel.cn) — authorize on bigmodel.cn/login; its token
+//     response already carries the ZCode JWT.
 //
-// Both callbacks use a custom scheme only the official desktop client can
-// receive, so no server-side loopback redirect can ever complete the round:
-// pasting the address-bar URL back into the console is the whole flow rather
-// than a fallback.
+// Neither realm can redirect back to this process, so the operator always
+// pastes the callback back. Which redirect the authorize step asks for matters
+// though: the client id registers a zcode:// custom scheme and the ZCode CLI's
+// loopback. A zcode:// redirect is claimed by whatever desktop app registered
+// that scheme on the operator's machine (an account manager such as
+// cockpit-tools, say), which swallows the code and leaves the address bar with
+// nothing to copy — so the Z.ai realm asks for the loopback instead: the
+// browser lands on http://127.0.0.1:9999/callback?... , nothing answers there,
+// and the address bar keeps the whole callback. Any registered callback the
+// realm accepts is honoured on paste, and the redirect the browser actually
+// used is echoed back to the token endpoint, which rejects a mismatch.
 const (
 	loginTokenURL = "https://zcode.z.ai/api/v1/oauth/token"
 
 	// Z.ai realm (region zai).
-	zaiAuthorizeURL      = "https://chat.z.ai/api/oauth/authorize"
-	zaiClientID          = "client_P8X5CMWmlaRO9gyO-KSqtg"
-	zaiRedirectURI       = "zcode://zai-auth/callback"
-	zaiLegacyRedirectURI = "zcode://oauth/callback"
-	zaiUserInfoURL       = "https://chat.z.ai/api/oauth/userinfo"
-	zaiBusinessLoginURL  = "https://api.z.ai/api/auth/z/login"
+	zaiAuthorizeURL = "https://chat.z.ai/api/oauth/authorize"
+	zaiClientID     = "client_P8X5CMWmlaRO9gyO-KSqtg"
+	// zaiLoopbackRedirectURI is the loopback ZCode registers for its CLI.
+	zaiLoopbackRedirectURI = "http://127.0.0.1:9999/callback"
+	zaiRedirectURI         = "zcode://zai-auth/callback"
+	zaiLegacyRedirectURI   = "zcode://oauth/callback"
+	zaiUserInfoURL         = "https://chat.z.ai/api/oauth/userinfo"
+	zaiBusinessLoginURL    = "https://api.z.ai/api/auth/z/login"
 
 	// BigModel realm (region bigmodel).
 	bigmodelAuthorizeURL    = "https://bigmodel.cn/login"
@@ -59,20 +68,24 @@ const (
 )
 
 // loginRealm is the OAuth profile of one region: authorize host, redirect
-// scheme, token-exchange dialect and identity endpoint. The two services share
+// schemes, token-exchange dialect and identity endpoint. The two services share
 // only the token URL and the credential shape.
 type loginRealm struct {
 	region       string
 	authorizeURL string
-	// clientID / appID parameter the authorize host expects.
+	// authorizeClientID is the client_id / appId parameter the authorize host
+	// expects.
 	authorizeClientID string
-	// authorizeParams distinguishes the two authorize dialects: Z.ai uses
+	// bigmodelDialect distinguishes the two authorize dialects: Z.ai uses
 	// client_id/response_type/redirect_uri, BigModel uses redirect/appId.
 	bigmodelDialect bool
-	redirectURI     string
-	// legacyRedirectURIs are older callback spellings the same realm still
-	// accepts, so a link minted by an earlier client build imports too.
-	legacyRedirectURIs []string
+	// authorizeRedirectURI is the redirect the authorize URL asks for. It has
+	// to be registered against the realm's client id.
+	authorizeRedirectURI string
+	// registeredRedirectURIs are every redirect registered for that client id
+	// and therefore accepted when the operator pastes the callback back. The
+	// token exchange echoes the one the browser actually used.
+	registeredRedirectURIs []string
 	// tokenProvider is the "provider" value the token endpoint expects.
 	tokenProvider string
 	userInfoURL   string
@@ -91,26 +104,33 @@ func loginRealmFor(region string) loginRealm {
 	switch normalizeRegion(region) {
 	case RegionBigModel:
 		return loginRealm{
-			region:             RegionBigModel,
-			authorizeURL:       bigmodelAuthorizeURL,
-			authorizeClientID:  bigmodelAppID,
-			bigmodelDialect:    true,
-			redirectURI:        bigmodelRedirectURI,
-			legacyRedirectURIs: []string{bigmodelLegacyRedirect},
-			tokenProvider:      RegionBigModel,
-			userInfoURL:        bigmodelUserInfoURL,
-			customerInfoURL:    bigmodelCustomerInfoURL,
+			region:               RegionBigModel,
+			authorizeURL:         bigmodelAuthorizeURL,
+			authorizeClientID:    bigmodelAppID,
+			bigmodelDialect:      true,
+			authorizeRedirectURI: bigmodelRedirectURI,
+			registeredRedirectURIs: []string{
+				bigmodelRedirectURI,
+				bigmodelLegacyRedirect,
+			},
+			tokenProvider:   RegionBigModel,
+			userInfoURL:     bigmodelUserInfoURL,
+			customerInfoURL: bigmodelCustomerInfoURL,
 		}
 	default:
 		return loginRealm{
-			region:             RegionZAI,
-			authorizeURL:       zaiAuthorizeURL,
-			authorizeClientID:  zaiClientID,
-			redirectURI:        zaiRedirectURI,
-			legacyRedirectURIs: []string{zaiLegacyRedirectURI},
-			tokenProvider:      RegionZAI,
-			userInfoURL:        zaiUserInfoURL,
-			businessLoginURL:   zaiBusinessLoginURL,
+			region:               RegionZAI,
+			authorizeURL:         zaiAuthorizeURL,
+			authorizeClientID:    zaiClientID,
+			authorizeRedirectURI: zaiLoopbackRedirectURI,
+			registeredRedirectURIs: []string{
+				zaiLoopbackRedirectURI,
+				zaiRedirectURI,
+				zaiLegacyRedirectURI,
+			},
+			tokenProvider:    RegionZAI,
+			userInfoURL:      zaiUserInfoURL,
+			businessLoginURL: zaiBusinessLoginURL,
 		}
 	}
 }
@@ -121,36 +141,62 @@ func loginRealmFor(region string) loginRealm {
 func (r loginRealm) authorize(state string) string {
 	query := url.Values{}
 	if r.bigmodelDialect {
-		query.Set("redirect", r.redirectURI)
+		query.Set("redirect", r.authorizeRedirectURI)
 		query.Set("appId", r.authorizeClientID)
 	} else {
 		query.Set("client_id", r.authorizeClientID)
-		query.Set("redirect_uri", r.redirectURI)
+		query.Set("redirect_uri", r.authorizeRedirectURI)
 		query.Set("response_type", "code")
 	}
 	query.Set("state", state)
 	return r.authorizeURL + "?" + query.Encode()
 }
 
-// acceptsCallback reports whether a pasted callback belongs to this realm.
-func (r loginRealm) acceptsCallback(host string) bool {
-	host = strings.ToLower(strings.TrimSpace(host))
-	for _, uri := range append([]string{r.redirectURI}, r.legacyRedirectURIs...) {
-		parsed, err := url.Parse(uri)
+// matchRegisteredRedirect maps a pasted callback onto a redirect registered for
+// this realm and returns the canonical spelling to echo to the token endpoint.
+// Comparing the parts rather than the raw strings keeps a browser that spells
+// the loopback slightly differently (trailing slash, default port) from failing
+// the exchange on a technicality.
+func (r loginRealm) matchRegisteredRedirect(parsed *url.URL) (string, bool) {
+	scheme := strings.ToLower(parsed.Scheme)
+	host := strings.ToLower(parsed.Hostname())
+	port := parsed.Port()
+	path := strings.TrimSuffix(strings.ToLower(parsed.Path), "/")
+	for _, candidate := range r.registeredRedirectURIs {
+		reference, err := url.Parse(candidate)
 		if err != nil {
 			continue
 		}
-		if strings.EqualFold(parsed.Host, host) {
-			return true
+		if strings.ToLower(reference.Scheme) != scheme ||
+			strings.ToLower(reference.Hostname()) != host ||
+			reference.Port() != port ||
+			strings.TrimSuffix(strings.ToLower(reference.Path), "/") != path {
+			continue
 		}
+		return candidate, true
 	}
-	return false
+	return "", false
 }
 
 // callbackTargets lists the accepted callbacks for error messages.
 func (r loginRealm) callbackTargets() string {
-	uris := append([]string{r.redirectURI}, r.legacyRedirectURIs...)
-	return strings.Join(uris, " / ")
+	return strings.Join(r.registeredRedirectURIs, " / ")
+}
+
+// loopbackAuthorizeHint reports whether the authorize step sends the operator
+// to a local URL that cannot serve a page, so the console can say so up front
+// instead of letting it look like a failure.
+func (r loginRealm) loopbackAuthorizeHint() bool {
+	parsed, err := url.Parse(r.authorizeRedirectURI)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(parsed.Hostname()) {
+	case "127.0.0.1", "localhost":
+		return true
+	default:
+		return false
+	}
 }
 
 // loginPending is one browser-login round for an account: the state we minted,
@@ -203,8 +249,8 @@ func (c *Client) accountRegion(ctx context.Context, accountID string) string {
 }
 
 // PollLogin reports the state of a pasted-callback login. The browser cannot
-// deliver a zcode:// callback to a server, so there is nothing to poll: the
-// message tells the operator what to paste.
+// deliver the callback to a server, so there is nothing to poll: the message
+// tells the operator what to paste.
 func (c *Client) PollLogin(_ context.Context, accountID string) (bool, string, error) {
 	c.mu.Lock()
 	pending := c.pending[accountID]
@@ -216,7 +262,11 @@ func (c *Client) PollLogin(_ context.Context, accountID string) (bool, string, e
 		c.clearLoginPending(accountID)
 		return false, "", fmt.Errorf("login expired; start again")
 	}
-	return false, fmt.Sprintf("在打开的页面完成登录后浏览器会跳到 %s?...（不会自动回到这里），把地址栏那条完整链接粘贴到下面的输入框", pending.realm.redirectURI), nil
+	target := pending.realm.authorizeRedirectURI
+	if pending.realm.loopbackAuthorizeHint() {
+		return false, fmt.Sprintf("在打开的页面完成登录后浏览器会跳到 %s?...；本机没有服务监听这个地址，所以页面打不开是正常的（也说明没有别的软件把回调抢走），把地址栏那条完整链接整条复制粘到下面的输入框", target), nil
+	}
+	return false, fmt.Sprintf("在打开的页面完成登录后浏览器会跳到 %s?...（不会自动回到这里），把地址栏那条完整链接粘贴到下面的输入框", target), nil
 }
 
 // CompleteLogin exchanges the pasted callback URL's authorization code for
@@ -232,11 +282,11 @@ func (c *Client) CompleteLogin(ctx context.Context, accountID, callbackURL strin
 		c.clearLoginPending(accountID)
 		return fmt.Errorf("login expired; start again")
 	}
-	code, err := parseCallbackURL(callbackURL, pending.state, pending.realm)
+	code, redirectURI, err := parseCallbackURL(callbackURL, pending.state, pending.realm)
 	if err != nil {
 		return err
 	}
-	credential, err := c.exchangeAuthorizationCode(ctx, pending.realm, code, pending.state)
+	credential, err := c.exchangeAuthorizationCode(ctx, pending.realm, code, pending.state, redirectURI)
 	if err != nil {
 		return err
 	}
@@ -268,45 +318,46 @@ func loginState() (string, error) {
 }
 
 // parseCallbackURL validates the pasted callback URL and returns its
-// authorization code. The state must match the round the console started, so a
-// link from an older login cannot be replayed here.
-func parseCallbackURL(raw, expectedState string, realm loginRealm) (string, error) {
+// authorization code plus the registered redirect it came from, which the token
+// exchange has to echo. The state must match the round the console started, so
+// a link from an older login cannot be replayed here.
+func parseCallbackURL(raw, expectedState string, realm loginRealm) (string, string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
-		return "", fmt.Errorf("paste the %s URL from the browser address bar", realm.redirectURI)
+		return "", "", fmt.Errorf("paste the callback URL from the browser address bar (it starts with %s)", realm.authorizeRedirectURI)
 	}
 	parsed, err := url.Parse(trimmed)
 	if err != nil {
-		return "", fmt.Errorf("invalid callback URL: %v", err)
+		return "", "", fmt.Errorf("invalid callback URL: %v", err)
 	}
-	if !strings.EqualFold(parsed.Scheme, "zcode") {
-		return "", fmt.Errorf("callback must be a zcode:// URL (the address-bar link), got %q", clip(trimmed, 40))
+	switch strings.ToLower(parsed.Scheme) {
+	case "zcode", "http", "https":
+	default:
+		return "", "", fmt.Errorf("callback must be the %s URL (the address-bar link), got %q", realm.authorizeRedirectURI, clip(trimmed, 40))
 	}
-	if !strings.HasPrefix(strings.ToLower(parsed.Path), "/callback") {
-		return "", fmt.Errorf("unexpected callback target %q, want %s", parsed.Host+parsed.Path, realm.callbackTargets())
-	}
-	if !realm.acceptsCallback(parsed.Host) {
-		return "", fmt.Errorf("unexpected callback target %q, want %s", parsed.Host+parsed.Path, realm.callbackTargets())
+	redirectURI, ok := realm.matchRegisteredRedirect(parsed)
+	if !ok {
+		return "", "", fmt.Errorf("unexpected callback target %q, want %s", parsed.Host+parsed.Path, realm.callbackTargets())
 	}
 	query := parsed.Query()
 	if failure := strings.TrimSpace(query.Get("error")); failure != "" {
-		return "", fmt.Errorf("authorization was rejected: %s", failure)
+		return "", "", fmt.Errorf("authorization was rejected: %s", failure)
 	}
 	state := strings.TrimSpace(query.Get("state"))
 	if state == "" {
-		return "", fmt.Errorf("callback URL carries no state")
+		return "", "", fmt.Errorf("callback URL carries no state")
 	}
 	if expectedState != "" && state != expectedState {
-		return "", fmt.Errorf("state mismatch (the link belongs to an earlier login); start the browser login again")
+		return "", "", fmt.Errorf("state mismatch (the link belongs to an earlier login); start the browser login again")
 	}
 	code := strings.TrimSpace(query.Get("code"))
 	if code == "" {
 		code = strings.TrimSpace(query.Get("authCode"))
 	}
 	if code == "" {
-		return "", fmt.Errorf("callback URL carries no code")
+		return "", "", fmt.Errorf("callback URL carries no code")
 	}
-	return code, nil
+	return code, redirectURI, nil
 }
 
 // apiEnvelope is the {code,msg,data} shape every ZCode endpoint answers with.
@@ -398,16 +449,21 @@ func objectString(fields map[string]json.RawMessage, keys ...string) string {
 }
 
 // exchangeAuthorizationCode posts the authorization code to the ZCode token
-// endpoint and turns the response into a stored credential.
+// endpoint and turns the response into a stored credential. redirectURI is the
+// registered redirect the browser actually used; the endpoint rejects the
+// exchange when it does not match the one the code was issued for.
 //
 // The realm decides the body's provider value and where the ZCode JWT comes
 // from: BigModel answers with data.token directly, while Z.ai hands back the
 // provider access token and the JWT is minted by the business login exchange.
-func (c *Client) exchangeAuthorizationCode(ctx context.Context, realm loginRealm, code, state string) (Credential, error) {
+func (c *Client) exchangeAuthorizationCode(ctx context.Context, realm loginRealm, code, state, redirectURI string) (Credential, error) {
+	if strings.TrimSpace(redirectURI) == "" {
+		redirectURI = realm.authorizeRedirectURI
+	}
 	body, err := json.Marshal(map[string]string{
 		"provider":     realm.tokenProvider,
 		"code":         code,
-		"redirect_uri": realm.redirectURI,
+		"redirect_uri": redirectURI,
 		"state":        state,
 	})
 	if err != nil {
