@@ -1,5 +1,6 @@
+import { copyText } from '@/lib/clipboard'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Button, Card, Chip, Description, Label, ListBox, Modal, Select } from '@heroui/react'
+import { Button, Card, Chip, Description, Input, Label, ListBox, Modal, Select } from '@heroui/react'
 import {
   ArrowClockwise,
   ArrowCircleUp,
@@ -16,9 +17,11 @@ import { applyPreparedSystemUpdate, cancelSystemUpdate, fetchSystemSettings, fet
 import { useApiKey } from '@/hooks/useApiKey'
 import { PageAlert } from '@/components/ui/PageAlert'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { FormRow } from '@/components/ui/FormRow'
 import { SystemPageSkeleton } from '@/components/ui/PageSkeletons'
 import { useI18n } from '@/hooks/useI18n'
 import { CompactSwitch } from '@/components/ui/CompactSwitch'
+import { CheckinDefaults } from '@/components/checkin/CheckinDefaults'
 import { VersionHistory } from '@/components/VersionHistory'
 import { buildVersionHistory } from '@/lib/versionHistory'
 
@@ -33,6 +36,7 @@ export function SystemPage() {
   const [info, setInfo] = useState<SystemUpdateInfo | null>(null)
   const [consoleKey, setConsoleKey] = useState<ConsoleKeyView | null>(null)
   const [settings, setSettings] = useState<SystemSettings | null>(null)
+  const [proxyDraft, setProxyDraft] = useState('')
   const [settingsBusy, setSettingsBusy] = useState(false)
   const [consoleBusy, setConsoleBusy] = useState(false)
   const [rotateOpen, setRotateOpen] = useState(false)
@@ -72,7 +76,10 @@ export function SystemPage() {
     const timer = window.setTimeout(() => {
       void load(false)
       void fetchConsoleKey().then(setConsoleKey).catch(() => undefined)
-      void fetchSystemSettings().then(setSettings).catch((err) => setError(err instanceof Error ? err.message : String(err)))
+      void fetchSystemSettings().then((result) => {
+        setSettings(result)
+        setProxyDraft(result.proxy_url || '')
+      }).catch((err) => setError(err instanceof Error ? err.message : String(err)))
     }, 0)
     return () => window.clearTimeout(timer)
   }, [load])
@@ -225,6 +232,47 @@ export function SystemPage() {
     }
   }
 
+  async function updateCheckinDisabledAccounts(enabled: boolean) {
+    const previous = settings?.checkin_disabled_accounts ?? false
+    setSettings((current) => current ? { ...current, checkin_disabled_accounts: enabled } : current)
+    setSettingsBusy(true)
+    setError('')
+    try {
+      setSettings(await updateSystemSettings({ checkin_disabled_accounts: enabled }))
+    } catch (err) {
+      setSettings((current) => current ? { ...current, checkin_disabled_accounts: previous } : current)
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSettingsBusy(false)
+    }
+  }
+
+  async function updateProxyURL(value: string) {
+    const saved = settings?.proxy_url || ''
+    // Nothing changed in the field: keep the draft as-is and skip the PATCH so
+    // a no-op blur never reloads workers.
+    if (value === saved) {
+      setProxyDraft(saved)
+      return
+    }
+    const previousDraft = proxyDraft
+    setProxyDraft(value)
+    setSettings((current) => current ? { ...current, proxy_url: value } : current)
+    setSettingsBusy(true)
+    setError('')
+    try {
+      const updated = await updateSystemSettings({ proxy_url: value })
+      setSettings(updated)
+      setProxyDraft(updated.proxy_url || '')
+    } catch (err) {
+      setProxyDraft(previousDraft)
+      setSettings((current) => current ? { ...current, proxy_url: saved } : current)
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSettingsBusy(false)
+    }
+  }
+
   async function updateRoutingStrategy(strategy: SystemSettings['routing_strategy']) {
     const previous = settings?.routing_strategy || 'round-robin'
     setSettings((current) => current ? { ...current, routing_strategy: strategy } : current)
@@ -343,32 +391,80 @@ export function SystemPage() {
             <div className="flex items-start gap-3">
               <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-surface-secondary text-foreground"><SlidersHorizontal size={15} /></div>
               <div>
+                <h3 className="font-semibold">{t('proxySettingsTitle')}</h3>
+                <p className="mt-1 text-xs leading-5 text-muted">{t('proxySettingsHint')}</p>
+              </div>
+            </div>
+            <div className="mt-4 space-y-1.5">
+              <Label className="text-sm font-medium text-muted">{t('proxyUrl')}</Label>
+              <Input
+                value={proxyDraft}
+                onChange={(event) => setProxyDraft(event.target.value)}
+                onBlur={(event) => void updateProxyURL(event.target.value.trim())}
+                placeholder={t('proxyUrlPlaceholder')}
+                disabled={settingsBusy || !settings}
+              />
+              <Description className="text-xs leading-5 text-muted">{t('proxyUrlHint')}</Description>
+            </div>
+          </Card>
+
+          <CheckinDefaults settings={settings} onSaved={setSettings} />
+
+          <Card data-gsap-reveal>
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-start gap-3">
+                <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-surface-secondary text-foreground"><CheckCircle size={15} /></div>
+                <div>
+                  <h3 className="font-semibold">{t('checkinDisabledAccountsTitle')}</h3>
+                  <p className="mt-1 text-xs leading-5 text-muted">{t('checkinDisabledAccountsHint')}</p>
+                </div>
+              </div>
+              <CompactSwitch
+                isSelected={settings?.checkin_disabled_accounts ?? false}
+                isDisabled={settingsBusy || !settings}
+                ariaLabel={t('checkinDisabledAccountsAriaLabel')}
+                onChange={(selected) => void updateCheckinDisabledAccounts(selected)}
+              />
+            </div>
+            <div className="mt-4 flex items-center justify-between border-t border-separator pt-3 text-xs text-muted">
+              <span>{t('checkinDisabledAccountsStatus')}</span>
+              <span className="font-medium text-foreground">{settings?.checkin_disabled_accounts ? t('enabled') : t('disabled')}</span>
+            </div>
+          </Card>
+
+          <Card data-gsap-reveal>
+            <div className="flex items-start gap-3">
+              <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-surface-secondary text-foreground"><SlidersHorizontal size={15} /></div>
+              <div>
                 <h3 className="font-semibold">{t('routingStrategyTitle')}</h3>
                 <p className="mt-1 text-xs leading-5 text-muted">{t('routingStrategyHint')}</p>
               </div>
             </div>
-            <Select
-              className="mt-4"
-              fullWidth
-              value={settings?.routing_strategy || 'round-robin'}
-              isDisabled={settingsBusy || !settings}
-              onChange={(value) => {
-                if (typeof value === 'string' && value) void updateRoutingStrategy(value as SystemSettings['routing_strategy'])
-              }}
-            >
-              <Label className="text-sm font-medium text-muted">{t('routingStrategy')}</Label>
-              <Select.Trigger className="items-center">
-                <Select.Value className="min-w-0 truncate" />
-                <Select.Indicator />
-              </Select.Trigger>
-              <Select.Popover>
-                <ListBox>
-                  <ListBox.Item id="round-robin" textValue="round-robin"><Label>{t('routingRoundRobin')}</Label><ListBox.ItemIndicator /></ListBox.Item>
-                  <ListBox.Item id="weighted-round-robin" textValue="weighted-round-robin"><Label>{t('routingWeightedRoundRobin')}</Label><ListBox.ItemIndicator /></ListBox.Item>
-                  <ListBox.Item id="fill-first" textValue="fill-first"><Label>{t('routingFillFirst')}</Label><ListBox.ItemIndicator /></ListBox.Item>
-                </ListBox>
-              </Select.Popover>
-            </Select>
+            <div className="mt-4 border-t border-separator pt-4">
+              <FormRow label={t('routingStrategy')}>
+                <Select
+                  fullWidth
+                  aria-label={t('routingStrategy')}
+                  value={settings?.routing_strategy || 'round-robin'}
+                  isDisabled={settingsBusy || !settings}
+                  onChange={(value) => {
+                    if (typeof value === 'string' && value) void updateRoutingStrategy(value as SystemSettings['routing_strategy'])
+                  }}
+                >
+                  <Select.Trigger className="items-center">
+                    <Select.Value className="min-w-0 truncate" />
+                    <Select.Indicator />
+                  </Select.Trigger>
+                  <Select.Popover>
+                    <ListBox>
+                      <ListBox.Item id="round-robin" textValue="round-robin"><Label>{t('routingRoundRobin')}</Label><ListBox.ItemIndicator /></ListBox.Item>
+                      <ListBox.Item id="weighted-round-robin" textValue="weighted-round-robin"><Label>{t('routingWeightedRoundRobin')}</Label><ListBox.ItemIndicator /></ListBox.Item>
+                      <ListBox.Item id="fill-first" textValue="fill-first"><Label>{t('routingFillFirst')}</Label><ListBox.ItemIndicator /></ListBox.Item>
+                    </ListBox>
+                  </Select.Popover>
+                </Select>
+              </FormRow>
+            </div>
             <div className="mt-4 grid grid-cols-2 gap-2 border-t border-separator pt-3 text-xs text-muted sm:grid-cols-4">
               <div><span className="mono block text-sm font-medium text-foreground">{settings?.session_affinity?.ttl_seconds ? `${Math.round(settings.session_affinity.ttl_seconds / 60)}m` : '—'}</span>{t('sessionAffinityTTL')}</div>
               <div><span className="mono block text-sm font-medium text-foreground">{settings?.session_affinity?.hits ?? 0}</span>{t('sessionAffinityHits')}</div>
@@ -483,7 +579,7 @@ export function SystemPage() {
               <Modal.Footer className="justify-end">
                 <Button variant="ghost" onPress={() => setRotatedSecret('')}>{t('close')}</Button>
                 <Button onPress={() => {
-                  void navigator.clipboard.writeText(rotatedSecret)
+                  void copyText(rotatedSecret)
                   setCopied(true)
                   window.setTimeout(() => setCopied(false), 1200)
                 }}>

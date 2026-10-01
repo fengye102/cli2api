@@ -1,17 +1,328 @@
 # Changelog
 
-User-facing notes for GitHub Releases and the console update page.
-Write each change in both `### English` and `### 中文` under `## Unreleased`.
+Published user-facing notes for GitHub Releases and the console update page.
+Write upcoming notes as bilingual files in `changelog/unreleased/`.
 
-## Unreleased
+## 0.6.12 - 2026-09-29
 
 ### English
 
+- The add-account type cards now show only the icon and title. Login details appear when you hover the info button.
+- Codex account cards now read the current usage response, so the 5-hour and weekly windows show up instead of staying on "Getting quota…". The subscription tier from that response is shown above the windows.
+- A stream that already finished is logged as success when the client disconnects afterward. A disconnect before the stream finishes is still canceled.
+
+### 中文
+
+- 添加账号的类型卡片现在只显示图标和标题。登录方式等说明放到信息按钮上，悬停后再展开。
+- Codex 账号卡片现在按当前额度响应读取窗口，5 小时和每周额度会显示出来，不再一直停在「额度获取中…」。响应里的订阅等级会显示在额度窗口上方。
+- 流已经结束后客户端再断开，请求日志记为成功。流还没结束就断开，仍然记为取消。
+
+## 0.6.10 - 2026-09-26
+
+### English
+
+- Codex free accounts no longer stay on login failed after a successful sign-in. The console now reads the ChatGPT account id from the login token, and an account that already signed in recovers on the next refresh.
+
+### 中文
+
+- Codex 免费账号登录成功后不再一直显示登录失败。控制台会从登录令牌里读出 ChatGPT 账号 ID，已经登录过的账号会在下次刷新时自动恢复。
+
+## 0.6.9 - 2026-09-25
+
+### English
+
+- Choose an account type from cards instead of a dropdown, with a Codex mark and a scrollable list that keeps the dialog width stable.
+
+### 中文
+
+- 新建账号改为卡片选择渠道，补上 Codex 图标；渠道过多时列表在固定高度内滚动，弹窗保持加宽后的宽度。
+
+## 0.6.8 - 2026-09-25
+
+### English
+
+- Show Codex 5-hour and weekly quota from the account usage probe, and keep a signed-in account on “getting quota” until a real window arrives.
+
+### 中文
+
+- Codex 账号改为从额度探测读取 5 小时和每周窗口；已登录但还没有窗口时显示「额度获取中」，不再显示「额度不可用」或 0/0。
+
+## 0.6.7 - 2026-09-25
+
+### English
+
+- Preserve OpenAI Responses items through Codex native forwarding, while applying the ChatGPT Codex request constraints used by CLIProxyAPI. Chat Completions and Messages requests translated to Codex use the same constraints.
+- Add `codex` provider: OpenAI Codex accounts backed by a ChatGPT subscription, with browser OAuth login, automatic token refresh, streaming chat, model catalog, and rate-limit window display.
+- Add an experimental **Command Code** (`commandcode.ai`) provider that speaks the CLI's own `/alpha/generate` protocol. That endpoint is not plan-gated, so **every plan works — including the $1 Go plan**, whose Pro-gated `/provider/v1/*` generation endpoints return `403 upgrade_required`. The adapter serves the whole model catalog. Auth is a single `user_…` key, pasted through the existing PAT tab; the model list is read from the anonymous `/provider/v1/models`, and usage is shown from `/alpha/billing/credits` (monthly plan window plus the rolling 5-hour and weekly windows). Streaming is rewritten from the upstream newline-delimited JSON into OpenAI SSE. Experimental: `/alpha/generate` is unpublished and version-coupled, so the pinned CLI version fails loudly rather than degrading silently, and the provider is not production-ready.
+- Present Qoder's context window like Trae's Max-context switch. Qoder reports a default window and a larger selectable window per model but has no upstream toggle, so the console now shows the same "default → larger + switch" control it uses for Trae instead of a raw number input. Turning it on sends the model's largest window as the request's `context_length`; turning it off clears the override so requests fall back to the model's default. The window values come from Qoder's own catalog (`default_context_window` / `available_context_windows`) rather than a hardcoded 180000, so glm-5.3-flash shows 1M instead of being capped at 180k. Qoder Global and CN.
+- Show Qoder model pricing on the account's model list. Qoder reports a per-model `price_factor` (the multiplier its own client renders as `0.50x Credit`) plus `is_free`/`tags`, but the worker dropped them, so the console showed no price for any Qoder account. The worker now forwards them and the adapter renders the multiplier as the console's credits text. The free badge follows the Qoder client's own rule — the `limited_time_free` tag (or a zero factor) is free, a positive factor is priced — so a model that reports `is_free` alongside a real multiplier (Qwen3.8-Max: `is_free` + `0.5`) shows its multiplier instead of the contradictory "免费 / x0.5" pair. Applies to Qoder Global and Qoder CN.
+- Qoder accounts now show their real remaining credits: the account card's headline sums the plan quota, the add-on pack, and the organization resource package instead of reading only the plan quota. Daily check-in rewards are credited to the add-on pack upstream, so before this a plan-only account's card never moved after a check-in (it stayed at e.g. 300 while the reward sat unshown). This matches how the Qoder client itself totals the buckets.
+
+### 中文
+
+- Codex 原生转发保留 OpenAI Responses 的 item，同时按 CLIProxyAPI 的方式改写 ChatGPT Codex 不接受的请求字段。Chat Completions 与 Messages 转成 Codex 请求时使用同一套约束。
+- 新增 `codex` provider：基于 ChatGPT 订阅的 OpenAI Codex 账号，支持浏览器 OAuth 登录、自动刷新 token、流式聊天、模型目录和限速窗口展示。
+- 新增实验性 **Command Code**（`commandcode.ai`）渠道，走 CLI 自身的 `/alpha/generate` 协议。该端点不受档位限制，**所有套餐均可用 —— 包括 $1 Go 套餐**（其 Pro 专属的 `/provider/v1/*` 生成端点会返回 `403 upgrade_required`）。适配层覆盖整个模型目录。认证只需一把 `user_…` 密钥，经现有 PAT 页签粘贴；模型列表读取匿名的 `/provider/v1/models`；用量从 `/alpha/billing/credits` 展示（月套餐窗口，以及滚动的 5 小时 / 周窗口）。流式响应由上游的换行分隔 JSON 改写为 OpenAI SSE。实验性：`/alpha/generate` 未公开且与 CLI 版本耦合，故钉版不匹配时明确报错而非静默降级，不承诺生产可用。
+- Qoder 的上下文窗口改为按 Trae 的「更大上下文」开关呈现。Qoder 每个模型都会上报默认窗口和一个可选更大窗口，但上游没有开关字段，因此控制台不再用裸数字输入框，而是复用 Trae 同款的「默认档 → 更大档 + 开关」。开启时把该模型的最大窗口作为请求的 `context_length` 发出；关闭时清除覆盖值，请求回落到模型默认窗口。窗口数值来自 Qoder 自身目录（`default_context_window` / `available_context_windows`），不再是硬编码的 180000，因此 glm-5.3-flash 显示 1M 而不再被压到 180k。国际版与国内版均适用。
+- 账号的模型列表现在会显示 Qoder 模型价格。Qoder 每个模型都带 `price_factor`（其客户端显示为 `0.50x Credit` 的那个倍率）以及 `is_free`/`tags`，但 worker 之前把它们丢掉了，所以控制台对所有 Qoder 账号都不显示价格。现在 worker 透传这些字段，适配层把倍率渲染为控制台的额度文案。免费标记对齐 Qoder 客户端自身的规则——带 `limited_time_free` 标签（或倍率为 0）才算免费，正倍率即视为计费——因此像 Qwen3.8-Max 这种「`is_free` 为真但同时带 0.5 倍率」的模型会显示倍率，而不再出现自相矛盾的「免费 / x0.5」。Qoder 国际版与国内版均适用。
+- Qoder 账号现在显示真实剩余额度：账号卡片的主数值改为把「套餐额度 + 加量包 + 组织资源包」三桶相加，而不是只读套餐额度。每日签到奖励在上游是记入加量包的，因此此前仅靠套餐额度的账号在签到后卡片数字始终不动（例如一直停在 300，奖励金额不显示）。这与 Qoder 客户端自身的合计口径一致。
+
+## 0.6.6 - 2026-09-24
+
+### English
+
+- Devin: resolve `chat_model_uid` from the live model catalog instead of hardcoded suffix tables, so renamed or removed thinking variants (e.g. `swe-1-7`, `glm-5-2`) no longer emit stale upstream model IDs. "None" is never chosen as an implicit default effort.
+- Devin: pass images embedded in tool results through to the upstream prompt instead of dropping them.
+- Stack Devin daily, weekly, and monthly quota meters as separate full-width rows on the account card, instead of sitting side by side.
+- Expose WorkBuddy credit-pack expiry in `GET /api/accounts` quota: a new `packages` array carries each pack's remain/used/size plus its `CycleEndTime` (as `end_time` and a Unix `ends_at`), and the top-level `expires_at` / `expiring_remain` report the soonest expiry and how much remaining credit lapses then. The console quota tooltip now shows "N credits expire on D". All fields are `omitempty`; providers that do not report expiry (Trae, Qoder) simply omit them.
+
+### 中文
+
+- Devin：`chat_model_uid` 改为按实时模型目录解析，不再使用硬编码后缀表；上游已改名或移除的思考档变体（如 `swe-1-7`、`glm-5-2`）不会再发出过期模型 ID。默认档不会隐式选择 `none`。
+- Devin：工具结果中携带的图片现在会透传给上游，不再被丢弃。
+- Devin 日额度、周额度、月额度在账号卡片上各自单独占一行铺满，不再并排挤在一起。
+- 在 `GET /api/accounts` 的 quota 中透出 WorkBuddy 积分包到期时间：新增 `packages` 数组按包返回 remain/used/size 以及 `CycleEndTime`（`end_time` 原始串与 Unix 秒 `ends_at`），顶层 `expires_at` / `expiring_remain` 给出最近一次到期时间及该时点将过期的剩余量；控制台配额 tooltip 现在会显示「N 积分将于某日到期」。所有字段均为 `omitempty`，不上报到期信息的 provider（Trae、Qoder）保持缺省。
+
+## 0.6.5 - 2026-09-22
+
+### English
+
+- Console copy buttons now fall back to a hidden-textarea copy when the async Clipboard API is unavailable, so copying works when the console is served over plain http (a non-secure context), not just https/localhost.
+- Trae account quota now counts only the General credit bucket; the Work-only bucket (parsed separately) is excluded so it is not summed into the General figure.
+- Stretch Devin daily and weekly quota meters across the account card, with the title, used percent, bar, and reset time in one compact stack.
+- Add concise acknowledgements for open-source projects that informed the project.
+- Preserve cached input token usage in Responses API output for both streaming and non-streaming requests without double-counting total tokens.
+- Map upstream `finish_reason: length` results to the Responses API `incomplete` terminal state, including streaming events, request logs, statistics, and UI filters.
+- Recover Responses requests from malformed historical function-call arguments by skipping the invalid call/output pair, and avoid emitting invalid JSON arguments in generated Responses output.
+- Trae max mode is now only offered on models that declare a real second tier. Models upstream tags for max mode without a larger window or larger ceilings no longer show a toggle that changes nothing (affects Doubao-Seed-2.1-Turbo, kimi-k2.6, kimi-k2.7-code).
+- Turning Trae max mode off now restores the default-tier prompt/output ceilings immediately. The toggle only switches the context window server-side; the console derives the shown ceilings from the Max tier at render time, so the previously stuck Max values (e.g. 936k prompt / 64k output) no longer linger until a full catalog refresh.
+- Trae login now uses the IDE (PKCE) authorization-code flow: the login URL carries a S256 `code_challenge`, and the pasted callback's `authCodeInfo` code is exchanged at `/trae/api/v3/oauth/ExchangeToken` with the matching verifier and a device public key (EC P-256). Accounts created before the switch keep refreshing with the OAuth client that minted their token (`refresh_client_id`).
+- The Trae model catalog now also fetches a second scene (`chat_v3`) and merges it into the primary scene, so models the primary catalog hides as invisible become selectable. Duplicates prefer the entry carrying a credit rate.
+- Trae chats are now routed to the catalog scene that actually serves each model. The whole catalog is served through `chat_v3` (which also carries the Max-mode tiers), and only models that scene does not list fall back to `solo_work_lite`. Previously every chat went through `solo_work_lite`, so the six models that scene does not carry (Doubao-Seed-Code, deepseek-v4.1-flash, glm-5.3-flash, glm-5.3-flashx, kimi-k2.8-preview, qwen3.8-flash) failed with a param error, and Max mode was sent to a scene without Max tiers. This is derived from catalog membership, so new models route correctly on the next refresh without changes.
+- Preserve WorkBuddy cache-read and cache-write token usage when converting aggregated streaming responses into non-streaming results.
+- Retry WorkBuddy daily check-ins when the upstream temporarily reports that a request is still being processed.
+
+### 中文
+
+- 控制台复制按钮在异步剪贴板 API 不可用时回退到隐藏文本框 + execCommand，因此在纯 http（非安全上下文）下打开控制台时复制也能生效，不再只支持 https/localhost。
+- Trae 账号额度只统计「通用积分」桶；「Work 专属积分」桶（单独解析）不计入，避免混入通用额度。
+- Devin 日额度和周额度条铺满账号卡片，标题、已用百分比、进度条和重置时间落在同一组紧凑块里。
+- 在 README 增加简短的开源项目致谢。
+- 在 Responses API 的流式与非流式输出中保留缓存输入 Token 用量，同时避免在总 Token 数中重复计数。
+- 将上游 `finish_reason: length` 结果映射为 Responses API 的 `incomplete` 终止状态，并同步支持流式事件、请求日志、统计与界面筛选。
+- 当 Responses 历史记录包含格式错误的函数调用参数时，跳过对应的调用与输出以恢复请求，并避免在生成的 Responses 输出中发送无效 JSON 参数。
+- Trae 的「更大上下文」开关现在只在**确有第二档**的模型上出现。上游标了 max mode 但没有更大窗口、也没有更大上限的模型，不再显示一个点了没反应的开关（涉及 Doubao-Seed-2.1-Turbo、kimi-k2.6、kimi-k2.7-code）。
+- 关掉 Trae max mode 后，输入/输出上限**立即**回到默认档。开关在服务端只切上下文窗口；控制台展示层在渲染时从 Max 档取值，因此之前会残留的最大值（如 936k 输入 / 64k 输出）不再需要整表刷新才恢复。
+- Trae 登录改用 IDE（PKCE）授权码流程：登录链接带 S256 `code_challenge`，粘贴回调里的 `authCodeInfo` code 连同 verifier 与设备公钥（EC P-256）交到 `/trae/api/v3/oauth/ExchangeToken` 换取令牌。切换前创建的账号继续用签发其 refresh token 的 OAuth client 刷新（`refresh_client_id`）。
+- Trae 模型目录额外拉取 `chat_v3` 场景并与主场景合并，使主目录里被标为 invisible 的模型变为可选；重复项优先保留带倍率的条目。
+- Trae 聊天现在按「实际提供该模型的目录场景」路由。整个目录默认走 `chat_v3`（该场景也是唯一带 Max 档的），仅当 `chat_v3` 不收录某模型时才回退到 `solo_work_lite`。此前所有聊天一律走 `solo_work_lite`，导致该场景没有的 6 个模型（Doubao-Seed-Code、deepseek-v4.1-flash、glm-5.3-flash、glm-5.3-flashx、kimi-k2.8-preview、qwen3.8-flash）报参数错误，且 Max 模式被发到了没有 Max 档的场景。该路由由目录收录关系推导，新模型下次刷新即自动归位，无需改码。
+- 将 WorkBuddy 聚合流式响应转换为非流式结果时，保留缓存读取与缓存写入 Token 用量。
+- 当 WorkBuddy 上游暂时返回“请求处理中”时，自动重试每日签到。
+
+## 0.6.4 - 2026-09-19
+
+### English
+
+- Send Qoder CN campaign check-in with the official desktop `Cosy-ClientType` headers so the daily credit activity is not filtered out as unavailable.
+
+### 中文
+
+- Qoder 国内版活动签到补上官方桌面端 `Cosy-ClientType` 请求头，避免每日积分活动被过滤成未开放。
+
+## 0.6.3 - 2026-09-19
+
+### English
+
+- Show Devin daily and weekly included usage as separate account-card meters, including reset time, instead of collapsing them into one tighter percentage.
+- Trae CN check-in now sends the device id in the `aha-<hex>` shape the check-in backend expects, so accounts added through the login flow claim their daily credits instead of always failing with `9074 当前参与用户太多`.
+
+### 中文
+
+- Devin 账号卡片按日额度和周额度分开展示，并带重置时间，不再把两条额度压成一条更紧的百分比。
+- Trae CN 签到改为按后端要求的 `aha-<hex>` 格式发送设备 ID，通过登录流程添加的账号现在能正常领取每日积分，不再一直报 `9074 当前参与用户太多`。
+
+## 0.6.2 - 2026-09-19
+
+### English
+
+- Collect upcoming release notes as per-PR files in `changelog/unreleased/` instead of a shared Unreleased section that had to be frozen after each tag.
+- Switch Qoder CN check-in to the official campaign claim API (`/sash/api/v1/me/campaigns/{id}/claim`) instead of the retired daily-check-in endpoints.
+
+### 中文
+
+- 即将发布的说明改到 `changelog/unreleased/` 按 PR 分文件记录，不再共用 Unreleased 小节、发完再冻结。
+- Qoder 国内版签到改为官方活动领取接口（`/sash/api/v1/me/campaigns/{id}/claim`），不再使用已下线的 daily-check-in。
+
+## 0.6.1 - 2026-09-19
+
+### English
+
+- Unify WorkBuddy and Qoder CN check-ins with provider default times, inheritable account overrides, and one scheduler. Keep check-in controls and history on account cards, without a separate navigation entry. Preserve existing WorkBuddy settings; Qoder CN live acceptance remains pending.
+- Move the WorkBuddy drop-system-prompt switch off account cards; keep the control and explanation in create and edit.
+- Record requested and resolved reasoning levels on request history; show one value when they match, otherwise `requested → resolved`.
+- Align the README header mark with the CLI2API wordmark so the C icon centers on the text cap height instead of dropping below the baseline.
+
+### 中文
+
+- 统一 WorkBuddy 与 Qoder 国内版签到：供应商默认时间、账号动态继承/覆盖、公共调度；签到操作和记录留在账号页，不另设签到中心。保留已有 WorkBuddy 设置，Qoder 国内版真实账号验收仍待完成。
+- 从账号卡片上移除 WorkBuddy「丢弃系统提示词」开关，改到新建和编辑里，并保留说明文案。
+- 请求历史记录请求传入与实际上游的推理强度；两者一致时只显示一档，不一致时用 `请求 → 实际`。
+- 让 README 头部的 C 标记与 CLI2API 标题对齐，图标与文字大写高度居中，不再明显低于基线。
+
+## 0.5.7 - 2026-09-18
+
+### English
+
+- Preserve typed upstream stream errors through the OpenAI, Anthropic, and Responses relays so invalid Devin requests do not falsely cool accounts, while transport interruptions remain retryable
+- Report Devin cache reads and writes in OpenAI-compatible usage, with prompt
+  totals including all upstream input tokens
+- Generate Devin chat and account-status protobuf types from extracted descriptors
+  with a manual update command; builds and CI use committed Go bindings without
+  downloading releases or regenerating schemas
+- Neutralize Codex/Desktop MCP-looking tool names for Devin (`mcp__*`, `list_mcp_*`, and any name containing `mcp`) into reversible `cx_tool_*` aliases, restore the originals on tool calls for local execution, scrub residual MCP text on fallback, and if upstream still returns an MCP configuration `permission_denied` retry by stripping those tools then keeping only core local tools (`exec_command` / `write_stdin` / `view_image` / `request_user_input`) with minimal schemas; log each fallback stage and never drop all tools
+- Ignore orphan `tool_choice` when Codex compact / recovery turns send a choice with no remaining tools, instead of failing with `tool_choice requires tools`
+- Keep session affinity from pinning a later model onto an empty-catalog account, so a Deepseek compact after a Devin turn routes to WorkBuddy instead of Devin
+
+### 中文
+
+- OpenAI、Anthropic 与 Responses 流式转发会保留上游的类型化错误，避免无效的 Devin 请求被错误地冷却账号，同时传输中断仍可重试
+- Devin 的缓存读取与写入会显示在 OpenAI 兼容 usage 中，prompt 总数包含全部上游输入 token
+- 新增手动更新命令，提取 descriptor 并生成 Devin 聊天与账号状态 protobuf 类型；构建与 CI 直接使用已提交的 Go 文件，不下载发行包或重新生成 schema
+- Devin 会把 Codex/Desktop 带 MCP 语义的工具名（`mcp__*`、`list_mcp_*` 以及名称含 `mcp` 的工具）中性化为可逆的 `cx_tool_*` 别名，并在返回的 tool_calls 中还原原名供本地执行；若上游仍返回 MCP 配置类 `permission_denied`，会先清洗残留 MCP 文案并去掉这些工具再试，再失败则只保留核心本地工具（`exec_command` / `write_stdin` / `view_image` / `request_user_input`，最小 schema），每次 fallback 都会打日志，且不再清空全部 tools
+- Codex compact / 恢复轮次如果带了 `tool_choice` 但 tools 已被规范化为空，会忽略这个孤立的 `tool_choice`，不再报 `tool_choice requires tools`
+- 会话粘性不会再把后续模型钉到空 catalog 账号上，因此 Devin 之后的 Deepseek compact 会走 WorkBuddy，而不是误打到 Devin
+
+## 0.6.0 - 2026-09-19
+
+### English
+
+- Preserve cancellation and deadline causes in stream read failures without cooling healthy accounts; classify typed upstream stream errors once while retaining the original error chain.
+- Keep Trae and WorkBuddy model settings marked as default after refresh when the selected reasoning level matches the catalog default; ignore inactive Max settings in the custom-state indicator.
+- Clarify setup, administrator versus client keys, compatibility limits, and managed updates; align documentation and README artwork with the accepted refactor boundaries without claiming pending acceptance is complete.
+- Keep console-key rotation synchronized with live HTTP authentication and Qoder worker requests without restarting the API server
+- Remove per-request update dependency rewrites and restore thread-safe Qoder starter configuration during proxy/key changes
+- Restore Responses function namespaces in JSON and SSE output, and preserve qualified tool identities when replaying calls or selecting a function.
+- Preserve Qoder user images and image-bearing tool results, emitting tool-result images after their complete ordered tool batch.
+- Bridge Responses custom tools through function calls, restoring custom output/events and replaying tool results. Format rules are descriptive, not grammar-enforced; custom input events are emitted after argument collection.
+
+### 中文
+
+- 流读取失败保留取消与超时原因，不再误冷却健康账号；上游类型化流错误统一分类一次，同时保留原始错误链。
+- Trae、WorkBuddy 选择目录默认推理等级后，刷新仍显示默认状态；未生效的 Max 设置不再误标为自定义。
+- 精简安装与接入说明，区分管理员和客户端密钥，明确兼容范围与托管更新流程；按已验收重构边界同步文档和 README 配图，不将待验收事项写成已完成。
+- 控制台密钥轮换会同步到正在使用的 HTTP 鉴权和 Qoder worker 请求，无需重启 API 服务
+- 移除更新接口逐请求重写依赖的竞态，并恢复代理/密钥变更时 Qoder 启动器配置的并发安全
+- Responses 的 JSON 和 SSE 输出会还原 function 的命名空间，历史调用回放与指定函数选择也会保留完整工具身份。
+- 保留 Qoder 用户消息及工具结果中的图片，并在完整、有序的工具结果批次之后发送工具图片。
+- 通过 function 调用桥接 Responses custom 工具，还原 custom 输出与事件并回放工具结果。格式规则仅作为描述传递，不强制执行语法约束；custom 输入事件在参数收集后发送。
+
+## 0.5.6 - 2026-09-17
+
+### English
+
+- Expand Codex/Desktop `type: "namespace"` tool wrappers into plain function tools (nested names qualified as `namespace__name`) for the Responses adapter, Trae, and WorkBuddy, and drop hosted shells such as `type: "mcp"` / `web_search` that upstreams reject
+- Replay Responses `reasoning` items onto the following assistant message or function call as `reasoning_content`, so WorkBuddy thinking-mode history survives translation
+- Accept content-block arrays in Responses `function_call_output` and lift `input_image` blocks into a following user message
+
+### 中文
+
+- Responses 适配层、Trae 与 WorkBuddy 都会把 Codex/Desktop 的 `type: "namespace"` 工具包装展开成普通 function（嵌套名限定为 `namespace__name`），并丢弃上游会拒绝的 `type: "mcp"` / `web_search` 等 hosted 外壳
+- Responses 的 `reasoning` 条目会作为 `reasoning_content` 回放到紧随其后的 assistant 消息或函数调用上，WorkBuddy 思考模式的历史得以保留
+- Responses 的 `function_call_output` 支持内容块数组，并把 `input_image` 块提升为随后的 user 消息
+
+## 0.5.5 - 2026-09-16
+
+### English
+
+- Source WorkBuddy model credits and free badges from the official catalog instead of hardcoded prices, and let the Providers page request `/api/models?view=regional` so each provider region keeps its own price while Access/Overview stay on the merged catalog
+- When the same model is merged across regions with conflicting credits, omit the price on the merged `/v1` and default `/api/models` rows instead of keeping the first account's rate
+- Show consumed points under the Tokens column in request history when a provider reports them; keep writing the value on the request log row, and fall back to the request-detail table for rows that only stored it there
+- Temporary Devin diagnostic: when upstream returns an MCP configuration `permission_denied`, append a compact tools type/name summary (`tools_diag`) to the error so request logs can show what Desktop sent versus what was forwarded
+
+### 中文
+
+- WorkBuddy 模型积分与免费标记改为读取官方目录；Providers 页通过 `/api/models?view=regional` 按供应商区域展示各自价格，Access/Overview 仍使用合并目录
+- 同一模型跨区域合并且价格冲突时，合并后的 `/v1` 与默认 `/api/models` 条目会省略价格，不再保留首个账户的费率
+- 请求历史上游若回报消耗点数，会在 Tokens 列下方以绿色小字展示；继续写入请求日志主表对应字段，并对仅记在详情表的历史行做回退读取
+- 临时诊断：Devin 上游返回 MCP 配置类 `permission_denied` 时，会在错误信息追加精简的 tools type/name 摘要（`tools_diag`），便于从请求日志对照 Desktop 入站与实际上游转发内容
+
+## 0.5.4 - 2026-09-16
+
+### English
+
+- Alias Codex/Desktop `mcp__*` tools for Devin upstream and restore the original names on tool calls so the local client can execute MCP, while still treating MCP configuration `permission_denied` as an invalid request instead of auth cooldown
+- Expand Codex/Desktop `type: "namespace"` tool wrappers into plain function tools for Devin and drop hosted shells such as `type: "mcp"` / `web_search`, which were enough to trip the upstream provider
+- Record each request's consumed points (WorkBuddy `usage.credit`) in a dedicated request-detail table and show them in the console request detail, keeping the query-oriented request log row lean
+
+### 中文
+
+- Devin 会对 Codex/Desktop 的 `mcp__*` 工具做上游别名并在返回的 tool_calls 中还原原名，便于本地客户端执行 MCP；MCP 配置类 `permission_denied` 仍归为无效请求，不再按鉴权失败冷却账号
+- Devin 会把 Codex/Desktop 的 `type: "namespace"` 工具包装展开成普通 function，并丢弃 `type: "mcp"` / `web_search` 这类 hosted 外壳；此前仅这些外壳就足以让上游失败
+- 每次请求消耗的点数（WorkBuddy `usage.credit`）记入独立的请求详情表，并在控制台请求详情中展示；面向查询的请求日志主表保持精简
+
+## 0.5.3 - 2026-09-15
+
+### English
+
+- Add experimental Devin support (`provider=devin`) with browser OAuth or session-token import, Connect-RPC chat stream/non-stream, and a fail-closed TTL model catalog; not claimed production-ready
+
+### 中文
+
+- 新增实验性 Devin 支持（`provider=devin`）：可用浏览器 OAuth 或导入 session token，支持 Connect-RPC 聊天流式/非流式，以及失败即显式报错的 TTL 模型目录；尚未宣称生产可用
+
+## 0.5.2 - 2026-09-15
+
+### English
+
+- Stop rewriting WorkBuddy `deepseek-v4.1-flash` to the stale `deep-model` upstream ID when the live catalog already exposes the native spelling, so chat no longer silently falls back to other models
+
+### 中文
+
+- WorkBuddy 在线上目录已原生提供 `deepseek-v4.1-flash` 时，不再把它改写成过期的上游 ID `deep-model`，避免聊天静默落到其他模型
+
+## 0.5.1 - 2026-09-15
+
+### English
+
+- Allow named API keys to restrict routing to specific provider regions while keeping legacy family grants compatible, and show the same region-aware scope in the model catalog
+
+### 中文
+
+- 支持将命名 API Key 的路由限制到具体供应商区域，同时兼容旧的供应商族授权，并让模型目录使用相同的区域权限过滤
+
+## 0.5.0 - 2026-09-15
+
+### English
+
+- Accept `tool_reference` blocks inside Anthropic tool results and keep them as text instead of rejecting the whole request
+- Route outbound traffic through a global HTTP(S) proxy, with an optional per-account override (`direct` / `none` for explicit direct connections; WorkBuddy and Trae account overrides also accept SOCKS5)
+- Expose WorkBuddy `deepseek-v4.1-flash` through the catalog alias so the model routes instead of being rejected
+- Normalize display-name model inputs (for example `DeepSeek: DeepSeek V4.1 Flash`) to canonical IDs before routing, and classify client-canceled requests as canceled instead of unavailable
+- Align create-account and edit-account form fields, and let WorkBuddy accounts set their own daily check-in time
+- Add a system-wide WorkBuddy check-in default that new accounts inherit
+
+### 中文
+
+- 接受 Anthropic 工具结果中的 `tool_reference` 块并保留为文本，不再整条请求报错
+- 支持统一 HTTP(S) 出站代理，并可对单个账号设置覆盖（`direct` / `none` 显式直连；WorkBuddy 与 Trae 的账号级代理还支持 SOCKS5）
+- WorkBuddy 通过目录别名暴露 `deepseek-v4.1-flash`，模型可以正常路由而不再被拒绝
+- 将 display-name 形式的模型输入（如 `DeepSeek: DeepSeek V4.1 Flash`）归一化为规范 ID 后再路由，并把客户端主动取消的请求归类为“已取消”而非“不可用”
+- 对齐创建和编辑账号表单，并允许 WorkBuddy 账号单独设置每日签到时间
+- 系统设置增加 WorkBuddy 默认签到时间，新建账号会继承该时间
+
+## 0.4.10 - 2026-09-12
+
+### English
+
+- Allow CORS preflight requests on the OpenAI-compatible endpoints without weakening API-key authentication on actual requests
+- Repair WorkBuddy tool history after a canceled tool round so the next turn is not rejected as a broken tool sequence
 - Send WorkBuddy Deepseek V4.1 Flash thinking as official top-level reasoning fields so streamed thinking comes back
 - Show WorkBuddy catalog context budgets (default and optional window) on the model list without inventing a Trae Max switch
 
 ### 中文
 
+- OpenAI 兼容接口允许跨域预检请求，但实际请求仍必须通过 API Key 认证
+- WorkBuddy 在工具调用中途停止后，下一轮会修好不完整的 tool 记录，避免被当成工具序列损坏拒绝
 - WorkBuddy 的 Deepseek V4.1 Flash 改为发送官方顶层思考字段，流式思考内容可以返回
 - 模型列表展示 WorkBuddy 目录里的默认和可选上下文窗口，不套用 Trae 的更大上下文开关
 

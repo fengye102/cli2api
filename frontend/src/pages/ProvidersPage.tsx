@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Button, Card, Chip, Input, Table, Tooltip } from '@heroui/react'
-import { Cube, ArrowClockwise, ArrowCounterClockwise, FloppyDisk, MagnifyingGlass, Info } from '@phosphor-icons/react'
+import { Button, Card, Chip, Table, Tooltip } from '@heroui/react'
+import { Cube, ArrowClockwise, MagnifyingGlass, Info } from '@phosphor-icons/react'
 import { useI18n } from '@/hooks/useI18n'
 import { useOverview } from '@/hooks/useOverview'
-import { fetchModelsCached, refreshModels, updateModelContext, updateProviderReasoning, updateTraeMaxMode } from '@/api/overview'
+import { fetchModelsCached, fetchProviders, refreshModels, updateProviderMaxMode, updateProviderReasoning, type ProviderDescriptor } from '@/api/overview'
 import type { Overview } from '@/api/types'
 import { ProviderMark } from '@/components/ProviderMark'
 import { ModelDetailsModal, formatTokens } from '@/components/ModelDetailsModal'
@@ -14,8 +14,27 @@ import { ListPager, type PageSize } from '@/components/ui/ListPager'
 import { PageAlert } from '@/components/ui/PageAlert'
 import { ProvidersPageSkeleton, ProvidersTableSkeleton } from '@/components/ui/PageSkeletons'
 import { SearchBar } from '@/components/ui/SearchBar'
+import { modelCreditsText, modelIsFree } from '@/lib/format'
+import { accountProviderLabel } from '@/lib/provider'
 
 type ModelInfo = NonNullable<Overview['models']>[number]
+
+type ProviderRegionOption = {
+  value: string
+  provider: string
+  region: string
+}
+
+function providerRegionOptions(descriptors: ProviderDescriptor[]): ProviderRegionOption[] {
+  const options: ProviderRegionOption[] = []
+  for (const descriptor of descriptors) {
+    for (const region of descriptor.regions || []) {
+      if (!region?.id) continue
+      options.push({ value: `${descriptor.id}:${region.id}`, provider: descriptor.id, region: region.id })
+    }
+  }
+  return options
+}
 
 function modelSettingsKey(model: ModelInfo) {
   return model.settings_key || model.id
@@ -26,8 +45,15 @@ function modelProvider(model: ModelInfo) {
   return String(model.provider || model.owned_by || 'qoder').trim().toLowerCase()
 }
 
+function modelRegion(model: ModelInfo) {
+  const region = String(model.region || '').trim().toLowerCase()
+  if (region) return region
+  const regions = model.regions || []
+  return String(regions[0] || '').trim().toLowerCase()
+}
+
 function modelRowKey(model: ModelInfo) {
-  return `${modelProvider(model)}:${model.settings_key || model.id}:${model.native_model || model.mapped_key || ''}`
+  return `${modelProvider(model)}:${modelRegion(model) || 'any'}:${model.settings_key || model.id}:${model.native_model || model.mapped_key || ''}`
 }
 
 function routedModelName(model: ModelInfo) {
@@ -58,40 +84,18 @@ function HintLabel({ label, hint }: { label: string; hint: string }) {
 
 function ModelContextControls({
   model,
-  drafts,
   saving,
   t,
-  onDraft,
   onToggleTraeMax,
   onReasoningChange,
 }: {
   model: ModelInfo
-  drafts: Record<string, string>
   saving: boolean
   t: Translate
-  onDraft: (key: string, value: string) => void
   onToggleTraeMax: (model: ModelInfo, selected: boolean) => void
   onReasoningChange: (model: ModelInfo, next: string) => void
 }) {
-  const key = modelSettingsKey(model)
   const provider = modelProvider(model)
-  if (provider === 'qoder') {
-    return (
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <Input
-          className="w-full max-w-40"
-          type="number"
-          min={1024}
-          max={4000000}
-          step={1024}
-          value={drafts[key] ?? String(model.context_length || model.default_context_length || '')}
-          onChange={(event) => onDraft(key, event.target.value)}
-          aria-label={`${model.id} ${t('contextWindowCol')}`}
-        />
-        <HintLabel label="tokens" hint={t('qoderContextHint')} />
-      </div>
-    )
-  }
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-3">
       <span className="mono text-xs text-muted">
@@ -103,7 +107,7 @@ function ModelContextControls({
       {provider === 'workbuddy' && model.catalog_context_length_max && model.catalog_context_length_max !== (model.catalog_context_length || model.context_length) ? (
         <HintLabel label={t('catalogWindow')} hint={t('workbuddyContextHint')} />
       ) : null}
-      {provider === 'trae' && model.supports_max_mode ? (
+      {(provider === 'trae' || provider === 'qoder') && model.supports_max_mode ? (
         <div className="flex items-center gap-2">
           <CompactSwitch
             isSelected={Boolean(model.max_mode)}
@@ -113,7 +117,7 @@ function ModelContextControls({
           />
           <HintLabel
             label={`${t('maxMode')}${model.catalog_context_length_max ? ` ${formatTokens(model.catalog_context_length_max)}` : ''}`}
-            hint={t('maxModeHint')}
+            hint={provider === 'qoder' ? t('qoderMaxModeHint') : t('maxModeHint')}
           />
         </div>
       ) : null}
@@ -141,31 +145,13 @@ function ModelContextControls({
 
 function ModelActions({
   model,
-  saving,
   t,
-  onSave,
-  onReset,
   onDetails,
 }: {
   model: ModelInfo
-  saving: boolean
   t: Translate
-  onSave: (model: ModelInfo) => void
-  onReset: (model: ModelInfo) => void
   onDetails: (model: ModelInfo) => void
 }) {
-  if (modelProvider(model) === 'qoder') {
-    return (
-      <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" variant="secondary" isPending={saving} onPress={() => onSave(model)}>
-          <FloppyDisk size={14} />{t('save')}
-        </Button>
-        <Button size="sm" variant="ghost" isDisabled={saving || !model.context_custom} onPress={() => onReset(model)} aria-label={t('resetDefault')}>
-          <ArrowCounterClockwise size={14} />
-        </Button>
-      </div>
-    )
-  }
   return (
     <Button size="sm" variant="ghost" onPress={() => onDetails(model)}>
       <Info size={14} />{t('modelDetails')}
@@ -178,39 +164,45 @@ export function ProvidersPage() {
   const { overview, loading } = useOverview()
   const [filter, setFilter] = useState('')
   const [providerFilter, setProviderFilter] = useState('')
+  const [providerOptions, setProviderOptions] = useState<ProviderRegionOption[]>([])
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<PageSize>(50)
   const [busy, setBusy] = useState(false)
   const [savingKey, setSavingKey] = useState('')
   const [message, setMessage] = useState('')
   const [messageError, setMessageError] = useState(false)
-  const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [detailModel, setDetailModel] = useState<ModelInfo | null>(null)
   const [models, setModels] = useState<ModelInfo[]>([])
   const [modelsLoading, setModelsLoading] = useState(true)
   useEffect(() => {
     let cancelled = false
-    void fetchModelsCached()
+    void fetchModelsCached(undefined, 'regional')
       .then((data) => { if (!cancelled) setModels(data.data || []) })
       .catch(() => undefined)
       .finally(() => { if (!cancelled) setModelsLoading(false) })
+    void fetchProviders()
+      .then((result) => {
+        if (!cancelled) setProviderOptions(providerRegionOptions(result.data || []))
+      })
+      .catch(() => undefined)
     return () => { cancelled = true }
   }, [])
-  const providers = useMemo(() => {
-    const ids = new Set<string>()
-    for (const model of models) ids.add(modelProvider(model))
-    return [...ids].sort()
-  }, [models])
 
   const filtered = useMemo(() => {
     const query = filter.trim().toLowerCase()
+    const [filterProvider, filterRegion] = providerFilter.includes(':')
+      ? providerFilter.split(':', 2)
+      : [providerFilter, '']
     return models.filter((model) => {
       const provider = modelProvider(model)
-      if (providerFilter && provider !== providerFilter) return false
+      const region = modelRegion(model)
+      if (filterProvider && provider !== filterProvider) return false
+      if (filterRegion && region !== filterRegion) return false
       if (!query) return true
-      return `${model.display_name || ''} ${model.id} ${model.mapped_key || ''} ${model.provider || ''} ${model.owned_by || ''}`.toLowerCase().includes(query)
+      const providerLabel = accountProviderLabel(provider, region || undefined, t)
+      return `${model.display_name || ''} ${model.id} ${model.mapped_key || ''} ${provider} ${providerLabel} ${model.owned_by || ''} ${region} ${model.credits || ''} ${model.free ? 'free' : ''}`.toLowerCase().includes(query)
     })
-  }, [filter, models, providerFilter])
+  }, [filter, models, providerFilter, t])
 
   const filterKey = [filter, providerFilter, pageSize].join('\0')
   const [appliedFilterKey, setAppliedFilterKey] = useState(filterKey)
@@ -235,33 +227,24 @@ export function ProvidersPage() {
 
   if ((loading && !overview) || modelsLoading) return <ProvidersPageSkeleton />
 
-  function updateModelInOverview(model: ModelInfo, result: Awaited<ReturnType<typeof updateModelContext>>) {
-    const key = modelSettingsKey(model)
-    const nextModels = models.map((item) => modelSettingsKey(item) === key
-      ? {
-          ...item,
-          settings_key: result.model,
-          context_length: result.context_length,
-          default_context_length: result.default_context_length,
-          context_custom: result.context_custom,
-        }
-      : item)
-    setModels(nextModels)
-    setDrafts((current) => ({ ...current, [key]: String(result.context_length) }))
-  }
 
   function updateTraeInOverview(model: ModelInfo, maxMode: boolean) {
     const key = modelSettingsKey(model)
+    const provider = modelProvider(model)
     const nextModels = models.map((item) => {
-      if (modelSettingsKey(item) !== key || modelProvider(item) !== 'trae') return item
-      const dev = item.catalog_context_length || item.default_context_length || item.context_length
-      const max = item.catalog_context_length_max
+      if (modelSettingsKey(item) !== key || modelProvider(item) !== provider) return item
       const effort = item.reasoning_effort || item.reasoning_default || ''
+      const itemDev = item.catalog_context_length || item.default_context_length || item.context_length || 0
+      const itemMax = item.catalog_context_length_max || 0
       return {
         ...item,
         max_mode: maxMode,
-        context_custom: maxMode || Boolean(effort && effort !== item.reasoning_default),
-        context_length: maxMode && max ? max : dev,
+        // Only the toggle and its window change here. The prompt/output ceilings
+        // stay at their catalog defaults; the views pick the Max tier from
+        // *_max at render time, so turning max mode off restores the default.
+        context_length: maxMode && itemMax ? itemMax : itemDev,
+        default_context_length: itemDev,
+        context_custom: provider === 'qoder' ? maxMode : maxMode || Boolean(effort && effort !== item.reasoning_default),
       }
     })
     setModels(nextModels)
@@ -286,7 +269,7 @@ export function ProvidersPage() {
     setMessage('')
     setMessageError(false)
     try {
-      const data = await refreshModels()
+      const data = await refreshModels(undefined, 'regional')
       setModels(data.data || [])
     } catch (error) {
       setMessageError(true)
@@ -296,28 +279,6 @@ export function ProvidersPage() {
     }
   }
 
-  async function onSave(model: ModelInfo) {
-    const key = modelSettingsKey(model)
-    const value = Number(drafts[key] ?? model.context_length ?? model.default_context_length)
-    if (!Number.isInteger(value) || value < 1024 || value > 4_000_000) {
-      setMessageError(true)
-      setMessage(t('contextInvalid'))
-      return
-    }
-    setSavingKey(key)
-    setMessage('')
-    setMessageError(false)
-    try {
-      const result = await updateModelContext(key, value)
-      updateModelInOverview(model, result)
-      setMessage(t('contextSaved', { model: model.id }))
-    } catch (error) {
-      setMessageError(true)
-      setMessage(error instanceof Error ? error.message : String(error))
-    } finally {
-      setSavingKey('')
-    }
-  }
 
   async function onReasoningChange(model: ModelInfo, effort: string) {
     const provider = modelProvider(model)
@@ -345,11 +306,12 @@ export function ProvidersPage() {
       return
     }
     const key = modelSettingsKey(model)
+    const provider = modelProvider(model)
     setSavingKey(key)
     setMessage('')
     setMessageError(false)
     try {
-      await updateTraeMaxMode(key, maxMode)
+      await updateProviderMaxMode(provider, key, maxMode, model.catalog_context_length_max)
       updateTraeInOverview(model, maxMode)
       setMessage(maxMode ? t('contextMaxOn', { model: model.id }) : t('contextMaxOff', { model: model.id }))
     } catch (error) {
@@ -360,22 +322,6 @@ export function ProvidersPage() {
     }
   }
 
-  async function onReset(model: ModelInfo) {
-    const key = modelSettingsKey(model)
-    setSavingKey(key)
-    setMessage('')
-    setMessageError(false)
-    try {
-      const result = await updateModelContext(key, 0)
-      updateModelInOverview(model, result)
-      setMessage(t('contextReset', { model: model.id }))
-    } catch (error) {
-      setMessageError(true)
-      setMessage(error instanceof Error ? error.message : String(error))
-    } finally {
-      setSavingKey('')
-    }
-  }
 
   return (
     <div className="space-y-6">
@@ -395,7 +341,10 @@ export function ProvidersPage() {
               onChange={setProviderFilter}
               options={[
                 { id: '', label: t('providerFilterAll') },
-                ...providers.map((provider) => ({ id: provider, label: provider })),
+                ...providerOptions.map((option) => ({
+                  id: option.value,
+                  label: accountProviderLabel(option.provider, option.region, t),
+                })),
               ]}
             />
             <Button size="sm" variant="secondary" isPending={busy} onPress={() => void onRefresh()}>
@@ -435,13 +384,21 @@ export function ProvidersPage() {
                 const key = modelSettingsKey(model)
                 const saving = savingKey === key
                 const provider = modelProvider(model)
+                const region = modelRegion(model)
+                const providerLabel = accountProviderLabel(provider, region || undefined, t)
+                const credits = modelCreditsText(model)
+                const free = modelIsFree(model)
                 return (
                   <article key={modelRowKey(model)} className="space-y-3 px-4 py-4">
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex min-w-0 items-start gap-3">
                         <span className="status-dot mt-1.5" data-state={model.stale ? undefined : 'ok'} />
                         <div className="min-w-0">
-                          <div className="truncate font-medium">{model.display_name || model.id}</div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <div className="truncate font-medium">{model.display_name || model.id}</div>
+                            {free ? <Chip size="sm" variant="soft" color="success">{t('modelFree')}</Chip> : null}
+                            {credits ? <span className="mono text-[11px] text-muted">{credits}</span> : null}
+                          </div>
                           <div className="mono mt-0.5 truncate text-[11px] text-muted">{model.id}</div>
                           {routedModelName(model) ? <div className="mt-0.5 text-[10px] text-muted">{t('routedTo', { model: routedModelName(model) })}</div> : null}
                         </div>
@@ -453,25 +410,20 @@ export function ProvidersPage() {
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
                       <span className="inline-flex items-center gap-1.5">
                         <ProviderMark provider={provider} size={14} />
-                        <span className="font-medium">{provider}</span>
+                        <span className="font-medium">{providerLabel}</span>
                       </span>
                       <span className="mono break-all text-muted">{model.mapped_key || model.native_model || model.id}</span>
                     </div>
                     <ModelContextControls
                       model={model}
-                      drafts={drafts}
                       saving={saving}
                       t={t}
-                      onDraft={(nextKey, value) => setDrafts((current) => ({ ...current, [nextKey]: value }))}
                       onToggleTraeMax={(item, selected) => void onToggleTraeMax(item, selected)}
                       onReasoningChange={(item, next) => void onReasoningChange(item, next)}
                     />
                     <ModelActions
                       model={model}
-                      saving={saving}
                       t={t}
-                      onSave={(item) => void onSave(item)}
-                      onReset={(item) => void onReset(item)}
                       onDetails={setDetailModel}
                     />
                   </article>
@@ -495,13 +447,21 @@ export function ProvidersPage() {
                       const key = modelSettingsKey(model)
                       const saving = savingKey === key
                       const provider = modelProvider(model)
+                      const region = modelRegion(model)
+                      const providerLabel = accountProviderLabel(provider, region || undefined, t)
+                      const credits = modelCreditsText(model)
+                      const free = modelIsFree(model)
                       return (
                         <Table.Row key={modelRowKey(model)}>
                           <Table.Cell>
                             <div className="flex items-center gap-3 py-1">
                               <span className="status-dot" data-state={model.stale ? undefined : 'ok'} />
                               <div className="min-w-0">
-                                <div className="font-medium">{model.display_name || model.id}</div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <div className="font-medium">{model.display_name || model.id}</div>
+                                  {free ? <Chip size="sm" variant="soft" color="success">{t('modelFree')}</Chip> : null}
+                                  {credits ? <span className="mono text-[11px] text-muted">{credits}</span> : null}
+                                </div>
                                 {routedModelName(model) ? <div className="mt-0.5 text-[10px] text-muted">{t('routedTo', { model: routedModelName(model) })}</div> : null}
                               </div>
                             </div>
@@ -510,17 +470,15 @@ export function ProvidersPage() {
                           <Table.Cell>
                             <div className="flex items-center gap-2">
                               <ProviderMark provider={provider} size={14} />
-                              <span className="text-xs font-medium">{provider}</span>
+                              <span className="text-xs font-medium">{providerLabel}</span>
                             </div>
                           </Table.Cell>
                           <Table.Cell><span className="mono text-xs text-muted">{model.mapped_key || model.native_model || model.id}</span></Table.Cell>
                           <Table.Cell>
                             <ModelContextControls
                               model={model}
-                              drafts={drafts}
                               saving={saving}
                               t={t}
-                              onDraft={(nextKey, value) => setDrafts((current) => ({ ...current, [nextKey]: value }))}
                               onToggleTraeMax={(item, selected) => void onToggleTraeMax(item, selected)}
                               onReasoningChange={(item, next) => void onReasoningChange(item, next)}
                             />
@@ -533,10 +491,7 @@ export function ProvidersPage() {
                           <Table.Cell>
                             <ModelActions
                               model={model}
-                              saving={saving}
                               t={t}
-                              onSave={(item) => void onSave(item)}
-                              onReset={(item) => void onReset(item)}
                               onDetails={setDetailModel}
                             />
                           </Table.Cell>
@@ -551,7 +506,11 @@ export function ProvidersPage() {
         )}
       </Card>
 
-      <ModelDetailsModal model={detailModel} t={t} onClose={() => setDetailModel(null)} />
+      <ModelDetailsModal
+        model={detailModel ? models.find((m) => modelSettingsKey(m) === modelSettingsKey(detailModel)) || detailModel : null}
+        t={t}
+        onClose={() => setDetailModel(null)}
+      />
       <ListPager
         total={filtered.length}
         page={currentPage}

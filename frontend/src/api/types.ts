@@ -1,3 +1,24 @@
+export type AccountQuotaWindow = {
+  id: string
+  label?: string
+  used?: number
+  total?: number
+  remaining?: number
+  percentage?: number
+  unit?: string
+  reset_at?: string
+  exceeded?: boolean
+}
+
+export type AccountQuotaPackage = {
+  remain?: number
+  used?: number
+  size?: number
+  unit?: string
+  ends_at?: number
+  end_time?: string
+}
+
 export type AccountQuota = {
   used?: number
   total?: number
@@ -5,6 +26,10 @@ export type AccountQuota = {
   percentage?: number
   unit?: string
   exceeded?: boolean
+  windows?: AccountQuotaWindow[]
+  expires_at?: number
+  expiring_remain?: number
+  packages?: AccountQuotaPackage[]
   has_add_on?: boolean
   add_on_used?: number
   add_on_total?: number
@@ -18,6 +43,7 @@ export type AccountQuota = {
   resource_package_unit?: string
   resource_package_available?: boolean
   fetched_at?: string
+  plan?: string
 }
 
 export type ModelInfo = {
@@ -29,7 +55,11 @@ export type ModelInfo = {
   provider?: string
   owned_by?: string
   native_model?: string
+  region?: string
+  regions?: string[]
   stale?: boolean
+  credits?: string
+  free?: boolean
   context_length?: number
   default_context_length?: number
   context_custom?: boolean
@@ -40,6 +70,8 @@ export type ModelInfo = {
   max_mode?: boolean
   max_output_tokens?: number
   prompt_max_tokens?: number
+  max_output_tokens_max?: number
+  prompt_max_tokens_max?: number
   reasoning_options?: string[]
   reasoning_default?: string
   reasoning_effort?: string
@@ -118,6 +150,9 @@ export type Overview = {
     drop_system_prompt?: boolean
     workbuddy_auto_checkin?: boolean
     workbuddy_checkin_time?: string
+    auto_checkin?: boolean
+    checkin_time?: string
+    proxy_url?: string
     status?: string
     cooldown_until?: string | null
     url?: string

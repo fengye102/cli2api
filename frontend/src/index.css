@@ -6,6 +6,32 @@
   --font-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
 }
 
+/* Softer field corners + visible borders: HeroUI inputs / textareas /
+   number-field groups / select triggers all read these vars. The stock
+   theme ships --field-border-width:0px and --field-border:transparent,
+   relying on a barely-visible shadow instead — fields look flat on both
+   light and dark surfaces, so draw a real border. */
+:root,
+.light,
+.default,
+[data-theme="light"],
+[data-theme="default"] {
+  --field-radius: 16px;
+  --field-border-width: 1px;
+  --field-border: oklch(80% 0.008 286.32);
+  --field-border-hover: oklch(70% 0.012 285.9);
+  --field-border-focus: oklch(62% 0.04 285.9);
+}
+
+.dark,
+[data-theme="dark"] {
+  --field-radius: 16px;
+  --field-border-width: 1px;
+  --field-border: oklch(38% 0.008 286.033);
+  --field-border-hover: oklch(47% 0.012 285.9);
+  --field-border-focus: oklch(58% 0.04 285.9);
+}
+
 /* Chrome accent is Charcoal Ink. Signal Cyan stays on the C tip / scan only.
    Dark inverts the fill so an ink button does not vanish on Off-Black Night. */
 :root,
@@ -132,7 +158,46 @@ body {
 
 .account-meter {
   display: grid;
-  gap: 0.35rem;
+  width: 100%;
+  min-width: 0;
+  gap: 0.4rem;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "output"
+    "track";
+}
+
+.account-meter .meter__output,
+.account-meter .meter__track {
+  width: 100%;
+  min-width: 0;
+}
+
+.account-meter .meter__track {
+  height: 0.5rem;
+  border-radius: 999px;
+  background: var(--separator);
+  overflow: hidden;
+}
+
+.account-meter .meter__fill {
+  border-radius: 999px;
+}
+
+.account-meter--window {
+  gap: 0.3rem;
+}
+
+.account-meter--window .meter__track {
+  height: 0.5rem;
+}
+
+/* HeroUI Tooltip.Trigger is inline-block; quota windows must each occupy a
+   full row on the account card instead of sitting side by side. */
+.account-quota-windows .tooltip__trigger {
+  display: block;
+  width: 100%;
+  min-width: 0;
 }
 
 .runtime-meter {

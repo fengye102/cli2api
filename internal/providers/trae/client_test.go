@@ -21,6 +21,12 @@ type memStore struct {
 	region   string
 	settings map[string]accounts.ProviderModelSetting
 	lookups  []string
+
+	accountProxyURL string
+	secretValue     string
+	secretFound     bool
+	secretErr       error
+	secretCalls     int
 }
 
 func (s *memStore) Get(ctx context.Context, id string) (accounts.Account, error) {
@@ -28,7 +34,14 @@ func (s *memStore) Get(ctx context.Context, id string) (accounts.Account, error)
 	if region == "" {
 		region = "cn"
 	}
-	return accounts.Account{ID: id, Provider: "trae", ProviderRegion: region}, nil
+	return accounts.Account{ID: id, Provider: "trae", ProviderRegion: region, ProxyURL: s.accountProxyURL}, nil
+}
+func (s *memStore) GetSecret(ctx context.Context, key string) (string, bool, error) {
+	s.secretCalls++
+	if s.secretErr != nil {
+		return "", false, s.secretErr
+	}
+	return s.secretValue, s.secretFound, nil
 }
 func (s *memStore) LoadCredentialPayload(ctx context.Context, accountID string) (string, []byte, error) {
 	payload, ok := s.items[accountID]
@@ -115,8 +128,11 @@ func TestLoginCallbackStoresDeviceAndToken(t *testing.T) {
 		}
 	}))
 	session, err := client.StartLogin(context.Background(), "acc1")
-	if err != nil || session.AuthURL == "" || !strings.Contains(session.AuthURL, "auth_from=solo") {
+	if err != nil || session.AuthURL == "" || !strings.Contains(session.AuthURL, "auth_from=trae") {
 		t.Fatalf("session=%+v err=%v", session, err)
+	}
+	if !strings.Contains(session.AuthURL, "code_challenge=") || !strings.Contains(session.AuthURL, "client_id="+ClientID) {
+		t.Fatalf("login must carry PKCE challenge + IDE client: %s", session.AuthURL)
 	}
 	if !strings.Contains(session.AuthURL, "127.0.0.1") {
 		t.Fatalf("callback must be loopback: %s", session.AuthURL)
@@ -212,7 +228,7 @@ func TestChatNonStreamAggregatesToolsAndReasoning(t *testing.T) {
 		}
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if body["stream"] != true || body["function"] != Function || body["config_name"] != "glm-5.2" {
+		if body["stream"] != true || body["function"] != PrimaryScene || body["config_name"] != "glm-5.2" {
 			t.Fatalf("body=%v", body)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -261,7 +277,7 @@ func TestChatStreamQuotaErrorAfterContentIsReadable(t *testing.T) {
 	client.http = server.Client()
 	client.http.Transport = rewriteTransport{server: server.URL, round: server.Client().Transport}
 
-	resp, err := client.ChatStream(context.Background(), "acc1", translate.ChatRequest{Model: "deepseek-v4-flash"})
+	resp, _, err := client.ChatStream(context.Background(), "acc1", translate.ChatRequest{Model: "deepseek-v4-flash"})
 	if err != nil {
 		t.Fatalf("upstream 200 must not fail up front: %v", err)
 	}
@@ -278,8 +294,8 @@ func TestChatStreamQuotaErrorAfterContentIsReadable(t *testing.T) {
 	if classified.Kind != accounts.KindQuota {
 		t.Fatalf("kind=%s", classified.Kind)
 	}
-	if classified.Cooldown <= 0 || classified.Cooldown > 24*time.Hour {
-		t.Fatalf("cooldown=%v", classified.Cooldown)
+	if classified.RetryAfter != 0 {
+		t.Fatalf("retry_after=%v", classified.RetryAfter)
 	}
 }
 
@@ -303,7 +319,7 @@ func TestChatStreamQuotaErrorBeforeContentStillFailsUpFront(t *testing.T) {
 	client.http = server.Client()
 	client.http.Transport = rewriteTransport{server: server.URL, round: server.Client().Transport}
 
-	resp, err := client.ChatStream(context.Background(), "acc1", translate.ChatRequest{Model: "deepseek-v4-flash"})
+	resp, _, err := client.ChatStream(context.Background(), "acc1", translate.ChatRequest{Model: "deepseek-v4-flash"})
 	if resp != nil {
 		resp.Body.Close()
 	}
@@ -330,7 +346,7 @@ func TestChatStreamRewritesOpenAIChunks(t *testing.T) {
 	client := NewClient(store)
 	client.http = server.Client()
 	client.http.Transport = rewriteTransport{server: server.URL, round: server.Client().Transport}
-	resp, err := client.ChatStream(context.Background(), "acc1", translate.ChatRequest{Model: "glm-5.2"})
+	resp, _, err := client.ChatStream(context.Background(), "acc1", translate.ChatRequest{Model: "glm-5.2"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +378,7 @@ func TestChatStreamFirstErrorFailsBeforeOpenAIChunks(t *testing.T) {
 	client := NewClient(store)
 	client.http = server.Client()
 	client.http.Transport = rewriteTransport{server: server.URL, round: server.Client().Transport}
-	resp, err := client.ChatStream(context.Background(), "acc1", translate.ChatRequest{Model: "Doubao-Seed-Evolving"})
+	resp, _, err := client.ChatStream(context.Background(), "acc1", translate.ChatRequest{Model: "Doubao-Seed-Evolving"})
 	if resp != nil {
 		resp.Body.Close()
 	}
@@ -573,53 +589,70 @@ func TestModelsEmptyIsError(t *testing.T) {
 
 func TestErrorMappingAndCooldown(t *testing.T) {
 	cases := []struct {
-		status       int
-		body         string
-		kind         string
-		cooldown     time.Duration
-		nextMidnight bool
+		status int
+		body   string
+		kind   string
+		code   string
 	}{
-		{401, `{"code":1001}`, "auth", 30 * time.Minute, false},
-		{200, `{"code":1005,"message":"plan"}`, "quota", 0, true},
-		{200, `{"code":4008}`, "quota", 0, true},
-		{200, `{"code":4001}`, "invalid_request", 0, false},
-		{429, `{"code":"insufficient_quota","message":"token-limit"}`, "invalid_request", 0, false},
-		{200, `{"code":4011}`, "rate_limit", hardRateCooldown, false},
-		{429, "too many requests", "rate_limit", time.Minute, false},
-		{500, "boom", "unavailable", 0, false},
+		{401, `{"code":1001}`, "auth", "1001"},
+		{200, `{"code":1005,"message":"plan"}`, "quota", "1005"},
+		{200, `{"code":4008}`, "quota", "4008"},
+		{200, `{"code":4001}`, "invalid_request", "4001"},
+		{429, `{"code":"insufficient_quota","message":"token-limit"}`, "invalid_request", "insufficient_quota"},
+		{200, `{"code":4011}`, "rate_limit", "4011"},
+		{429, "too many requests", "rate_limit", ""},
+		{500, "boom", "unavailable", ""},
 	}
 	for _, c := range cases {
 		got := Classify(c.status, c.body)
 		if got.Kind != c.kind {
 			t.Fatalf("Classify(%d,%s)=%+v want %s", c.status, c.body, got, c.kind)
 		}
-		cooldown := classifiedCooldown(got.Kind, extractCode(c.body))
-		if c.nextMidnight {
-			if cooldown <= 0 || cooldown > 24*time.Hour {
-				t.Fatalf("cooldown(%s)=%s", c.body, cooldown)
-			}
-		} else if cooldown != c.cooldown {
-			t.Fatalf("cooldown(%s)=%s want %s", c.body, cooldown, c.cooldown)
-		}
 		err := wrapClassified(got, extractCode(c.body))
 		var classified *providers.Error
 		if !errors.As(err, &classified) {
 			t.Fatalf("wrapClassified type %T", err)
 		}
-		wantFailover := c.kind != "invalid_request"
-		if classified.Failover == nil || *classified.Failover != wantFailover {
-			t.Fatalf("failover(%s)=%v want %v", c.body, classified.Failover, wantFailover)
+		if classified.Kind != c.kind {
+			t.Fatalf("kind(%s)=%s want %s", c.body, classified.Kind, c.kind)
+		}
+		if classified.Code != c.code {
+			t.Fatalf("code(%s)=%s want %s", c.body, classified.Code, c.code)
+		}
+		if classified.RetryAfter != 0 {
+			t.Fatalf("provider must not set retry_after(%s)=%s", c.body, classified.RetryAfter)
+		}
+	}
+}
+
+func TestExtractCodeOmitsMissingAndNull(t *testing.T) {
+	for _, body := range []string{
+		`{"message":"plan limit"}`,
+		`{"code":null,"message":"plan limit"}`,
+		`{"code":"","message":"plan limit"}`,
+		"not json",
+	} {
+		if got := extractCode(body); got != "" {
+			t.Fatalf("extractCode(%s)=%q want empty", body, got)
+		}
+		err := wrapClassified(Classify(429, body), extractCode(body))
+		var classified *providers.Error
+		if !errors.As(err, &classified) {
+			t.Fatalf("wrapClassified type %T", err)
+		}
+		if classified.Code != "" {
+			t.Fatalf("missing code must stay empty, body=%s code=%q", body, classified.Code)
 		}
 	}
 }
 
 func TestPrepareBodyForcesSoloShape(t *testing.T) {
-	out := PrepareBody([]byte(`{"model":"glm-5.3","stream":false,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"t","parameters":{"type":"object"}}}],"tool_choice":{"type":"function","function":{"name":"t"}}}`))
+	out := PrepareBody([]byte(`{"model":"glm-5.3","stream":false,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"t","parameters":{"type":"object"}}}],"tool_choice":{"type":"function","function":{"name":"t"}}}`), PrimaryScene)
 	var body map[string]any
 	if err := json.Unmarshal(out, &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["stream"] != true || body["function"] != Function || body["config_name"] != "glm-5.3" {
+	if body["stream"] != true || body["function"] != PrimaryScene || body["config_name"] != "glm-5.3" {
 		t.Fatalf("body=%v", body)
 	}
 	messages, _ := body["messages"].([]any)
@@ -636,6 +669,31 @@ func TestPrepareBodyForcesSoloShape(t *testing.T) {
 	fn, _ := tool["function"].(map[string]any)
 	if _, ok := fn["parameters"].(string); !ok {
 		t.Fatalf("parameters should be JSON string: %v", fn["parameters"])
+	}
+}
+
+func TestPrepareBodyExpandsNamespaceTools(t *testing.T) {
+	out := PrepareBody([]byte(`{"model":"glm-5.3","messages":[{"role":"user","content":"hi"}],"tools":[
+		{"type":"namespace","name":"mcp__computer-use","tools":[
+			{"type":"function","name":"left_click","parameters":{"type":"object","properties":{"x":{"type":"number"}}}}
+		]},
+		{"type":"mcp","server_label":"computer-use"}
+	]}`), PrimaryScene)
+	var body map[string]any
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatal(err)
+	}
+	tools, _ := body["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("tools=%v", body["tools"])
+	}
+	tool, _ := tools[0].(map[string]any)
+	fn, _ := tool["function"].(map[string]any)
+	if fn["name"] != "mcp__computer-use__left_click" {
+		t.Fatalf("name=%v", fn["name"])
+	}
+	if _, ok := fn["parameters"].(string); !ok {
+		t.Fatalf("parameters should remain Trae JSON string: %v", fn["parameters"])
 	}
 }
 
@@ -694,9 +752,11 @@ func TestAdapterWiresCapabilities(t *testing.T) {
 	}
 }
 
-func TestBuildLoginURLIsLoopbackSolo(t *testing.T) {
-	u := BuildLoginURL("m", "d", "http://127.0.0.1:9/authorize", "trace")
-	if strings.Contains(u, "0.0.0.0") || !strings.Contains(u, "127.0.0.1") || !strings.Contains(u, "auth_from=solo") {
+func TestBuildLoginURLIsLoopbackPKCE(t *testing.T) {
+	u := buildLoginURL("m", "d", "http://127.0.0.1:9/authorize", "trace", "")
+	if strings.Contains(u, "0.0.0.0") || !strings.Contains(u, "127.0.0.1") ||
+		!strings.Contains(u, "auth_from=trae") || !strings.Contains(u, "client_id="+ClientID) ||
+		!strings.Contains(u, "code_challenge=") || !strings.Contains(u, "code_challenge_method=S256") {
 		t.Fatalf("url=%s", u)
 	}
 }
@@ -705,5 +765,197 @@ func TestParseCallbackReadsRefreshAndUserInfo(t *testing.T) {
 	info, err := ParseCallback(`http://127.0.0.1:18080/authorize?refreshToken=rt&userInfo={"UserID":"u1","ScreenName":"N"}`)
 	if err != nil || info.RefreshToken != "rt" || info.UID != "u1" {
 		t.Fatalf("info=%+v err=%v", info, err)
+	}
+}
+
+func TestHTTPClientFailsClosedOnSecretError(t *testing.T) {
+	store := &memStore{secretErr: errors.New("db down")}
+	client := NewClient(store)
+	if _, err := client.httpClient(context.Background(), "acc1"); err == nil {
+		t.Fatal("httpClient succeeded despite a global proxy read error")
+	}
+}
+
+func TestHTTPClientAccountDirectSkipsGlobalRead(t *testing.T) {
+	store := &memStore{accountProxyURL: "direct", secretErr: errors.New("db down")}
+	client := NewClient(store)
+	if _, err := client.httpClient(context.Background(), "acc1"); err != nil {
+		t.Fatalf("account direct must not read the global proxy: %v", err)
+	}
+	if store.secretCalls != 0 {
+		t.Fatalf("global proxy was read %d times for an account with a proxy override", store.secretCalls)
+	}
+}
+
+func TestHTTPClientUsesGlobalProxyWhenAccountIsBlank(t *testing.T) {
+	store := &memStore{secretValue: "http://global.example:8080", secretFound: true}
+	client := NewClient(store)
+	httpClient, err := client.httpClient(context.Background(), "acc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport, ok := httpClient.Transport.(*http.Transport)
+	if !ok || transport == nil {
+		t.Fatalf("transport = %#v", httpClient.Transport)
+	}
+	req, _ := http.NewRequest(http.MethodGet, "https://example.com", nil)
+	proxyURL, err := transport.Proxy(req)
+	if err != nil || proxyURL == nil || proxyURL.String() != "http://global.example:8080" {
+		t.Fatalf("transport proxy = %v err=%v", proxyURL, err)
+	}
+}
+
+func TestHTTPClientKeepsInjectedTransportWhenUnconfigured(t *testing.T) {
+	store := &memStore{}
+	client := NewClient(store)
+	custom := rewriteTransport{}
+	client.http.Transport = custom
+	httpClient, err := client.httpClient(context.Background(), "acc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if httpClient.Transport != custom {
+		t.Fatalf("unconfigured client replaced the injected transport: %#v", httpClient.Transport)
+	}
+}
+
+func TestHTTPClientReusesTransportByProxyURL(t *testing.T) {
+	store := &memStore{secretValue: "http://global.example:8080", secretFound: true}
+	client := NewClient(store)
+
+	first, err := client.httpClient(context.Background(), "acc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := client.httpClient(context.Background(), "acc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Transport == nil || first.Transport != second.Transport {
+		t.Fatal("transport was not reused across requests")
+	}
+}
+
+func TestHTTPClientDifferentProxiesUseDifferentTransports(t *testing.T) {
+	store := &memStore{secretValue: "http://global.example:8080", secretFound: true}
+	client := NewClient(store)
+
+	inherited, err := client.httpClient(context.Background(), "acc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store.accountProxyURL = "socks5://proxy.example:1080"
+	overridden, err := client.httpClient(context.Background(), "acc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inherited.Transport == overridden.Transport {
+		t.Fatal("different proxy URLs shared a transport")
+	}
+
+	store.accountProxyURL = "direct"
+	direct, err := client.httpClient(context.Background(), "acc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if direct.Transport == inherited.Transport || direct.Transport == overridden.Transport {
+		t.Fatal("direct did not get its own transport")
+	}
+}
+
+func TestParseEntitlementBucketsSplitsGeneralAndWork(t *testing.T) {
+	body := []byte(`{"Result":{"user_entitlement_pack_list":[
+		{"entitlement_base_info":{"quota":{"credits_limit":2000},"available_endpoint":0},"usage":{"credits_amount":500}},
+		{"entitlement_base_info":{"quota":{"credits_limit":600},"available_endpoint":1},"usage":{"credits_amount":100}}
+	]}}`)
+	general, work := parseEntitlementBuckets(body)
+	if general.total != 2000 || general.used != 500 || general.remain != 1500 {
+		t.Fatalf("general=%+v", general)
+	}
+	if work.total != 600 || work.used != 100 || work.remain != 500 {
+		t.Fatalf("work=%+v", work)
+	}
+	// The flat helper still sums both buckets.
+	remain, used, total := parseEntitlementUsage(body)
+	if remain != 2000 || used != 600 || total != 2600 {
+		t.Fatalf("flat remain=%d used=%d total=%d", remain, used, total)
+	}
+}
+
+func TestQuotaShowsOnlyGeneralBucket(t *testing.T) {
+	client, store := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"user_entitlement_pack_list": []map[string]any{
+				{"entitlement_base_info": map[string]any{"quota": map[string]any{"credits_limit": 2000}, "available_endpoint": 0}, "usage": map[string]any{"credits_amount": 500}},
+				{"entitlement_base_info": map[string]any{"quota": map[string]any{"credits_limit": 600}, "available_endpoint": 1}, "usage": map[string]any{"credits_amount": 600}},
+			},
+		})
+	}))
+	payload, _ := json.Marshal(Credential{AccessToken: "at", RefreshToken: "rt", ExpiresAt: 4102444800, UID: "u1"})
+	_ = store.SaveCredentialPayload(context.Background(), "acc1", CredentialFormat, payload)
+	info, err := client.Quota(context.Background(), "acc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Work bucket (600/600, exhausted) must NOT be shown.
+	if info.Total != 2000 || info.Remaining != 1500 || info.Used != 500 {
+		t.Fatalf("quota must be General-only: %+v", info)
+	}
+	if info.Exceeded || len(info.Windows) != 0 {
+		t.Fatalf("work bucket leaked: %+v", info)
+	}
+}
+
+// A chat must be sent under the scene that actually serves the model: a model
+// the primary scene lists goes through it, while a model only the secondary
+// scene carries keeps the secondary scene, regardless of the max-mode toggle.
+func TestChatRoutesByModelScene(t *testing.T) {
+	payload, _ := Credential{AccessToken: "at", RefreshToken: "rt", UID: "u1", Domain: DomainCN, ExpiresAt: 4102444800}.Encode()
+	store := &memStore{items: map[string][]byte{"acc1": payload}}
+	captured := map[string]map[string]any{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == pathModels {
+			var req map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			fn, _ := req["function"].(string)
+			name := "glm-5.3"
+			if fn != PrimaryScene {
+				name = "kimi-k2.6"
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"config_info_list": []map[string]any{{
+				"config_name": name, "display_config": map[string]any{"display_name": name},
+			}}})
+			return
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		m, _ := body["config_name"].(string)
+		captured[m] = body
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(soloSSE))
+	}))
+	defer server.Close()
+	client := NewClient(store)
+	client.http = server.Client()
+	client.http.Transport = rewriteTransport{server: server.URL, round: server.Client().Transport}
+	if _, err := client.Models(context.Background(), "acc1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ChatNonStream(context.Background(), "acc1", translate.ChatRequest{
+		Model: "glm-5.3", Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ChatNonStream(context.Background(), "acc1", translate.ChatRequest{
+		Model: "kimi-k2.6", Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if captured["glm-5.3"]["function"] != PrimaryScene {
+		t.Fatalf("primary-scene model function=%v", captured["glm-5.3"]["function"])
+	}
+	if captured["kimi-k2.6"]["function"] != SecondaryScene {
+		t.Fatalf("secondary-scene model function=%v", captured["kimi-k2.6"]["function"])
 	}
 }

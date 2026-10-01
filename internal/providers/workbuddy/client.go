@@ -18,11 +18,12 @@ import (
 
 	"github.com/caigee-cmd/cli2api/internal/accounts"
 	"github.com/caigee-cmd/cli2api/internal/providers"
+	proxyutil "github.com/caigee-cmd/cli2api/internal/proxy"
 	"github.com/caigee-cmd/cli2api/internal/translate"
 )
 
 // Store is the persistence surface the adapter needs. It matches
-// *accounts.Store without importing the concrete manager.
+// the SQLite store without importing the concrete type.
 type Store interface {
 	Get(ctx context.Context, id string) (accounts.Account, error)
 	LoadCredentialPayload(ctx context.Context, accountID string) (string, []byte, error)
@@ -30,9 +31,22 @@ type Store interface {
 	Observe(ctx context.Context, id, remoteUID, status, lastError, lastKind string) error
 }
 
+// SecretReader is optional. Missing it means no global proxy, not an error.
+type SecretReader interface {
+	GetSecret(context.Context, string) (string, bool, error)
+}
+
+// ModelSettingReader is optional. Missing it means console-saved reasoning
+// defaults are skipped, matching the previous anonymous type assertion.
+type ModelSettingReader interface {
+	GetProviderModelSetting(context.Context, string, string) (accounts.ProviderModelSetting, error)
+}
+
 type Client struct {
 	store Store
 	http  *http.Client
+
+	transports proxyutil.TransportCache
 
 	mu          sync.Mutex
 	loginStates map[string]string
@@ -41,7 +55,10 @@ type Client struct {
 
 const catalogTimeout = 15 * time.Second
 
-var dailyCheckinRetryDelays = []time.Duration{time.Second, 3 * time.Second}
+var (
+	dailyCheckinRetryDelays           = []time.Duration{time.Second, 3 * time.Second}
+	dailyCheckinProcessingRetryDelays = []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second}
+)
 
 func NewClient(store Store) *Client {
 	return &Client{
@@ -65,7 +82,55 @@ type envelope struct {
 	Data json.RawMessage `json:"data"`
 }
 
-func (c *Client) do(ctx context.Context, method, rawURL string, body []byte, setHeaders func(http.Header)) ([]byte, int, error) {
+func (c *Client) globalProxy(ctx context.Context) (string, error) {
+	store, ok := c.store.(SecretReader)
+	if !ok {
+		return "", nil
+	}
+
+	value, found, err := store.GetSecret(ctx, "proxy_url")
+	if err != nil {
+		return "", fmt.Errorf("load global proxy setting: %w", err)
+	}
+	if !found {
+		return "", nil
+	}
+	return strings.TrimSpace(value), nil
+}
+
+func (c *Client) effectiveProxy(ctx context.Context, accountID string) (string, error) {
+	account, err := c.store.Get(ctx, accountID)
+	if err != nil {
+		return "", err
+	}
+
+	if value := strings.TrimSpace(account.ProxyURL); value != "" {
+		return value, nil
+	}
+
+	return c.globalProxy(ctx)
+}
+
+func (c *Client) httpClient(ctx context.Context, accountID string) (*http.Client, error) {
+	rawProxy, err := c.effectiveProxy(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+
+	client := *c.http
+
+	transport, err := c.transports.Get(rawProxy)
+	if err != nil {
+		return nil, err
+	}
+	if transport != nil {
+		client.Transport = transport
+	}
+
+	return &client, nil
+}
+
+func (c *Client) do(ctx context.Context, accountID, method, rawURL string, body []byte, setHeaders func(http.Header)) ([]byte, int, error) {
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
@@ -77,7 +142,11 @@ func (c *Client) do(ctx context.Context, method, rawURL string, body []byte, set
 	if setHeaders != nil {
 		setHeaders(req.Header)
 	}
-	resp, err := c.http.Do(req)
+	client, err := c.httpClient(ctx, accountID)
+	if err != nil {
+		return nil, 0, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -95,7 +164,7 @@ func (c *Client) StartLogin(ctx context.Context, accountID string) (providers.Lo
 	if account, err := c.store.Get(ctx, accountID); err == nil && account.ProviderRegion == "global" {
 		base = ChatBaseGlobal
 	}
-	body, status, err := c.do(ctx, http.MethodPost, base+pathAuthState+"?platform=CLI", []byte("{}"),
+	body, status, err := c.do(ctx, accountID, http.MethodPost, base+pathAuthState+"?platform=CLI", []byte("{}"),
 		func(h http.Header) { setCommonHeaders(h, base == ChatBaseGlobal) })
 	if err != nil {
 		return providers.LoginSession{}, err
@@ -133,7 +202,7 @@ func (c *Client) PollLogin(ctx context.Context, accountID string) (bool, string,
 	if account, err := c.store.Get(ctx, accountID); err == nil && account.ProviderRegion == "global" {
 		base = ChatBaseGlobal
 	}
-	tokenBody, status, err := c.do(ctx, http.MethodGet, base+pathAuthToken+"?state="+url.QueryEscape(state), nil,
+	tokenBody, status, err := c.do(ctx, accountID, http.MethodGet, base+pathAuthToken+"?state="+url.QueryEscape(state), nil,
 		func(h http.Header) { setCommonHeaders(h, base == ChatBaseGlobal) })
 	if err != nil {
 		return false, "", err
@@ -155,7 +224,7 @@ func (c *Client) PollLogin(ctx context.Context, accountID string) (bool, string,
 	if err := json.Unmarshal(tokenEnv.Data, &token); err != nil || token.AccessToken == "" {
 		return false, "waiting for authorization", nil
 	}
-	accountBody, _, err := c.do(ctx, http.MethodGet, base+pathAuthAccount+"?state="+url.QueryEscape(state), nil,
+	accountBody, _, err := c.do(ctx, accountID, http.MethodGet, base+pathAuthAccount+"?state="+url.QueryEscape(state), nil,
 		func(h http.Header) {
 			setCommonHeaders(h, base == ChatBaseGlobal)
 			h.Set("Authorization", "Bearer "+token.AccessToken)
@@ -249,7 +318,7 @@ func (c *Client) resolvedCredential(ctx context.Context, accountID string) (Cred
 // account by surfacing the auth taxonomy to the manager.
 func (c *Client) Refresh(ctx context.Context, accountID string, credential Credential) (Credential, error) {
 	credential = c.overlayRegion(ctx, accountID, credential)
-	body, status, err := c.do(ctx, http.MethodPost, credential.ChatBase()+pathTokenRefresh, []byte("{}"),
+	body, status, err := c.do(ctx, accountID, http.MethodPost, credential.ChatBase()+pathTokenRefresh, []byte("{}"),
 		func(h http.Header) { SetRefreshHeaders(h, credential) })
 	if err != nil {
 		return credential, err
@@ -296,8 +365,10 @@ func (c *Client) Refresh(ctx context.Context, accountID string, credential Crede
 	return credential, nil
 }
 
-// Models fetches the dynamic catalog. Failure is an explicit error; there is
-// no static fallback list.
+// Models fetches the IDE-parity product config catalog (/v3/config). Failure
+// is an explicit error; there is no static fallback list. This intentionally
+// mirrors the WorkBuddy desktop dropdown source rather than
+// /v2/enterprises/personal/models, which can omit IDE-visible ids.
 func (c *Client) Models(ctx context.Context, accountID string) ([]providers.ModelInfo, error) {
 	credential, err := c.resolvedCredential(ctx, accountID)
 	if err != nil {
@@ -305,7 +376,7 @@ func (c *Client) Models(ctx context.Context, accountID string) ([]providers.Mode
 	}
 	ctx, cancel := context.WithTimeout(ctx, catalogTimeout)
 	defer cancel()
-	body, status, err := c.do(ctx, http.MethodGet, credential.ChatBase()+credential.catalogPath(), nil,
+	body, status, err := c.do(ctx, accountID, http.MethodGet, credential.ChatBase()+credential.productConfigPath(), nil,
 		func(h http.Header) { SetCatalogHeaders(h, credential) })
 	if err != nil {
 		return nil, err
@@ -330,6 +401,12 @@ func (c *Client) Models(ctx context.Context, accountID string) ([]providers.Mode
 	if env.Code != 0 {
 		return nil, fmt.Errorf("models envelope code=%d msg=%s", env.Code, env.Msg)
 	}
+	if env.Data.Models == nil {
+		return nil, fmt.Errorf("workbuddy product config returned no models")
+	}
+	// IDE dropdown intersects product-config models with the CLI agent
+	// allowlist from the same /v3/config payload. If agents are absent,
+	// keep every enabled model. Do not invent public aliases.
 	cliModels := map[string]struct{}{}
 	for _, agent := range env.Data.Agents {
 		if !isCLIAgent(agent.Name) {
@@ -353,49 +430,50 @@ func (c *Client) Models(ctx context.Context, accountID string) ([]providers.Mode
 		out = append(out, catalogModel(model))
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("workbuddy model catalog returned no cli models")
+		return nil, fmt.Errorf("workbuddy product config returned no models")
 	}
 	out = appendExtraModels(out)
 	c.rememberCatalog(out)
 	return out, nil
 }
 
-func (c *Client) chatRequest(ctx context.Context, accountID string, credential Credential, req translate.ChatRequest) (*http.Request, error) {
+func (c *Client) chatRequest(ctx context.Context, accountID string, credential Credential, req translate.ChatRequest) (*http.Request, providers.ResolvedChat, error) {
+	caps := c.capsFor(req.Model)
+	storedLevel := ""
+	if setter, ok := c.store.(ModelSettingReader); ok {
+		// CanonicalModelID must match control.ModelContextKey
+		// so console-saved reasoning levels are found at chat time.
+		if stored, err := setter.GetProviderModelSetting(ctx, "workbuddy", accounts.CanonicalModelID(req.Model)); err == nil {
+			storedLevel = stored.ReasoningEffort
+		}
+	}
+	// Warm the live catalog before resolving the upstream model id and
+	// reasoning caps. Catalog entries are authoritative; we do not invent
+	// aliases when a requested id is missing.
+	if (!c.hasCatalogEntry(req.Model) || len(caps.ReasoningOptions) == 0) && accountID != "" {
+		_, _ = c.Models(ctx, accountID)
+		caps = c.capsFor(req.Model)
+	}
 	body := map[string]any{
-		"model":       req.Model,
+		"model":       c.upstreamModelID(req.Model),
 		"messages":    req.Messages,
 		"max_tokens":  req.MaxTokens,
 		"temperature": req.Temperature,
 		"tools":       req.Tools,
 		"tool_choice": req.ToolChoice,
 	}
-	caps := c.capsFor(req.Model)
-	storedLevel := ""
-	if setter, ok := c.store.(interface {
-		GetProviderModelSetting(context.Context, string, string) (accounts.ProviderModelSetting, error)
-	}); ok {
-		// settingModelKey must canonicalize exactly like api.modelContextKey
-		// so console-saved reasoning levels are found at chat time.
-		if stored, err := setter.GetProviderModelSetting(ctx, "workbuddy", accounts.CanonicalModelID(req.Model)); err == nil {
-			storedLevel = stored.ReasoningEffort
-		}
-	}
-	if len(caps.ReasoningOptions) == 0 && accountID != "" {
-		_, _ = c.Models(ctx, accountID)
-		caps = c.capsFor(req.Model)
-	}
-	applyChatReasoning(body, req, storedLevel, caps)
+	resolved := providers.ResolvedChat{ReasoningLevel: applyChatReasoning(body, req, storedLevel, caps)}
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return nil, err
+		return nil, providers.ResolvedChat{}, err
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		credential.ChatBase()+pathChat, bytes.NewReader(PrepareBody(payload)))
 	if err != nil {
-		return nil, err
+		return nil, providers.ResolvedChat{}, err
 	}
 	SetChatHeaders(httpReq.Header, credential)
-	return httpReq, nil
+	return httpReq, resolved, nil
 }
 
 func (c *Client) ChatNonStream(ctx context.Context, accountID string, req translate.ChatRequest) (providers.ChatOutcome, error) {
@@ -403,11 +481,14 @@ func (c *Client) ChatNonStream(ctx context.Context, accountID string, req transl
 	if err != nil {
 		return providers.ChatOutcome{}, err
 	}
-	httpReq, err := c.chatRequest(ctx, accountID, credential, req)
+	httpReq, resolved, err := c.chatRequest(ctx, accountID, credential, req)
 	if err != nil {
 		return providers.ChatOutcome{}, err
 	}
-	client := *c.http
+	client, err := c.httpClient(ctx, accountID)
+	if err != nil {
+		return providers.ChatOutcome{}, err
+	}
 	client.Timeout = 0
 	resp, err := client.Do(httpReq)
 	if err != nil {
@@ -425,30 +506,38 @@ func (c *Client) ChatNonStream(ctx context.Context, accountID string, req transl
 	if err != nil {
 		return providers.ChatOutcome{}, err
 	}
-	return outcomeFromAggregate(aggregate)
+	outcome, err := outcomeFromAggregate(aggregate)
+	if err != nil {
+		return providers.ChatOutcome{}, err
+	}
+	outcome.ReasoningLevel = resolved.ReasoningLevel
+	return outcome, nil
 }
 
-func (c *Client) ChatStream(ctx context.Context, accountID string, req translate.ChatRequest) (*http.Response, error) {
+func (c *Client) ChatStream(ctx context.Context, accountID string, req translate.ChatRequest) (*http.Response, providers.ResolvedChat, error) {
 	credential, err := c.resolvedCredential(ctx, accountID)
 	if err != nil {
-		return nil, err
+		return nil, providers.ResolvedChat{}, err
 	}
-	httpReq, err := c.chatRequest(ctx, accountID, credential, req)
+	httpReq, resolved, err := c.chatRequest(ctx, accountID, credential, req)
 	if err != nil {
-		return nil, err
+		return nil, providers.ResolvedChat{}, err
 	}
-	client := *c.http
+	client, err := c.httpClient(ctx, accountID)
+	if err != nil {
+		return nil, providers.ResolvedChat{}, err
+	}
 	client.Timeout = 0
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, err
+		return nil, providers.ResolvedChat{}, err
 	}
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
-		return nil, classifiedError(resp.StatusCode, body)
+		return nil, providers.ResolvedChat{}, classifiedError(resp.StatusCode, body)
 	}
-	return rewriteChatStream(resp), nil
+	return rewriteChatStream(resp), resolved, nil
 }
 
 func outcomeFromAggregate(aggregate map[string]any) (providers.ChatOutcome, error) {
@@ -459,9 +548,15 @@ func outcomeFromAggregate(aggregate map[string]any) (providers.ChatOutcome, erro
 	var parsed struct {
 		Model string `json:"model"`
 		Usage struct {
-			PromptTokens     int    `json:"prompt_tokens"`
-			CompletionTokens int    `json:"completion_tokens"`
-			Source           string `json:"source"`
+			PromptTokens     int      `json:"prompt_tokens"`
+			CompletionTokens int      `json:"completion_tokens"`
+			CacheReadTokens  *int     `json:"cache_read_tokens"`
+			CacheWriteTokens *int     `json:"cache_write_tokens"`
+			Source           string   `json:"source"`
+			Credit           *float64 `json:"credit"`
+			PromptDetails    struct {
+				CachedTokens *int `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
 		} `json:"usage"`
 		Choices []struct {
 			FinishReason string `json:"finish_reason"`
@@ -487,6 +582,12 @@ func outcomeFromAggregate(aggregate map[string]any) (providers.ChatOutcome, erro
 	out.Model = parsed.Model
 	out.PromptTokens = parsed.Usage.PromptTokens
 	out.CompletionTokens = parsed.Usage.CompletionTokens
+	out.CacheReadTokens = parsed.Usage.CacheReadTokens
+	if out.CacheReadTokens == nil {
+		out.CacheReadTokens = parsed.Usage.PromptDetails.CachedTokens
+	}
+	out.CacheWriteTokens = parsed.Usage.CacheWriteTokens
+	out.Credits = parsed.Usage.Credit
 	return out, nil
 }
 
@@ -495,7 +596,7 @@ func classifiedError(status int, body []byte) error {
 	out := &providers.Error{Kind: classified.Kind, Status: classified.Status, Message: classified.Message}
 	if classified.Kind == accounts.KindRateLimit {
 		if reset := parseQuotaReset(string(body), time.Now()); reset > 0 {
-			out.Cooldown = reset
+			out.RetryAfter = reset
 		}
 	}
 	return out
@@ -572,7 +673,7 @@ func Classify(status int, body string) providers.ClassifiedError {
 		return providers.ClassifiedError{Kind: accounts.KindRateLimit, Status: 429, Message: strings.TrimSpace(body)}
 	case status == 404:
 		return providers.ClassifiedError{Kind: accounts.KindUnavailable, Status: 404, Message: strings.TrimSpace(body)}
-	case status == 400 || accounts.IsPromptLimitText(body) || accounts.IsInvalidRequestText(body) || isMissingSystemPrompt(body):
+	case status == 400 || accounts.IsPromptLimitText(body) || accounts.IsInvalidRequestText(body) || isMissingSystemPrompt(body) || isBrokenToolSequence(body):
 		// Request-level rejection (content screening, malformed fields,
 		// missing leading system message): retrying on another account
 		// cannot help and the account is healthy.
@@ -585,7 +686,7 @@ func Classify(status int, body string) providers.ClassifiedError {
 		if env.Code == sessionDeadCode || strings.Contains(strings.ToLower(env.Msg), sessionDeadText) {
 			return providers.ClassifiedError{Kind: accounts.KindAuth, Status: 401, Message: "session dead; re-login required"}
 		}
-		if accounts.IsPromptLimitText(env.Msg) || accounts.IsInvalidRequestText(env.Msg) || isMissingSystemPrompt(env.Msg) || env.Code == missingSystemPromptCode {
+		if accounts.IsPromptLimitText(env.Msg) || accounts.IsInvalidRequestText(env.Msg) || isMissingSystemPrompt(env.Msg) || isBrokenToolSequence(env.Msg) || env.Code == missingSystemPromptCode || env.Code == toolCallSequenceCode {
 			return providers.ClassifiedError{Kind: accounts.KindInvalidRequest, Status: firstNonEmptyStatus(status, 400), Message: env.Msg}
 		}
 		return providers.ClassifiedError{Kind: accounts.KindUnavailable, Status: 502, Message: env.Msg}
@@ -604,6 +705,13 @@ func isMissingSystemPrompt(text string) bool {
 	lower := strings.ToLower(text)
 	return strings.Contains(lower, missingSystemPromptText) ||
 		strings.Contains(lower, fmt.Sprintf("%d", missingSystemPromptCode))
+}
+
+func isBrokenToolSequence(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, toolCallSequenceText) ||
+		strings.Contains(lower, "tool_call_sequence_broken") ||
+		strings.Contains(lower, fmt.Sprintf("%d", toolCallSequenceCode))
 }
 
 func catalogErrorBody(body []byte) string {
@@ -656,7 +764,7 @@ func (c *Client) Quota(ctx context.Context, accountID string) (*providers.QuotaI
 	if err != nil {
 		return nil, err
 	}
-	remain, used, total, err := c.UserResource(ctx, credential)
+	remain, used, total, packages, err := c.UserResource(ctx, accountID, credential)
 	if err != nil {
 		return nil, err
 	}
@@ -676,14 +784,19 @@ func (c *Client) Quota(ctx context.Context, accountID string) (*providers.QuotaI
 			percentage = 100
 		}
 	}
+	expiresAt, expiringRemain := soonestExpiry(packages)
 	return &providers.QuotaInfo{
-		Used:       float64(used),
-		Total:      float64(total),
-		Remaining:  float64(remain),
-		Percentage: percentage,
-		Unit:       "credits",
-		Exceeded:   total > 0 && remain <= 0,
-		FetchedAt:  time.Now().UTC().Format(time.RFC3339),
+		Used:           float64(used),
+		Total:          float64(total),
+		Remaining:      float64(remain),
+		Percentage:     percentage,
+		Unit:           "credits",
+		Exceeded:       total > 0 && remain <= 0,
+		FetchedAt:      time.Now().UTC().Format(time.RFC3339),
+		ProviderID:     "workbuddy",
+		ExpiresAt:      expiresAt,
+		ExpiringRemain: expiringRemain,
+		Packages:       packages,
 	}, nil
 }
 
@@ -713,9 +826,9 @@ func (c *Client) DailyCheckin(ctx context.Context, accountID string) (string, er
 	var body []byte
 	var status int
 	for attempt := 0; ; attempt++ {
-		body, status, err = c.do(ctx, http.MethodPost, credential.BillingBase()+pathDailyCheckin, []byte("{}"),
+		body, status, err = c.do(ctx, accountID, http.MethodPost, credential.BillingBase()+pathDailyCheckin, []byte("{}"),
 			func(h http.Header) { SetBillingHeaders(h, credential) })
-		if !retryDailyCheckin(ctx, err, status, attempt) {
+		if !retryDailyCheckin(ctx, err, status, body, attempt) {
 			break
 		}
 	}
@@ -766,18 +879,23 @@ func alreadyCheckedInMessage(status int, body []byte) (string, bool) {
 	return "", false
 }
 
-func retryDailyCheckin(ctx context.Context, err error, status, attempt int) bool {
-	if attempt >= len(dailyCheckinRetryDelays) || ctx.Err() != nil {
+func retryDailyCheckin(ctx context.Context, err error, status int, body []byte, attempt int) bool {
+	requestProcessing := status == http.StatusTooManyRequests && checkinRequestProcessing(body)
+	delays := dailyCheckinRetryDelays
+	if requestProcessing {
+		delays = dailyCheckinProcessingRetryDelays
+	}
+	if attempt >= len(delays) || ctx.Err() != nil {
 		return false
 	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return false
 		}
-	} else if status < http.StatusInternalServerError {
+	} else if status < http.StatusInternalServerError && !requestProcessing {
 		return false
 	}
-	timer := time.NewTimer(dailyCheckinRetryDelays[attempt])
+	timer := time.NewTimer(delays[attempt])
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
@@ -785,6 +903,18 @@ func retryDailyCheckin(ctx context.Context, err error, status, attempt int) bool
 	case <-timer.C:
 		return true
 	}
+}
+
+func checkinRequestProcessing(body []byte) bool {
+	var env envelope
+	message := strings.TrimSpace(string(body))
+	if json.Unmarshal(body, &env) == nil && strings.TrimSpace(env.Msg) != "" {
+		message = strings.TrimSpace(env.Msg)
+	}
+	lower := strings.ToLower(message)
+	return strings.Contains(message, "请求处理中") ||
+		strings.Contains(lower, "request is being processed") ||
+		strings.Contains(lower, "request processing")
 }
 
 // Keepalive forces a token refresh for the account. Session-dead uses the
@@ -803,7 +933,8 @@ func (c *Client) Keepalive(ctx context.Context, accountID string) error {
 }
 
 // UserResource aggregates package remain/used/total from get-user-resource.
-func (c *Client) UserResource(ctx context.Context, credential Credential) (remain, used, total int64, err error) {
+// packages carries the per-pack expiry detail parsed from CycleEndTime.
+func (c *Client) UserResource(ctx context.Context, accountID string, credential Credential) (remain, used, total int64, packages []providers.QuotaPackage, err error) {
 	now := time.Now()
 	payload, err := json.Marshal(map[string]any{
 		"PageNumber":               1,
@@ -814,15 +945,15 @@ func (c *Client) UserResource(ctx context.Context, credential Credential) (remai
 		"PackageEndTimeRangeEnd":   now.Add(365 * 101 * 24 * time.Hour).Format("2006-01-02 15:04:05"),
 	})
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, nil, err
 	}
-	body, status, err := c.do(ctx, http.MethodPost, credential.BillingBase()+pathUserResource, payload,
+	body, status, err := c.do(ctx, accountID, http.MethodPost, credential.BillingBase()+pathUserResource, payload,
 		func(h http.Header) { SetBillingHeaders(h, credential) })
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, nil, err
 	}
 	if status >= 300 {
-		return 0, 0, 0, fmt.Errorf("user-resource status=%d: %s", status, strings.TrimSpace(string(body)))
+		return 0, 0, 0, nil, fmt.Errorf("user-resource status=%d: %s", status, strings.TrimSpace(string(body)))
 	}
 	var env struct {
 		Code int    `json:"code"`
@@ -837,22 +968,67 @@ func (c *Client) UserResource(ctx context.Context, credential Credential) (remai
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &env); err != nil {
-		return 0, 0, 0, fmt.Errorf("user-resource parse: %w", err)
+		return 0, 0, 0, nil, fmt.Errorf("user-resource parse: %w", err)
 	}
 	if env.Code != 0 {
-		return 0, 0, 0, fmt.Errorf("user-resource code=%d msg=%s", env.Code, env.Msg)
+		return 0, 0, 0, nil, fmt.Errorf("user-resource code=%d msg=%s", env.Code, env.Msg)
 	}
 	remain, used, total = aggregateUserResource(env.Data.Response.Data.Accounts, env.Data.Response.Data.TotalDosage)
-	return remain, used, total, nil
+	return remain, used, total, quotaPackages(env.Data.Response.Data.Accounts), nil
 }
 
 type resourcePackage struct {
-	CapacityRemain      int64 `json:"CapacityRemain"`
-	CapacityUsed        int64 `json:"CapacityUsed"`
-	CapacitySize        int64 `json:"CapacitySize"`
-	CycleCapacityRemain int64 `json:"CycleCapacityRemain"`
-	CycleCapacityUsed   int64 `json:"CycleCapacityUsed"`
-	CycleCapacitySize   int64 `json:"CycleCapacitySize"`
+	CapacityRemain      int64  `json:"CapacityRemain"`
+	CapacityUsed        int64  `json:"CapacityUsed"`
+	CapacitySize        int64  `json:"CapacitySize"`
+	CycleCapacityRemain int64  `json:"CycleCapacityRemain"`
+	CycleCapacityUsed   int64  `json:"CycleCapacityUsed"`
+	CycleCapacitySize   int64  `json:"CycleCapacitySize"`
+	CycleEndTime        string `json:"CycleEndTime"`
+}
+
+// cycleEndTimeZone is the UTC+8 wall clock the upstream billing API uses for
+// CycleEndTime ("2006-01-02 15:04:05").
+var cycleEndTimeZone = time.FixedZone("UTC+8", 8*60*60)
+
+// quotaPackages converts raw packs into per-pack expiry detail for the
+// console. A pack with no parseable CycleEndTime keeps EndsAt zero.
+func quotaPackages(packages []resourcePackage) []providers.QuotaPackage {
+	out := make([]providers.QuotaPackage, 0, len(packages))
+	for _, pkg := range packages {
+		remain, used, size := packageRemainUsed(pkg)
+		entry := providers.QuotaPackage{
+			Remain: float64(remain),
+			Used:   float64(used),
+			Size:   float64(size),
+			Unit:   "credits",
+		}
+		if trimmed := strings.TrimSpace(pkg.CycleEndTime); trimmed != "" {
+			if parsed, err := time.ParseInLocation("2006-01-02 15:04:05", trimmed, cycleEndTimeZone); err == nil {
+				entry.EndsAt = parsed.Unix()
+				entry.EndTime = trimmed
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// soonestExpiry returns the earliest non-zero pack expiry and the remaining
+// amount that expires at that time.
+func soonestExpiry(packages []providers.QuotaPackage) (expiresAt int64, expiringRemain float64) {
+	for _, pkg := range packages {
+		if pkg.EndsAt <= 0 {
+			continue
+		}
+		if expiresAt == 0 || pkg.EndsAt < expiresAt {
+			expiresAt = pkg.EndsAt
+			expiringRemain = pkg.Remain
+		} else if pkg.EndsAt == expiresAt {
+			expiringRemain += pkg.Remain
+		}
+	}
+	return expiresAt, expiringRemain
 }
 
 func packageRemainUsed(pkg resourcePackage) (remain, used, size int64) {
@@ -926,6 +1102,7 @@ func (c *Client) Adapter() providers.Adapter {
 		Models:     c,
 		Classifier: classifier{},
 		Prober:     c,
+		Checkin:    c,
 	}
 }
 
@@ -939,6 +1116,39 @@ func (classifier) Classify(status int, body string) providers.ClassifiedError {
 	return Classify(status, body)
 }
 
+func (c *Client) hasCatalogEntry(model string) bool {
+	model = strings.TrimSpace(model)
+	if model == "" || c == nil {
+		return false
+	}
+	canonical := accounts.CanonicalModelID(model)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.catalog[model]; ok {
+		return true
+	}
+	_, ok := c.catalog[canonical]
+	return ok
+}
+
+// upstreamModelID returns the catalog NativeModel when the request model is a
+// known catalog entry; otherwise it sends the request model unchanged. There
+// is no hardcoded id rewrite table.
+func (c *Client) upstreamModelID(model string) string {
+	canonical := accounts.CanonicalModelID(model)
+	if c != nil {
+		c.mu.Lock()
+		info, ok := c.catalog[model]
+		if !ok {
+			info, ok = c.catalog[canonical]
+		}
+		c.mu.Unlock()
+		if ok && strings.TrimSpace(info.NativeModel) != "" {
+			return info.NativeModel
+		}
+	}
+	return model
+}
 
 // ExtraModelConfig is one entry from WORKBUDDY_EXTRA_MODELS. Grayscale models
 // such as deepseek-v4.1-flash are shown in the WorkBuddy UI but absent from

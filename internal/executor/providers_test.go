@@ -27,13 +27,13 @@ func (f *fakeInProcessChat) ChatNonStream(ctx context.Context, accountID string,
 	return providers.ChatOutcome{Model: req.Model, Content: "OK", FinishReason: "stop"}, nil
 }
 
-func (f *fakeInProcessChat) ChatStream(ctx context.Context, accountID string, req translate.ChatRequest) (*http.Response, error) {
+func (f *fakeInProcessChat) ChatStream(ctx context.Context, accountID string, req translate.ChatRequest) (*http.Response, providers.ResolvedChat, error) {
 	f.calls++
-	return nil, errors.New("stream unsupported in fake")
+	return nil, providers.ResolvedChat{}, errors.New("stream unsupported in fake")
 }
 
 func TestSanitizeForItemUsesNativeCatalogSpelling(t *testing.T) {
-	item := accounts.Item{ID: "t1", Provider: "trae", Models: []string{"DeepSeek-V4-Flash"}}
+	item := Item{ID: "t1", Provider: "trae", Models: []string{"DeepSeek-V4-Flash"}}
 	got := sanitizeForItem(item, translate.ChatRequest{Model: "deepseek-v4-flash"})
 	if got.Model != "DeepSeek-V4-Flash" {
 		t.Fatalf("model=%q", got.Model)
@@ -41,8 +41,8 @@ func TestSanitizeForItemUsesNativeCatalogSpelling(t *testing.T) {
 }
 
 func TestInProcessProviderPinnedChatDoesNotTouchWorkers(t *testing.T) {
-	pool := accounts.NewPool([]string{"http://127.0.0.1:1"}, []string{"qoder1"})
-	pool.Upsert(accounts.Item{ID: "wb1", Provider: "workbuddy", Region: "cn", Runtime: "in_process"})
+	pool := NewPool([]string{"http://127.0.0.1:1"}, []string{"qoder1"})
+	pool.Upsert(Item{ID: "wb1", Provider: "workbuddy", Region: "cn", Runtime: "in_process"})
 	registry := providers.NewRegistry()
 	fake := &fakeInProcessChat{}
 	registry.Register(providers.Adapter{ID: "workbuddy", Chat: fake})
@@ -61,8 +61,8 @@ func TestInProcessProviderPinnedChatDoesNotTouchWorkers(t *testing.T) {
 }
 
 func TestInProcessMixedCaseProviderExecutesRegisteredAdapter(t *testing.T) {
-	pool := accounts.NewPool(nil, nil)
-	pool.Upsert(accounts.Item{ID: "wb1", Provider: "WorkBuddy", Region: "CN", Runtime: "in_process"})
+	pool := NewPool(nil, nil)
+	pool.Upsert(Item{ID: "wb1", Provider: "WorkBuddy", Region: "CN", Runtime: "in_process"})
 	registry := providers.NewRegistry()
 	fake := &fakeInProcessChat{}
 	registry.Register(providers.Adapter{ID: "WorkBuddy", Chat: fake})
@@ -81,8 +81,8 @@ func TestInProcessMixedCaseProviderExecutesRegisteredAdapter(t *testing.T) {
 }
 
 func TestInProcessProviderFilterRoutesWithoutPin(t *testing.T) {
-	pool := accounts.NewPool([]string{"http://127.0.0.1:1"}, []string{"qoder1"})
-	pool.Upsert(accounts.Item{ID: "wb1", Provider: "workbuddy", Region: "cn", Runtime: "in_process"})
+	pool := NewPool([]string{"http://127.0.0.1:1"}, []string{"qoder1"})
+	pool.Upsert(Item{ID: "wb1", Provider: "workbuddy", Region: "cn", Runtime: "in_process"})
 	registry := providers.NewRegistry()
 	fake := &fakeInProcessChat{}
 	registry.Register(providers.Adapter{ID: "workbuddy", Chat: fake})
@@ -101,8 +101,8 @@ func TestInProcessProviderFilterRoutesWithoutPin(t *testing.T) {
 }
 
 func TestAPIKeyAllowlistBlocksOtherProviderFamily(t *testing.T) {
-	pool := accounts.NewPool(nil, nil)
-	pool.Upsert(accounts.Item{ID: "wb1", Provider: "workbuddy", Region: "cn", Runtime: "in_process"})
+	pool := NewPool(nil, nil)
+	pool.Upsert(Item{ID: "wb1", Provider: "workbuddy", Region: "cn", Runtime: "in_process"})
 	registry := providers.NewRegistry()
 	fake := &fakeInProcessChat{}
 	registry.Register(providers.Adapter{ID: "workbuddy", Chat: fake})
@@ -125,9 +125,9 @@ func TestAPIKeyAllowlistKeepsBareModelInsideAllowedFamily(t *testing.T) {
 		_, _ = io.WriteString(w, `{"model":"glm-5.2","choices":[{"message":{"content":"qoder"},"finish_reason":"stop"}],"usage":{"source":"upstream"}}`)
 	}))
 	defer qoder.Close()
-	pool := accounts.NewPool(nil, nil)
-	pool.Upsert(accounts.Item{ID: "q1", URL: qoder.URL, Provider: "qoder", Runtime: "child_process"})
-	pool.Upsert(accounts.Item{ID: "wb1", Provider: "workbuddy", Region: "cn", Runtime: "in_process"})
+	pool := NewPool(nil, nil)
+	pool.Upsert(Item{ID: "q1", URL: qoder.URL, Provider: "qoder", Runtime: "child_process"})
+	pool.Upsert(Item{ID: "wb1", Provider: "workbuddy", Region: "cn", Runtime: "in_process"})
 	registry := providers.NewRegistry()
 	fake := &fakeInProcessChat{}
 	registry.Register(providers.Adapter{ID: "workbuddy", Chat: fake})
@@ -144,14 +144,14 @@ func TestAPIKeyAllowlistKeepsBareModelInsideAllowedFamily(t *testing.T) {
 	if result.AccountID != "q1" || result.Provider != "qoder" || fake.calls != 0 {
 		t.Fatalf("result=%+v workbuddy calls=%d", result, fake.calls)
 	}
-	if n := pool.LenRoute(accounts.RouteQuery{PublicModel: "glm-5.2", AllowedProviders: []string{"qoder"}}); n != 1 {
+	if n := pool.LenRoute(RouteQuery{PublicModel: "glm-5.2", AllowedProviders: []string{"qoder"}}); n != 1 {
 		t.Fatalf("qoder-only allowlist candidates = %d", n)
 	}
 }
 
 func TestInProcessProviderOnlyAccountRoutesWithoutPin(t *testing.T) {
-	pool := accounts.NewPool(nil, nil)
-	pool.Upsert(accounts.Item{ID: "wb1", Provider: "workbuddy", Runtime: "in_process"})
+	pool := NewPool(nil, nil)
+	pool.Upsert(Item{ID: "wb1", Provider: "workbuddy", Runtime: "in_process"})
 	registry := providers.NewRegistry()
 	fake := &fakeInProcessChat{}
 	registry.Register(providers.Adapter{ID: "workbuddy", Chat: fake})
@@ -177,8 +177,8 @@ func TestInProcessProviderOnlyAccountRoutesWithoutPin(t *testing.T) {
 }
 
 func TestInProcessProviderUnsupportedModelDoesNotFailoverToQoder(t *testing.T) {
-	pool := accounts.NewPool([]string{"http://127.0.0.1:1"}, []string{"qoder1"})
-	pool.Upsert(accounts.Item{ID: "wb1", Provider: "workbuddy", Runtime: "in_process"})
+	pool := NewPool([]string{"http://127.0.0.1:1"}, []string{"qoder1"})
+	pool.Upsert(Item{ID: "wb1", Provider: "workbuddy", Runtime: "in_process"})
 	registry := providers.NewRegistry()
 	fake := &fakeInProcessChat{}
 	registry.Register(providers.Adapter{ID: "workbuddy", Chat: fake})
@@ -205,8 +205,8 @@ func (f *rateLimitedThenOKChat) ChatNonStream(ctx context.Context, accountID str
 	return providers.ChatOutcome{Model: req.Model, Content: "OK-" + accountID, FinishReason: "stop"}, nil
 }
 
-func (f *rateLimitedThenOKChat) ChatStream(ctx context.Context, accountID string, req translate.ChatRequest) (*http.Response, error) {
-	return nil, errors.New("stream unsupported in fake")
+func (f *rateLimitedThenOKChat) ChatStream(ctx context.Context, accountID string, req translate.ChatRequest) (*http.Response, providers.ResolvedChat, error) {
+	return nil, providers.ResolvedChat{}, errors.New("stream unsupported in fake")
 }
 
 type systemObservingChat struct {
@@ -224,13 +224,13 @@ func (f *systemObservingChat) ChatNonStream(ctx context.Context, accountID strin
 	return providers.ChatOutcome{Model: req.Model, Content: "OK", FinishReason: "stop"}, nil
 }
 
-func (f *systemObservingChat) ChatStream(ctx context.Context, accountID string, req translate.ChatRequest) (*http.Response, error) {
-	return nil, errors.New("stream unsupported in fake")
+func (f *systemObservingChat) ChatStream(ctx context.Context, accountID string, req translate.ChatRequest) (*http.Response, providers.ResolvedChat, error) {
+	return nil, providers.ResolvedChat{}, errors.New("stream unsupported in fake")
 }
 
 func TestInProcessDropSystemPromptStripsBeforeProvider(t *testing.T) {
-	pool := accounts.NewPool(nil, nil)
-	pool.Upsert(accounts.Item{ID: "wb1", Provider: "workbuddy", Runtime: "in_process", DropSystemPrompt: true})
+	pool := NewPool(nil, nil)
+	pool.Upsert(Item{ID: "wb1", Provider: "workbuddy", Runtime: "in_process", DropSystemPrompt: true})
 	registry := providers.NewRegistry()
 	fake := &systemObservingChat{}
 	registry.Register(providers.Adapter{ID: "workbuddy", Chat: fake})
@@ -252,8 +252,8 @@ func TestInProcessDropSystemPromptStripsBeforeProvider(t *testing.T) {
 }
 
 func TestInProcessKeepSystemPromptWhenFlagOff(t *testing.T) {
-	pool := accounts.NewPool(nil, nil)
-	pool.Upsert(accounts.Item{ID: "wb1", Provider: "workbuddy", Runtime: "in_process"})
+	pool := NewPool(nil, nil)
+	pool.Upsert(Item{ID: "wb1", Provider: "workbuddy", Runtime: "in_process"})
 	registry := providers.NewRegistry()
 	fake := &systemObservingChat{}
 	registry.Register(providers.Adapter{ID: "workbuddy", Chat: fake})
@@ -283,14 +283,14 @@ func (f *contentRejectedChat) ChatNonStream(ctx context.Context, accountID strin
 	return providers.ChatOutcome{}, &providers.Error{Kind: accounts.KindInvalidRequest, Status: 400, Message: "sensitive content rejected"}
 }
 
-func (f *contentRejectedChat) ChatStream(ctx context.Context, accountID string, req translate.ChatRequest) (*http.Response, error) {
-	return nil, errors.New("stream unsupported in fake")
+func (f *contentRejectedChat) ChatStream(ctx context.Context, accountID string, req translate.ChatRequest) (*http.Response, providers.ResolvedChat, error) {
+	return nil, providers.ResolvedChat{}, errors.New("stream unsupported in fake")
 }
 
 func TestInProcessContentRejectionDoesNotFailover(t *testing.T) {
-	pool := accounts.NewPool(nil, nil)
-	pool.Upsert(accounts.Item{ID: "wb1", Provider: "workbuddy", Runtime: "in_process"})
-	pool.Upsert(accounts.Item{ID: "wb2", Provider: "workbuddy", Runtime: "in_process"})
+	pool := NewPool(nil, nil)
+	pool.Upsert(Item{ID: "wb1", Provider: "workbuddy", Runtime: "in_process"})
+	pool.Upsert(Item{ID: "wb2", Provider: "workbuddy", Runtime: "in_process"})
 	registry := providers.NewRegistry()
 	fake := &contentRejectedChat{}
 	registry.Register(providers.Adapter{ID: "workbuddy", Chat: fake})
@@ -312,9 +312,9 @@ func TestInProcessContentRejectionDoesNotFailover(t *testing.T) {
 }
 
 func TestInProcessFailoverRotatesAcrossWorkBuddyAccounts(t *testing.T) {
-	pool := accounts.NewPool(nil, nil)
-	pool.Upsert(accounts.Item{ID: "wb1", Provider: "workbuddy", Runtime: "in_process"})
-	pool.Upsert(accounts.Item{ID: "wb2", Provider: "workbuddy", Runtime: "in_process"})
+	pool := NewPool(nil, nil)
+	pool.Upsert(Item{ID: "wb1", Provider: "workbuddy", Runtime: "in_process"})
+	pool.Upsert(Item{ID: "wb2", Provider: "workbuddy", Runtime: "in_process"})
 	registry := providers.NewRegistry()
 	fake := &rateLimitedThenOKChat{}
 	registry.Register(providers.Adapter{ID: "workbuddy", Chat: fake})
@@ -333,31 +333,140 @@ func TestInProcessFailoverRotatesAcrossWorkBuddyAccounts(t *testing.T) {
 }
 
 func TestAttemptsFollowProviderFilteredPool(t *testing.T) {
-	pool := accounts.NewPool(nil, nil)
-	pool.Upsert(accounts.Item{ID: "q1", URL: "http://a", Provider: "qoder", Runtime: "child_process"})
-	pool.Upsert(accounts.Item{ID: "q2", URL: "http://b", Provider: "qoder", Runtime: "child_process"})
-	pool.Upsert(accounts.Item{ID: "w1", Provider: "workbuddy", Runtime: "in_process"})
-	if got := pool.LenRoute(accounts.RouteQuery{ProviderFilter: "qoder"}); got != 2 {
+	pool := NewPool(nil, nil)
+	pool.Upsert(Item{ID: "q1", URL: "http://a", Provider: "qoder", Runtime: "child_process"})
+	pool.Upsert(Item{ID: "q2", URL: "http://b", Provider: "qoder", Runtime: "child_process"})
+	pool.Upsert(Item{ID: "w1", Provider: "workbuddy", Runtime: "in_process"})
+	if got := pool.LenRoute(RouteQuery{ProviderFilter: "qoder"}); got != 2 {
 		t.Fatalf("qoder candidates=%d", got)
 	}
-	if got := pool.LenRoute(accounts.RouteQuery{ProviderFilter: "workbuddy"}); got != 1 {
+	if got := pool.LenRoute(RouteQuery{ProviderFilter: "workbuddy"}); got != 1 {
 		t.Fatalf("workbuddy candidates=%d", got)
 	}
-	if got := pool.LenRoute(accounts.RouteQuery{ProviderFilter: "qoder", Excluded: map[string]struct{}{"q1": {}}}); got != 1 {
+	if got := pool.LenRoute(RouteQuery{ProviderFilter: "qoder", Excluded: map[string]struct{}{"q1": {}}}); got != 1 {
 		t.Fatalf("excluded candidates=%d", got)
 	}
 }
 
 func TestProviderPickFiltersByProviderFamily(t *testing.T) {
-	pool := accounts.NewPool([]string{"http://a"}, []string{"q1"})
-	pool.Upsert(accounts.Item{ID: "w1", Provider: "workbuddy", Runtime: "in_process"})
-	item, ok := pool.PickRoute(accounts.RouteQuery{ProviderFilter: "workbuddy"})
+	pool := NewPool([]string{"http://a"}, []string{"q1"})
+	pool.Upsert(Item{ID: "w1", Provider: "workbuddy", Runtime: "in_process"})
+	item, ok := pool.PickRoute(RouteQuery{ProviderFilter: "workbuddy"})
 	if !ok || item.ID != "w1" {
 		t.Fatalf("workbuddy pick=%+v ok=%v", item, ok)
 	}
-	if _, ok := pool.PickRoute(accounts.RouteQuery{ProviderFilter: "cursor"}); ok {
+	if _, ok := pool.PickRoute(RouteQuery{ProviderFilter: "cursor"}); ok {
 		t.Fatal("unknown provider family must not pick an account")
 	}
 }
 
 var _ = json.RawMessage{}
+
+func TestAPIKeyRegionScopedGrantNeverCrossesRegions(t *testing.T) {
+	pool := NewPool(nil, nil)
+	pool.Upsert(Item{ID: "wc1", Provider: "workbuddy", Region: "cn", Runtime: "in_process"})
+	pool.Upsert(Item{ID: "wg1", Provider: "workbuddy", Region: "global", Runtime: "in_process"})
+	registry := providers.NewRegistry()
+	fake := &fakeInProcessChat{}
+	registry.Register(providers.Adapter{ID: "workbuddy", Chat: fake})
+	ex := NewChatExecutor(pool, "")
+	ex.Providers = registry
+
+	// CN-only key with bare provider filter lands on the CN account.
+	ctx := WithAllowedProviders(context.Background(), []string{"workbuddy:cn"})
+	result, err := ex.ChatNonStream(ctx, translate.ChatRequest{
+		Model: "glm-5.2", Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}},
+	}, "", "workbuddy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AccountID != "wc1" {
+		t.Fatalf("cn-only key landed on %q, want wc1", result.AccountID)
+	}
+
+	// Pin to the global account must not execute on it.
+	_, err = ex.ChatNonStream(ctx, translate.ChatRequest{
+		Model: "glm-5.2", Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}},
+	}, "wg1", "workbuddy")
+	if err != nil {
+		// Falls back into the cn grant — acceptable, but must be wc1.
+		t.Fatalf("pin fallback should succeed via the granted account: %v", err)
+	}
+	if got := fake.calls; got != 2 {
+		t.Fatalf("calls=%d want 2 (pin fell back into the cn grant)", got)
+	}
+
+	// The error ladder reports the granted region, not the pinned one.
+	emptyPool := NewPool(nil, nil)
+	emptyPool.Upsert(Item{ID: "wg1", Provider: "workbuddy", Region: "global", Runtime: "in_process"})
+	exEmpty := NewChatExecutor(emptyPool, "")
+	exEmpty.Providers = registry
+	_, err = exEmpty.ChatNonStream(ctx, translate.ChatRequest{
+		Model: "glm-5.2", Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}},
+	}, "", "workbuddy")
+	if err == nil {
+		t.Fatal("cn-only key with only a global account must fail")
+	}
+	if msg := err.Error(); msg != "no workbuddy/cn accounts available" {
+		t.Fatalf("error = %q, want the granted-region message", msg)
+	}
+}
+
+func TestAPIKeyRegionScopedFailoverStaysInsideGrant(t *testing.T) {
+	pool := NewPool(nil, nil)
+	pool.Upsert(Item{ID: "wc1", Provider: "workbuddy", Region: "cn", Runtime: "in_process"})
+	pool.Upsert(Item{ID: "wg1", Provider: "workbuddy", Region: "global", Runtime: "in_process"})
+	registry := providers.NewRegistry()
+	failingCN := &flakyInProcessChat{fail: true}
+	failingCN.provider = "workbuddy"
+	registry.Register(providers.Adapter{ID: "workbuddy", Chat: failingCN})
+	ex := NewChatExecutor(pool, "")
+	ex.Providers = registry
+
+	ctx := WithAllowedProviders(context.Background(), []string{"workbuddy:cn"})
+	_, err := ex.ChatNonStream(ctx, translate.ChatRequest{
+		Model: "glm-5.2", Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}},
+	}, "", "workbuddy")
+	if err == nil {
+		t.Fatal("single failing cn account must fail, not cross to global")
+	}
+}
+
+type flakyInProcessChat struct {
+	fail bool
+	fakeInProcessChat
+}
+
+func (f *flakyInProcessChat) ChatNonStream(ctx context.Context, accountID string, req translate.ChatRequest) (providers.ChatOutcome, error) {
+	f.calls++
+	if f.fail {
+		return providers.ChatOutcome{}, &providers.Error{
+			Kind: accounts.KindRateLimit, Status: 429, Code: "rate_limit",
+			Message: "429",
+		}
+	}
+	return f.fakeInProcessChat.ChatNonStream(ctx, accountID, req)
+}
+
+func TestAPIKeyRegionScopedMultiRegionKeepsSticky(t *testing.T) {
+	pool := NewPool(nil, nil)
+	pool.Upsert(Item{ID: "wc1", Provider: "workbuddy", Region: "cn", Runtime: "in_process"})
+	pool.Upsert(Item{ID: "wg1", Provider: "workbuddy", Region: "global", Runtime: "in_process"})
+	registry := providers.NewRegistry()
+	fake := &fakeInProcessChat{}
+	registry.Register(providers.Adapter{ID: "workbuddy", Chat: fake})
+	ex := NewChatExecutor(pool, "")
+	ex.Providers = registry
+
+	// Key granted both regions: the request sticks to the first picked region.
+	ctx := WithAllowedProviders(context.Background(), []string{"workbuddy:cn", "workbuddy:global"})
+	result, err := ex.ChatNonStream(ctx, translate.ChatRequest{
+		Model: "glm-5.2", Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}},
+	}, "", "workbuddy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AccountID != "wc1" && result.AccountID != "wg1" {
+		t.Fatalf("multi-region grant picked unexpected account %q", result.AccountID)
+	}
+}

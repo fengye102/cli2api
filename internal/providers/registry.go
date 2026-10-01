@@ -36,12 +36,13 @@ type ProviderCapabilities struct {
 }
 
 type RegionDescriptor struct {
-	ID            string `json:"id"`
-	Label         string `json:"label"`
-	ChatBase      string `json:"chat_base"`
-	BillingBase   string `json:"billing_base"`
-	AuthBase      string `json:"auth_base"`
-	DefaultDomain string `json:"default_domain"`
+	ID            string         `json:"id"`
+	Label         string         `json:"label"`
+	ChatBase      string         `json:"chat_base"`
+	BillingBase   string         `json:"billing_base"`
+	AuthBase      string         `json:"auth_base"`
+	DefaultDomain string         `json:"default_domain"`
+	Checkin       *CheckinPolicy `json:"checkin,omitempty"`
 }
 
 type ProviderDescriptor struct {
@@ -105,6 +106,7 @@ var Qoder = ProviderDescriptor{
 			ID: "cn", Label: "CN", ChatBase: "https://gateway.qoder.com.cn",
 			BillingBase: "https://openapi.qoder.com.cn", AuthBase: "https://qoder.com.cn",
 			DefaultDomain: "qoder.com.cn",
+			Checkin:       &CheckinPolicy{Timezone: "Asia/Shanghai"},
 		},
 	},
 	DefaultRegion: "global",
@@ -128,11 +130,13 @@ var WorkBuddy = ProviderDescriptor{
 			ID: "cn", Label: "CN", ChatBase: "https://copilot.tencent.com",
 			BillingBase: "https://www.codebuddy.cn", AuthBase: "https://copilot.tencent.com",
 			DefaultDomain: "codebuddy.cn",
+			Checkin:       &CheckinPolicy{Timezone: "Local"},
 		},
 		{
 			ID: "global", Label: "Global", ChatBase: "https://www.workbuddy.ai",
 			BillingBase: "https://www.workbuddy.ai", AuthBase: "https://www.workbuddy.ai",
 			DefaultDomain: "workbuddy.ai",
+			Checkin:       &CheckinPolicy{Timezone: "Local"},
 		},
 	},
 	DefaultRegion: "cn",
@@ -157,15 +161,91 @@ var Trae = ProviderDescriptor{
 			ID: "cn", Label: "CN Solo", ChatBase: "https://trae-api-cn.mchost.guru",
 			BillingBase: "https://api.trae.cn", AuthBase: "https://api.trae.com.cn",
 			DefaultDomain: "trae.cn",
+			Checkin:       &CheckinPolicy{Timezone: "Asia/Shanghai"},
 		},
 	},
 	DefaultRegion: "cn",
+}
+
+// Devin descriptor. Protocol constants stay in internal/providers/devin.
+// Global-only Connect-RPC adapter; no Devin CLI child process.
+var Devin = ProviderDescriptor{
+	ID:                "devin",
+	Label:             "Devin",
+	Runtime:           RuntimeInProcess,
+	AuthTypes:         []AuthType{AuthOAuth},
+	CredentialFormats: []string{"devin-session-v1"},
+	Capabilities: ProviderCapabilities{
+		Chat: true, Stream: true, Tools: true, Images: true, Reasoning: true,
+		ModelCatalog: true, Usage: true, Login: true, BrowserLogin: true,
+		PATLogin: false, ImportExport: true,
+	},
+	Regions: []RegionDescriptor{
+		{
+			ID: "global", Label: "Global", ChatBase: "https://server.codeium.com",
+			BillingBase: "https://api.devin.ai", AuthBase: "https://app.devin.ai",
+			DefaultDomain: "devin.ai",
+		},
+	},
+	DefaultRegion: "global",
+}
+
+// Command descriptor. Protocol constants stay in internal/providers/command.
+// Global-only in-process adapter. Auth is a single pasted user_… Bearer key
+// shared by the CLI and the API: no OAuth, no browser loopback. Generation goes
+// through /alpha/generate, the CLI's own endpoint, so the $1 Go plan (which has
+// no /provider/v1/* API access) is served too.
+var Command = ProviderDescriptor{
+	ID:                "command",
+	Label:             "Command Code",
+	Runtime:           RuntimeInProcess,
+	AuthTypes:         []AuthType{AuthPAT},
+	CredentialFormats: []string{"command-key-v1"},
+	Capabilities: ProviderCapabilities{
+		Chat: true, Stream: true, Tools: true, Images: true, Reasoning: false,
+		ModelCatalog: true, Usage: true, Login: false, BrowserLogin: false,
+		PATLogin: true, ImportExport: true,
+	},
+	Regions: []RegionDescriptor{
+		{
+			ID: "global", Label: "Global", ChatBase: "https://api.commandcode.ai",
+			BillingBase: "https://api.commandcode.ai", AuthBase: "https://api.commandcode.ai",
+			DefaultDomain: "commandcode.ai",
+		},
+	},
+	DefaultRegion: "global",
+}
+
+// Codex descriptor. OpenAI Codex (ChatGPT subscription) via the ChatGPT
+// backend Responses endpoint; OAuth with a fixed loopback redirect.
+var Codex = ProviderDescriptor{
+	ID:                "codex",
+	Label:             "Codex",
+	Runtime:           RuntimeInProcess,
+	AuthTypes:         []AuthType{AuthOAuth},
+	CredentialFormats: []string{"codex-oauth-v1"},
+	Capabilities: ProviderCapabilities{
+		Chat: true, Stream: true, Tools: true, Images: true, Reasoning: true,
+		ModelCatalog: true, Usage: true, Login: true, BrowserLogin: true,
+		PATLogin: false, ImportExport: true,
+	},
+	Regions: []RegionDescriptor{
+		{
+			ID: "global", Label: "Global", ChatBase: "https://chatgpt.com/backend-api/codex",
+			AuthBase: "https://auth.openai.com", BillingBase: "https://chatgpt.com",
+			DefaultDomain: "chatgpt.com",
+		},
+	},
+	DefaultRegion: "global",
 }
 
 var registry = map[string]ProviderDescriptor{
 	Qoder.ID:     Qoder,
 	WorkBuddy.ID: WorkBuddy,
 	Trae.ID:      Trae,
+	Devin.ID:     Devin,
+	Command.ID:   Command,
+	Codex.ID:     Codex,
 }
 
 func Get(id string) (ProviderDescriptor, bool) {
@@ -174,7 +254,7 @@ func Get(id string) (ProviderDescriptor, bool) {
 }
 
 func List() []ProviderDescriptor {
-	return []ProviderDescriptor{Qoder, WorkBuddy, Trae}
+	return []ProviderDescriptor{Qoder, WorkBuddy, Trae, Devin, Command, Codex}
 }
 
 // Resolve validates a provider/region pair. Empty values fall back to the

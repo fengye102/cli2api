@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
-import { Description, Label, Radio, RadioGroup } from '@heroui/react'
+import { Button, Label, Radio, RadioGroup, Tooltip } from '@heroui/react'
+import { Info } from '@phosphor-icons/react'
 
 type Option<T extends string> = {
   value: T
@@ -15,6 +16,7 @@ type Props<T extends string> = {
   onChange: (value: T) => void
   ariaLabel: string
   columns?: 1 | 2 | 3
+  className?: string
 }
 
 const columnClass = {
@@ -29,6 +31,7 @@ export function OptionTiles<T extends string>({
   onChange,
   ariaLabel,
   columns = 2,
+  className = '',
 }: Props<T>) {
   return (
     <RadioGroup
@@ -37,26 +40,48 @@ export function OptionTiles<T extends string>({
       onChange={(next) => {
         if (typeof next === 'string' && next) onChange(next as T)
       }}
-      className={`grid gap-2 ${columnClass[columns]}`}
+      className={`grid gap-2 ${columnClass[columns]} ${className}`.trim()}
     >
       {options.map((option) => (
-        <Radio
+        <div
           key={option.value}
-          value={option.value}
-          isDisabled={option.disabled}
-          className="rounded-xl border border-border bg-surface-secondary p-3 data-selected:border-accent data-selected:bg-accent-soft"
+          data-selected={option.value === value || undefined}
+          className="flex items-center gap-1 rounded-xl border border-border bg-surface-secondary p-1.5 data-selected:border-accent data-selected:bg-accent-soft"
         >
-          <Radio.Content className="w-full items-start">
-            {option.icon ? <span className="mt-0.5 shrink-0">{option.icon}</span> : null}
-            <Radio.Control>
-              <Radio.Indicator />
-            </Radio.Control>
-            <div className="min-w-0 flex-1">
-              <Label className="block truncate">{option.label}</Label>
-              {option.hint ? <Description className="mt-0.5">{option.hint}</Description> : null}
-            </div>
-          </Radio.Content>
-        </Radio>
+          <Radio
+            value={option.value}
+            isDisabled={option.disabled}
+            className="min-w-0 flex-1 border-0 bg-transparent p-1.5"
+          >
+            <Radio.Content className="w-full items-center">
+              {option.icon ? <span className="shrink-0">{option.icon}</span> : null}
+              <Radio.Control>
+                <Radio.Indicator />
+              </Radio.Control>
+              <div className="min-w-0 flex-1">
+                <Label className="block truncate">{option.label}</Label>
+              </div>
+            </Radio.Content>
+          </Radio>
+          {option.hint ? (
+            <Tooltip>
+              <Tooltip.Trigger>
+                <Button
+                  isIconOnly
+                  size="sm"
+                  variant="ghost"
+                  aria-label={option.hint}
+                  className="shrink-0 text-muted"
+                >
+                  <Info size={14} />
+                </Button>
+              </Tooltip.Trigger>
+              <Tooltip.Content>
+                <p className="max-w-xs text-xs leading-5">{option.hint}</p>
+              </Tooltip.Content>
+            </Tooltip>
+          ) : null}
+        </div>
       ))}
     </RadioGroup>
   )

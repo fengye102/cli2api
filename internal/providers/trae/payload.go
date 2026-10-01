@@ -3,10 +3,13 @@ package trae
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/caigee-cmd/cli2api/internal/translate"
 )
 
-// PrepareBody rewrites an OpenAI chat body into Trae Solo llm_utils_chat form.
-func PrepareBody(src []byte) []byte {
+// PrepareBody rewrites an OpenAI chat body into Trae llm_utils_chat form.
+// fn is the chat scene; empty falls back to Function.
+func PrepareBody(src []byte, fn string) []byte {
 	if len(src) == 0 {
 		return src
 	}
@@ -15,7 +18,10 @@ func PrepareBody(src []byte) []byte {
 		return src
 	}
 	obj["stream"] = true
-	obj["function"] = Function
+	if fn == "" {
+		fn = Function
+	}
+	obj["function"] = fn
 
 	if msgs, ok := obj["messages"].([]any); ok {
 		for _, mi := range msgs {
@@ -132,13 +138,18 @@ func normalizeTools(obj map[string]any) {
 		delete(obj, "tools")
 		return
 	}
-	list, ok := raw.([]any)
-	if !ok {
+	encoded, err := json.Marshal(raw)
+	if err != nil {
 		return
 	}
-	if len(list) == 0 {
+	normalized, err := translate.NormalizeOpenAITools(encoded)
+	if err != nil || len(normalized) == 0 {
 		delete(obj, "tools")
 		delete(obj, "tool_choice")
+		return
+	}
+	var list []any
+	if err := json.Unmarshal(normalized, &list); err != nil {
 		return
 	}
 	out := make([]any, 0, len(list))
@@ -162,6 +173,7 @@ func normalizeTools(obj map[string]any) {
 	}
 	if len(out) == 0 {
 		delete(obj, "tools")
+		delete(obj, "tool_choice")
 		return
 	}
 	obj["tools"] = out

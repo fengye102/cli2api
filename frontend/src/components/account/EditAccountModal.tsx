@@ -1,7 +1,9 @@
 import { useState } from 'react'
-import { Alert, Button, Chip, Description, Form, Input, Label, Modal, NumberField } from '@heroui/react'
+import { Alert, Button, Chip, Form, Input, Modal, NumberField } from '@heroui/react'
 import { X } from '@phosphor-icons/react'
 import { ProviderMark } from '@/components/ProviderMark'
+import { FormRow } from '@/components/ui/FormRow'
+import { CompactSwitch } from '@/components/ui/CompactSwitch'
 import type { AccountRow } from '@/lib/account'
 import { accountProviderLabel } from '@/lib/provider'
 
@@ -9,16 +11,22 @@ type Translate = (key: string, vars?: Record<string, string | number>) => string
 
 type Props = {
   account: AccountRow | null
+  checkinDefaultTime?: string
+  checkinTimezone?: string
   busy: boolean
   t: Translate
   onClose: () => void
-  onSave: (input: { name: string; max_inflight: number; priority: number }) => Promise<void>
+  onSave: (input: { name: string; max_inflight: number; priority: number; proxy_url: string; checkin_time?: string; drop_system_prompt?: boolean }) => Promise<void>
 }
 
-export function EditAccountModal({ account, busy, t, onClose, onSave }: Props) {
+export function EditAccountModal({ account, checkinDefaultTime, checkinTimezone, busy, t, onClose, onSave }: Props) {
   const [name, setName] = useState(account?.name || '')
   const [maxInFlight, setMaxInFlight] = useState<number>(account?.max_inflight ?? 4)
   const [priority, setPriority] = useState<number>(account?.priority ?? 50)
+  const [proxyUrl, setProxyUrl] = useState(account?.proxy_url || '')
+  const [dropSystemPrompt, setDropSystemPrompt] = useState(Boolean(account?.drop_system_prompt))
+  const [inheritCheckinTime, setInheritCheckinTime] = useState(!account?.checkin_time)
+  const [checkinTime, setCheckinTime] = useState<string | null>(account?.checkin_time || null)
   const [error, setError] = useState('')
   const title = t('editAccountTitle', { name: account?.name || account?.id || '' })
   const provider = account ? accountProviderLabel(account.provider, account.region, t) : ''
@@ -38,9 +46,20 @@ export function EditAccountModal({ account, busy, t, onClose, onSave }: Props) {
       setError(t('priorityInvalid'))
       return
     }
+    if (checkinDefaultTime !== undefined && !inheritCheckinTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(checkinTime ?? checkinDefaultTime)) {
+      setError(t('checkinTimeInvalid'))
+      return
+    }
     setError('')
     try {
-      await onSave({ name: trimmed, max_inflight: maxInFlight, priority })
+      await onSave({
+        name: trimmed,
+        max_inflight: maxInFlight,
+        priority,
+        proxy_url: proxyUrl.trim(),
+        checkin_time: checkinDefaultTime !== undefined ? (inheritCheckinTime ? '' : checkinTime ?? checkinDefaultTime) : undefined,
+        drop_system_prompt: account?.provider === 'workbuddy' ? dropSystemPrompt : undefined,
+      })
       onClose()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -81,9 +100,8 @@ export function EditAccountModal({ account, busy, t, onClose, onSave }: Props) {
                   </Alert.Content>
                 </Alert>
               ) : null}
-              <Form className="space-y-5" onSubmit={(event) => void submit(event)}>
-                <div className="space-y-1.5">
-                  <Label className="text-sm font-medium text-muted">{t('accountName')}</Label>
+              <Form className="space-y-4" onSubmit={(event) => void submit(event)}>
+                <FormRow label={t('accountName')}>
                   <Input
                     value={name}
                     onChange={(event) => setName(event.target.value)}
@@ -92,8 +110,8 @@ export function EditAccountModal({ account, busy, t, onClose, onSave }: Props) {
                     disabled={busy}
                     autoFocus
                   />
-                </div>
-                <div className="grid gap-5 sm:grid-cols-2">
+                </FormRow>
+                <FormRow label={t('maxInflight')} hint={t('maxInflightHint')}>
                   <NumberField
                     value={maxInFlight}
                     onChange={(value) => setMaxInFlight(value ?? 4)}
@@ -102,14 +120,14 @@ export function EditAccountModal({ account, busy, t, onClose, onSave }: Props) {
                     isDisabled={busy}
                     isRequired
                   >
-                    <Label className="text-sm font-medium text-muted">{t('maxInflight')}</Label>
                     <NumberField.Group>
                       <NumberField.DecrementButton />
-                      <NumberField.Input />
+                      <NumberField.Input aria-label={t('maxInflight')} />
                       <NumberField.IncrementButton />
                     </NumberField.Group>
-                    <Description className="text-xs leading-5 text-muted">{t('maxInflightHint')}</Description>
                   </NumberField>
+                </FormRow>
+                <FormRow label={t('priority')} hint={t('priorityHint')}>
                   <NumberField
                     value={priority}
                     onChange={(value) => setPriority(value ?? 50)}
@@ -118,15 +136,41 @@ export function EditAccountModal({ account, busy, t, onClose, onSave }: Props) {
                     isDisabled={busy}
                     isRequired
                   >
-                    <Label className="text-sm font-medium text-muted">{t('priority')}</Label>
                     <NumberField.Group>
                       <NumberField.DecrementButton />
-                      <NumberField.Input />
+                      <NumberField.Input aria-label={t('priority')} />
                       <NumberField.IncrementButton />
                     </NumberField.Group>
-                    <Description className="text-xs leading-5 text-muted">{t('priorityHint')}</Description>
                   </NumberField>
-                </div>
+                </FormRow>
+                <FormRow label={t('proxyUrl')} hint={t('proxyUrlHint')}>
+                  <Input
+                    value={proxyUrl}
+                    onChange={(event) => setProxyUrl(event.target.value)}
+                    placeholder={t('proxyUrlPlaceholder')}
+                    aria-label={t('proxyUrl')}
+                    disabled={busy}
+                  />
+                </FormRow>
+                {account?.provider === 'workbuddy' ? (
+                  <FormRow label={t('dropSystemPrompt')} hint={t('dropSystemPromptHint')}>
+                    <CompactSwitch
+                      isSelected={dropSystemPrompt}
+                      isDisabled={busy}
+                      ariaLabel={t('dropSystemPrompt')}
+                      onChange={setDropSystemPrompt}
+                    />
+                  </FormRow>
+                ) : null}
+                {checkinDefaultTime !== undefined ? (
+                  <FormRow label={t('autoCheckinTime')} hint={t('checkinScheduleHint')}>
+                    <div className="space-y-3">
+                      <CompactSwitch isSelected={inheritCheckinTime} isDisabled={busy} onChange={setInheritCheckinTime} ariaLabel={t('checkinInherit')} label={t('checkinInherit')} />
+                      <p className="text-xs text-muted">{t('checkinDefaultValue', { time: checkinDefaultTime })} · <span className="mono">{checkinTimezone}</span></p>
+                      {!inheritCheckinTime ? <Input type="time" value={checkinTime ?? checkinDefaultTime} onChange={(event) => setCheckinTime(event.target.value)} aria-label={t('autoCheckinTime')} disabled={busy} required /> : null}
+                    </div>
+                  </FormRow>
+                ) : null}
               </Form>
             </Modal.Body>
             <Modal.Footer className="justify-end gap-2 px-6 pb-6">

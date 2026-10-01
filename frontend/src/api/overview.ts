@@ -1,11 +1,6 @@
 import { api } from './client'
 import type { CheckinRecord, Overview } from './types'
 
-export function fetchOverview(keyOverride?: string, options?: { refreshQuota?: boolean }) {
-  const path = options?.refreshQuota ? '/api/overview?refresh=1' : '/api/overview'
-  return api<Overview>(path, {}, keyOverride)
-}
-
 export function fetchOverviewSummary(keyOverride?: string) {
   return api<Overview>('/api/overview/summary', {}, keyOverride)
 }
@@ -56,26 +51,27 @@ type ModelsMemoryEntry = {
 const modelsMemoryTTL = 30_000
 const modelsMemoryCache = new Map<string, ModelsMemoryEntry>()
 
-function modelsMemoryKey(accountId?: string) {
-  return accountId || '*'
+function modelsMemoryKey(accountId?: string, view?: 'regional') {
+  return `${accountId || '*'}@${view || 'merged'}`
 }
 
-export function fetchModels(accountId?: string, refresh = false) {
+export function fetchModels(accountId?: string, refresh = false, view?: 'regional') {
   const q = new URLSearchParams()
   if (refresh) q.set('refresh', '1')
   if (accountId) q.set('account', accountId)
+  if (view) q.set('view', view)
   const query = q.toString()
   return api<ModelsResponse>(`/api/models${query ? `?${query}` : ''}`)
 }
 
-export function fetchModelsCached(accountId?: string) {
-  const key = modelsMemoryKey(accountId)
+export function fetchModelsCached(accountId?: string, view?: 'regional') {
+  const key = modelsMemoryKey(accountId, view)
   const cached = modelsMemoryCache.get(key)
   if (cached && Date.now() - cached.at < modelsMemoryTTL) {
     return Promise.resolve(cached.data)
   }
   if (cached?.pending) return cached.pending
-  const pending = fetchModels(accountId).then((data) => {
+  const pending = fetchModels(accountId, false, view).then((data) => {
     modelsMemoryCache.set(key, { data, at: Date.now() })
     return data
   }).finally(() => {
@@ -88,10 +84,10 @@ export function fetchModelsCached(accountId?: string) {
   return pending
 }
 
-export function refreshModels(accountId?: string) {
-  const key = modelsMemoryKey(accountId)
+export function refreshModels(accountId?: string, view?: 'regional') {
+  const key = modelsMemoryKey(accountId, view)
   modelsMemoryCache.delete(key)
-  return fetchModels(accountId, true).then((data) => {
+  return fetchModels(accountId, true, view).then((data) => {
     modelsMemoryCache.set(key, { data, at: Date.now() })
     return data
   })
@@ -110,15 +106,26 @@ export function updateModelContext(modelKey: string, contextLength: number) {
 }
 
 export function updateTraeMaxMode(modelKey: string, maxMode: boolean) {
+  return updateProviderMaxMode('trae', modelKey, maxMode)
+}
+
+export function updateProviderMaxMode(provider: string, modelKey: string, maxMode: boolean, contextWindow?: number | null) {
   return api<{
     model: string
     provider: string
     max_mode: boolean
     reasoning_effort?: string
     context_custom: boolean
-  }>(`/api/models/trae/${encodeURIComponent(modelKey)}`, {
+    context_length?: number
+    default_context_length?: number
+  }>(`/api/models/${encodeURIComponent(provider)}/${encodeURIComponent(modelKey)}`, {
     method: 'PATCH',
-    body: JSON.stringify({ max_mode: maxMode }),
+    // Qoder has no is_max_mode upstream: its toggle maps onto the numeric
+    // window, so send the target window explicitly. Trae ignores context_length
+    // and switches on max_mode alone.
+    body: JSON.stringify(
+      provider === 'qoder' && maxMode && contextWindow ? { max_mode: maxMode, context_length: contextWindow } : { max_mode: maxMode },
+    ),
   })
 }
 
@@ -142,11 +149,6 @@ export function refreshAccount(accountId: string, options?: { quota?: boolean })
     method: 'POST',
     body: '{}',
   })
-}
-
-export function rewarmWorker(accountId?: string) {
-  if (!accountId) throw new Error('account id required')
-  return api(`/api/accounts/${encodeURIComponent(accountId)}/rewarm`, { method: 'POST', body: '{}' })
 }
 
 export function testChat(model: string, content: string, accountId?: string) {
@@ -173,7 +175,7 @@ export type ProviderDescriptor = {
     pat_login: boolean
     import_export: boolean
   }
-  regions: Array<{ id: string; label: string }>
+  regions: Array<{ id: string; label: string; checkin?: { timezone: string } }>
   default_region: string
 }
 
@@ -191,6 +193,9 @@ export function createAccount(
     drop_system_prompt?: boolean
     workbuddy_auto_checkin?: boolean
     workbuddy_checkin_time?: string
+    auto_checkin?: boolean
+    checkin_time?: string
+    proxy_url?: string
   },
 ) {
   return api('/api/accounts', {
@@ -205,6 +210,9 @@ export function createAccount(
       drop_system_prompt: options?.drop_system_prompt,
       workbuddy_auto_checkin: options?.workbuddy_auto_checkin,
       workbuddy_checkin_time: options?.workbuddy_checkin_time,
+      auto_checkin: options?.auto_checkin,
+      checkin_time: options?.checkin_time,
+      proxy_url: options?.proxy_url,
     }),
   })
 }

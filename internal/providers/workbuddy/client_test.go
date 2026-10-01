@@ -25,6 +25,12 @@ type memStore struct {
 	lastKind   string
 	lastStatus string
 	settings   map[string]accounts.ProviderModelSetting
+
+	accountProxyURL string
+	secretValue     string
+	secretFound     bool
+	secretErr       error
+	secretCalls     int
 }
 
 func (s *memStore) Get(ctx context.Context, id string) (accounts.Account, error) {
@@ -32,7 +38,14 @@ func (s *memStore) Get(ctx context.Context, id string) (accounts.Account, error)
 	if region == "" {
 		region = "cn"
 	}
-	return accounts.Account{ID: id, Provider: "workbuddy", ProviderRegion: region}, nil
+	return accounts.Account{ID: id, Provider: "workbuddy", ProviderRegion: region, ProxyURL: s.accountProxyURL}, nil
+}
+func (s *memStore) GetSecret(ctx context.Context, key string) (string, bool, error) {
+	s.secretCalls++
+	if s.secretErr != nil {
+		return "", false, s.secretErr
+	}
+	return s.secretValue, s.secretFound, nil
 }
 func (s *memStore) LoadCredentialPayload(ctx context.Context, accountID string) (string, []byte, error) {
 	payload, ok := s.items[accountID]
@@ -141,7 +154,7 @@ func TestChatNonStreamAggregatesToolsAndReasoning(t *testing.T) {
 	payload, _ := Credential{AccessToken: "at", UID: "u1", Domain: "codebuddy.cn", ExpiresAt: 4102444800}.Encode()
 	store := &memStore{items: map[string][]byte{"acc1": payload}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == pathModelsCN {
+		if r.URL.Path == pathProductConfig {
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
 				"models": []map[string]any{{"id": "glm-5.2", "name": "GLM", "maxInputTokens": 128000}},
 				"agents": []map[string]any{{"name": "cli", "models": []string{"glm-5.2"}}},
@@ -193,6 +206,106 @@ func TestChatNonStreamAggregatesToolsAndReasoning(t *testing.T) {
 	}
 }
 
+func TestChatNonStreamSendsSingleAndMultiTurnHistories(t *testing.T) {
+	tests := []struct {
+		name          string
+		messages      []translate.ChatMessage
+		wantRoles     string
+		wantToolCalls int
+		wantToolID    string
+	}{
+		{
+			name:      "single turn",
+			messages:  []translate.ChatMessage{{Role: "user", Content: "hello"}},
+			wantRoles: "system,user",
+		},
+		{
+			name: "complete multi turn with tools",
+			messages: []translate.ChatMessage{
+				{Role: "user", Content: "look this up"},
+				{Role: "assistant", Content: "", ToolCalls: json.RawMessage(`[{"id":"call_1","type":"function","function":{"name":"search","arguments":"{}"}},{"id":"call_2","type":"function","function":{"name":"search","arguments":"{}"}}]`)},
+				{Role: "tool", ToolCallID: "call_1", Content: "first result"},
+				{Role: "tool", ToolCallID: "call_2", Content: "second result"},
+				{Role: "user", Content: "continue"},
+			},
+			wantRoles:     "system,user,assistant,tool,tool,user",
+			wantToolCalls: 2,
+			wantToolID:    "call_2",
+		},
+		{
+			name: "interrupted multi turn",
+			messages: []translate.ChatMessage{
+				{Role: "user", Content: "look this up"},
+				{Role: "assistant", Content: "", ToolCalls: json.RawMessage(`[{"id":"call_interrupted","type":"function","function":{"name":"search","arguments":"{}"}}]`)},
+				{Role: "user", Content: "stop and answer me"},
+			},
+			wantRoles: "system,user,user",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payload, _ := Credential{AccessToken: "at", UID: "u1", Domain: "codebuddy.cn", ExpiresAt: 4102444800}.Encode()
+			store := &memStore{items: map[string][]byte{"acc1": payload}}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != pathChat {
+					t.Fatalf("path=%s", r.URL.Path)
+				}
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				if body["stream"] != true {
+					t.Fatalf("stream=%v", body["stream"])
+				}
+				if got := strings.Join(messageRoles(body), ","); got != test.wantRoles {
+					t.Fatalf("roles=%s want=%s messages=%v", got, test.wantRoles, body["messages"])
+				}
+				messages, _ := body["messages"].([]any)
+				for _, raw := range messages {
+					message, _ := raw.(map[string]any)
+					if message["role"] != "assistant" {
+						continue
+					}
+					calls, _ := message["tool_calls"].([]any)
+					if len(calls) != test.wantToolCalls {
+						t.Fatalf("tool calls=%v want=%d", message["tool_calls"], test.wantToolCalls)
+					}
+				}
+				if test.wantToolID != "" {
+					found := false
+					for _, raw := range messages {
+						message, _ := raw.(map[string]any)
+						if message["role"] == "tool" && message["tool_call_id"] == test.wantToolID {
+							found = true
+						}
+					}
+					if !found {
+						t.Fatalf("tool result %q not found: %v", test.wantToolID, messages)
+					}
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, `data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+`)
+			}))
+			defer server.Close()
+			client := NewClient(store)
+			client.rememberCatalog([]providers.ModelInfo{{NativeModel: "glm-5.2", Capabilities: providers.ModelCapabilities{ReasoningOptions: []string{"none", "medium"}}}})
+			client.http = server.Client()
+			client.http.Transport = rewriteTransport{server: server.URL, round: server.Client().Transport}
+
+			if _, err := client.ChatNonStream(context.Background(), "acc1", translate.ChatRequest{
+				Model: "glm-5.2", Messages: test.messages,
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestChatNonStreamReadLifecycle(t *testing.T) {
 	for _, test := range []struct {
 		name     string
@@ -211,13 +324,13 @@ func TestChatNonStreamReadLifecycle(t *testing.T) {
 					w.Header().Set("Content-Length", "100000")
 				}
 				w.Header().Set("Content-Type", "text/event-stream")
-					_, _ = io.WriteString(w, "data: {}\n\n")
-					w.(http.Flusher).Flush()
-					if test.cancel {
-						cancel()
-						<-r.Context().Done()
-						return
-					}
+				_, _ = io.WriteString(w, "data: {}\n\n")
+				w.(http.Flusher).Flush()
+				if test.cancel {
+					cancel()
+					<-r.Context().Done()
+					return
+				}
 				if test.truncate {
 					return
 				}
@@ -255,11 +368,11 @@ func TestChatNonStreamReadLifecycle(t *testing.T) {
 	}
 }
 
-func TestModelsFiltersCliAgentAndDisabled(t *testing.T) {
+func TestModelsUsesProductConfigCLIAllowlist(t *testing.T) {
 	payload, _ := Credential{AccessToken: "at", UID: "u1", Domain: "codebuddy.cn", ExpiresAt: 4102444800}.Encode()
 	store := &memStore{items: map[string][]byte{"acc1": payload}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != pathModelsCN {
+		if r.URL.Path != pathProductConfig {
 			t.Fatalf("path=%s", r.URL.Path)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
@@ -267,10 +380,12 @@ func TestModelsFiltersCliAgentAndDisabled(t *testing.T) {
 				{"id": "glm-5.2", "name": "GLM", "maxInputTokens": 128000, "maxOutputTokens": 16384},
 				{"id": "secret-model", "disabled": true},
 				{"id": "web-model"},
+				{"id": "deepseek-v4.1-flash", "name": "Deepseek-V4.1-Flash"},
 			},
+			// IDE parity: intersect /v3/config models with CLI agent allowlist.
 			"agents": []map[string]any{
 				{"name": "web", "models": []string{"web-model"}},
-				{"name": "cli", "models": []string{"glm-5.2", "secret-model"}},
+				{"name": "cli", "models": []string{"glm-5.2", "secret-model", "deepseek-v4.1-flash"}},
 			},
 		}})
 	}))
@@ -283,8 +398,24 @@ func TestModelsFiltersCliAgentAndDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(models) != 1 || models[0].NativeModel != "glm-5.2" || models[0].Capabilities.ContextWindow != 128000 {
+	got := map[string]providers.ModelInfo{}
+	for _, model := range models {
+		got[model.NativeModel] = model
+	}
+	if len(got) != 2 {
 		t.Fatalf("models=%+v", models)
+	}
+	if got["glm-5.2"].Capabilities.ContextWindow != 128000 {
+		t.Fatalf("models=%+v", models)
+	}
+	if _, ok := got["deepseek-v4.1-flash"]; !ok {
+		t.Fatalf("missing deepseek-v4.1-flash: %+v", models)
+	}
+	if _, ok := got["web-model"]; ok {
+		t.Fatalf("non-cli model leaked: %+v", models)
+	}
+	if _, ok := got["secret-model"]; ok {
+		t.Fatalf("disabled model leaked: %+v", models)
 	}
 }
 
@@ -354,7 +485,7 @@ func TestChatRequestSendsCatalogReasoningEffort(t *testing.T) {
 	store := &memStore{items: map[string][]byte{"acc1": payload}}
 	var got map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == pathModelsCN {
+		if r.URL.Path == pathProductConfig {
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
 				"models": []map[string]any{{
 					"id": "glm-5.3", "name": "GLM-5.3", "supportsReasoning": true,
@@ -389,7 +520,7 @@ func TestChatRequestSendsOfficialReasoningFieldsForDeepseekFlash(t *testing.T) {
 	store := &memStore{items: map[string][]byte{"acc1": payload}}
 	var got map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == pathModelsCN {
+		if r.URL.Path == pathProductConfig {
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
 				"models": []map[string]any{{
 					"id": "deepseek-v4.1-flash", "name": "Deepseek V4.1 Flash",
@@ -413,6 +544,9 @@ func TestChatRequestSendsOfficialReasoningFieldsForDeepseekFlash(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if got["model"] != "deepseek-v4.1-flash" {
+		t.Fatalf("upstream model=%v body=%v", got["model"], got)
+	}
 	if _, ok := got["reasoning"]; ok {
 		t.Fatalf("deepseek kept nested reasoning: %v", got["reasoning"])
 	}
@@ -434,7 +568,7 @@ func TestChatRequestFindsStoredReasoningByCanonicalKey(t *testing.T) {
 	}
 	var got map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == pathModelsCN {
+		if r.URL.Path == pathProductConfig {
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
 				"models": []map[string]any{{
 					"id": "glm-5.3", "name": "GLM-5.3", "supportsReasoning": true,
@@ -463,17 +597,158 @@ func TestChatRequestFindsStoredReasoningByCanonicalKey(t *testing.T) {
 	}
 }
 
-func TestModelsAcceptsGlobalCLIAgentNamesAndUsesAccountRegion(t *testing.T) {
+func TestModelsDoesNotInventDeepseekAlias(t *testing.T) {
+	payload, _ := Credential{AccessToken: "at", UID: "u1", Domain: "codebuddy.cn", ExpiresAt: 4102444800}.Encode()
+	store := &memStore{items: map[string][]byte{"acc1": payload}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != pathProductConfig {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
+			"models": []map[string]any{{
+				"id": "deep-model", "name": "Deep", "maxInputTokens": 1000000,
+				"supportsReasoning": true, "reasoning": map[string]any{"defaultEffort": "high", "supportedEfforts": []string{"low", "high"}},
+			}},
+			"agents": []map[string]any{{"name": "cli", "models": []string{"deep-model"}}},
+		}})
+	}))
+	defer server.Close()
+	client := NewClient(store)
+	client.http = server.Client()
+	client.http.Transport = rewriteTransport{server: server.URL, round: server.Client().Transport}
+
+	models, err := client.Models(context.Background(), "acc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 || models[0].NativeModel != "deep-model" || models[0].PublicModel != "deep-model" {
+		t.Fatalf("models=%+v", models)
+	}
+}
+
+func TestModelsExposesProductConfigDeepseekWithoutPersonalCatalog(t *testing.T) {
+	payload, _ := Credential{AccessToken: "at", UID: "u1", Domain: "www.workbuddy.ai", ExpiresAt: 4102444800}.Encode()
+	store := &memStore{items: map[string][]byte{"acc1": payload}, region: "global"}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case pathProductConfig:
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
+				"models": []map[string]any{
+					{"id": "deep-model", "name": "Deep"},
+					{"id": "deepseek-v4.1-flash", "name": "Deepseek-V4.1-Flash"},
+					{"id": "glm-5.2", "name": "GLM"},
+				},
+				"agents": []map[string]any{{"name": "cli", "models": []string{"deep-model", "deepseek-v4.1-flash", "glm-5.2"}}},
+			}})
+		case pathModelsGlobal:
+			// personal/models intentionally lacks deepseek-v4.1-flash.
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
+				"models": []map[string]any{{"id": "deep-model"}, {"id": "glm-5.2"}},
+				"agents": []map[string]any{{"name": "cli", "models": []string{"deep-model", "glm-5.2"}}},
+			}})
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client := NewClient(store)
+	client.http = server.Client()
+	client.http.Transport = rewriteTransport{server: server.URL, round: server.Client().Transport}
+
+	models, err := client.Models(context.Background(), "acc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]struct{}{}
+	for _, model := range models {
+		got[model.PublicModel] = struct{}{}
+	}
+	if _, ok := got["deepseek-v4.1-flash"]; !ok {
+		t.Fatalf("product-config deepseek missing: %+v", models)
+	}
+	if _, ok := got["deep-model"]; !ok {
+		t.Fatalf("missing deep-model: %+v", models)
+	}
+}
+
+// Regression: once WorkBuddy publishes deepseek-v4.1-flash as a native
+// model, chat must send that ID instead of rewriting it.
+func TestChatRequestKeepsNativeDeepseekWhenCatalogHasIt(t *testing.T) {
+	payload, _ := Credential{AccessToken: "at", UID: "u1", Domain: "codebuddy.cn", ExpiresAt: 4102444800}.Encode()
+	store := &memStore{items: map[string][]byte{"acc1": payload}}
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == pathProductConfig {
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
+				"models": []map[string]any{{
+					"id": "deepseek-v4.1-flash", "name": "Deepseek-V4.1-Flash", "maxInputTokens": 1000000,
+					"supportsReasoning": true, "onlyReasoning": true,
+					"reasoning": map[string]any{"defaultEffort": "high", "supportedEfforts": []string{"high"}},
+				}},
+				"agents": []map[string]any{{"name": "cli", "models": []string{"deepseek-v4.1-flash"}}},
+			}})
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode chat body: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(chatSSE))
+	}))
+	defer server.Close()
+	client := NewClient(store)
+	client.http = server.Client()
+	client.http.Transport = rewriteTransport{server: server.URL, round: server.Client().Transport}
+
+	if _, err := client.ChatNonStream(context.Background(), "acc1", translate.ChatRequest{
+		Model: "deepseek-v4.1-flash", Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got["model"] != "deepseek-v4.1-flash" {
+		t.Fatalf("upstream model=%v body=%v", got["model"], got)
+	}
+	if got["reasoning_effort"] != "high" || got["reasoning_summary"] != "auto" || got["verbosity"] != "high" {
+		t.Fatalf("reasoning fields=%v", got)
+	}
+}
+
+func TestUpstreamModelIDUsesCatalogNativeWithoutHardcodedRewrite(t *testing.T) {
+	client := NewClient(&memStore{items: map[string][]byte{}})
+	if got := client.upstreamModelID("deepseek-v4.1-flash"); got != "deepseek-v4.1-flash" {
+		t.Fatalf("cold catalog rewrite = %q", got)
+	}
+	client.rememberCatalog([]providers.ModelInfo{{
+		NativeModel: "deepseek-v4.1-flash",
+		PublicModel: "deepseek-v4.1-flash",
+		DisplayName: "Deepseek-V4.1-Flash",
+	}})
+	if got := client.upstreamModelID("deepseek-v4.1-flash"); got != "deepseek-v4.1-flash" {
+		t.Fatalf("native catalog rewrite = %q", got)
+	}
+	// Without an invented public alias entry, requesting deepseek must stay deepseek.
+	client.rememberCatalog([]providers.ModelInfo{{
+		NativeModel: "deep-model",
+		PublicModel: "deep-model",
+		DisplayName: "Deep",
+	}})
+	if got := client.upstreamModelID("deepseek-v4.1-flash"); got != "deepseek-v4.1-flash" {
+		t.Fatalf("unexpected rewrite = %q", got)
+	}
+}
+
+func TestModelsUsesAccountRegionAndDesktopCatalogUA(t *testing.T) {
 	payload, _ := Credential{AccessToken: "at", UID: "u1", Domain: "codebuddy.cn", ExpiresAt: 4102444800}.Encode()
 	store := &memStore{items: map[string][]byte{"acc1": payload}, region: "global"}
-	var origin, requestHost, ideType string
+	var origin, requestHost, ideType, userAgent string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != pathModelsGlobal {
+		if r.URL.Path != pathProductConfig {
 			t.Fatalf("path=%s", r.URL.Path)
 		}
 		origin = r.Header.Get("Origin")
 		requestHost = r.Host
 		ideType = r.Header.Get("X-IDE-Type")
+		userAgent = r.Header.Get("User-Agent")
 		_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
 			"models": []map[string]any{
 				{"id": "glm-5.2", "name": "GLM", "maxInputTokens": 128000, "maxOutputTokens": 16384},
@@ -503,13 +778,16 @@ func TestModelsAcceptsGlobalCLIAgentNamesAndUsesAccountRegion(t *testing.T) {
 	if ideType != "" {
 		t.Fatalf("catalog must not send chat-only CLI headers, got X-IDE-Type=%q host=%s", ideType, requestHost)
 	}
+	if userAgent != DesktopUserAgent {
+		t.Fatalf("catalog UA=%q want desktop %q", userAgent, DesktopUserAgent)
+	}
 }
 
 func TestModelsWithoutAgentsReturnsEnabledModels(t *testing.T) {
 	payload, _ := Credential{AccessToken: "at", UID: "u1", Domain: "www.workbuddy.ai", ExpiresAt: 4102444800}.Encode()
 	store := &memStore{items: map[string][]byte{"acc1": payload}, region: "global"}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != pathModelsGlobal {
+		if r.URL.Path != pathProductConfig {
 			t.Fatalf("path=%s", r.URL.Path)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
@@ -533,6 +811,118 @@ func TestModelsWithoutAgentsReturnsEnabledModels(t *testing.T) {
 	}
 }
 
+func TestCatalogCreditsFreeParsing(t *testing.T) {
+	cases := []struct {
+		in   string
+		free bool
+	}{
+		{"", false},
+		{"x0.00", true},
+		{"x0.00 credits", true},
+		{"x0.79", false},
+		{"x0.34 credits", false},
+		{"credits", false},
+	}
+	for _, tc := range cases {
+		if got := catalogCreditsFree(tc.in); got != tc.free {
+			t.Fatalf("credits=%q free=%v want %v", tc.in, got, tc.free)
+		}
+	}
+}
+
+func TestModelsExposesOfficialCreditsAndFree(t *testing.T) {
+	payload, _ := Credential{AccessToken: "at", UID: "u1", Domain: "www.workbuddy.ai", ExpiresAt: 4102444800}.Encode()
+	store := &memStore{items: map[string][]byte{"acc1": payload}, region: "global"}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != pathProductConfig {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
+			"models": []map[string]any{
+				{"id": "deepseek-v4.1-flash", "name": "Deepseek", "credits": "x0.00"},
+				{"id": "glm-5.3", "name": "GLM", "credits": "x0.79"},
+				{"id": "default-model", "name": "Auto", "credits": ""},
+			},
+			"agents": []map[string]any{
+				{"name": "cli", "models": []string{"deepseek-v4.1-flash", "glm-5.3", "default-model"}},
+			},
+		}})
+	}))
+	defer server.Close()
+	client := NewClient(store)
+	client.http = server.Client()
+	client.http.Transport = rewriteTransport{server: server.URL, round: server.Client().Transport}
+
+	models, err := client.Models(context.Background(), "acc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]providers.ModelInfo{}
+	for _, model := range models {
+		byID[model.NativeModel] = model
+	}
+	if m := byID["deepseek-v4.1-flash"]; m.Credits != "x0.00" || !m.Free {
+		t.Fatalf("free model=%+v", m)
+	}
+	if m := byID["glm-5.3"]; m.Credits != "x0.79" || m.Free {
+		t.Fatalf("paid model=%+v", m)
+	}
+	if m := byID["default-model"]; m.Credits != "" || m.Free {
+		t.Fatalf("blank credits must not invent free: %+v", m)
+	}
+}
+
+func TestModelsExposesCNCreditsAndFree(t *testing.T) {
+	payload, _ := Credential{AccessToken: "at", UID: "u1", Domain: "codebuddy.cn", ExpiresAt: 4102444800}.Encode()
+	store := &memStore{items: map[string][]byte{"acc1": payload}, region: "cn"}
+	var origin, userAgent string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != pathProductConfig {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		origin = r.Header.Get("Origin")
+		userAgent = r.Header.Get("User-Agent")
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
+			"models": []map[string]any{
+				{"id": "hy3", "name": "Hunyuan", "credits": "x0.00 credits"},
+				{"id": "glm-5.2", "name": "GLM", "credits": "x0.79 credits"},
+				{"id": "glm-5.1", "name": "GLM 5.1", "credits": ""},
+			},
+			"agents": []map[string]any{
+				{"name": "cli", "models": []string{"hy3", "glm-5.2", "glm-5.1"}},
+			},
+		}})
+	}))
+	defer server.Close()
+	client := NewClient(store)
+	client.http = server.Client()
+	client.http.Transport = rewriteTransport{server: server.URL, round: server.Client().Transport}
+
+	models, err := client.Models(context.Background(), "acc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if origin != "https://www.codebuddy.cn" {
+		t.Fatalf("CN origin=%s", origin)
+	}
+	if userAgent != UserAgent {
+		t.Fatalf("CN catalog must keep CLI UA, got %q", userAgent)
+	}
+	byID := map[string]providers.ModelInfo{}
+	for _, model := range models {
+		byID[model.NativeModel] = model
+	}
+	if m := byID["hy3"]; m.Credits != "x0.00 credits" || !m.Free {
+		t.Fatalf("CN free model=%+v", m)
+	}
+	if m := byID["glm-5.2"]; m.Credits != "x0.79 credits" || m.Free {
+		t.Fatalf("CN paid model=%+v", m)
+	}
+	if m := byID["glm-5.1"]; m.Credits != "" || m.Free {
+		t.Fatalf("CN blank credits must not invent free: %+v", m)
+	}
+}
+
 func TestIsGlobalRecognizesWorkBuddyDomains(t *testing.T) {
 	if (Credential{Domain: "www.workbuddy.ai"}).IsGlobal() != true {
 		t.Fatal("workbuddy.ai should be global")
@@ -546,11 +936,11 @@ func TestIsGlobalRecognizesWorkBuddyDomains(t *testing.T) {
 	if (Credential{}).IsGlobal() {
 		t.Fatal("empty domain should not be global")
 	}
-	if (Credential{Domain: "www.workbuddy.ai"}).catalogPath() != pathModelsGlobal {
-		t.Fatal("global catalog must use the plugin JSON path")
+	if (Credential{Domain: "www.workbuddy.ai"}).productConfigPath() != pathProductConfig {
+		t.Fatal("product config path must be /v3/config")
 	}
-	if (Credential{Domain: "codebuddy.cn"}).catalogPath() != pathModelsCN {
-		t.Fatal("CN catalog must keep the console path")
+	if (Credential{Domain: "codebuddy.cn"}).productConfigPath() != pathProductConfig {
+		t.Fatal("product config path must stay /v3/config for CN")
 	}
 }
 
@@ -559,10 +949,10 @@ func TestModelsGlobalHTMLErrorDoesNotLeakPage(t *testing.T) {
 	store := &memStore{items: map[string][]byte{"acc1": payload}, region: "global"}
 	var sawConsolePath bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == pathModelsCN {
+		if r.URL.Path == pathModelsCN || r.URL.Path == pathModelsGlobal {
 			sawConsolePath = true
 		}
-		if r.URL.Path != pathModelsGlobal {
+		if r.URL.Path != pathProductConfig {
 			t.Fatalf("path=%s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "text/html")
@@ -576,16 +966,16 @@ func TestModelsGlobalHTMLErrorDoesNotLeakPage(t *testing.T) {
 
 	_, err := client.Models(context.Background(), "acc1")
 	if err == nil {
-		t.Fatal("expected catalog error")
+		t.Fatal("expected models error")
 	}
 	if sawConsolePath {
-		t.Fatal("global catalog must not hit the console OIDC path")
+		t.Fatal("models listing must not fall back to personal/models paths")
 	}
-	if !strings.Contains(err.Error(), "models status=500") || strings.Contains(err.Error(), "<html") {
-		t.Fatalf("error leaked html: %v", err)
+	if !strings.Contains(err.Error(), "models status=500") {
+		t.Fatalf("err=%v", err)
 	}
-	if !strings.Contains(err.Error(), "upstream html error page") {
-		t.Fatalf("error=%v", err)
+	if strings.Contains(err.Error(), "<html") || strings.Contains(err.Error(), "openresty") {
+		t.Fatalf("html leaked: %v", err)
 	}
 }
 
@@ -602,6 +992,7 @@ func TestErrorMapping(t *testing.T) {
 		{500, "boom", "unavailable"},
 		{400, `{"code":11101,"msg":"bad request"}`, "invalid_request"},
 		{200, `{"code":11128,"msg":"first message is not system prompt"}`, "invalid_request"},
+		{200, `{"code":11148,"msg":"tool calls and tool results do not match, please start a new conversation and retry","extError":{"code":"tool_call_sequence_broken"}}`, "invalid_request"},
 		{200, `{"code":12001,"msg":"内容包含敏感信息"}`, "invalid_request"},
 		{200, `{"code":12002,"msg":"sensitive content detected"}`, "invalid_request"},
 		{429, `{"code": "insufficient_quota", "msg": "token-limit"}`, "invalid_request"},
@@ -648,7 +1039,7 @@ func TestChatStreamStripsEmptyWorkBuddyDeltas(t *testing.T) {
 	payload, _ := Credential{AccessToken: "at", UID: "u1", Domain: "codebuddy.cn", ExpiresAt: 4102444800}.Encode()
 	store := &memStore{items: map[string][]byte{"acc1": payload}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == pathModelsCN {
+		if r.URL.Path == pathProductConfig {
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
 				"models": []map[string]any{{"id": "glm-5.3-flash", "name": "GLM"}},
 				"agents": []map[string]any{{"name": "cli", "models": []string{"glm-5.3-flash"}}},
@@ -667,7 +1058,7 @@ func TestChatStreamStripsEmptyWorkBuddyDeltas(t *testing.T) {
 	client := NewClient(store)
 	client.http = server.Client()
 	client.http.Transport = rewriteTransport{server: server.URL, round: server.Client().Transport}
-	resp, err := client.ChatStream(context.Background(), "acc1", translate.ChatRequest{
+	resp, _, err := client.ChatStream(context.Background(), "acc1", translate.ChatRequest{
 		Model: "glm-5.3-flash", Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}},
 	})
 	if err != nil {
@@ -747,9 +1138,97 @@ func TestPrepareBodyNormalizesEmptyMessageContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	toolMessages, _ := toolBody["messages"].([]any)
-	if len(toolMessages) != 2 {
-		t.Fatalf("tool message was dropped: %v", toolMessages)
+	if len(toolMessages) != 1 {
+		t.Fatalf("unmatched tool_calls should be dropped: %v", toolMessages)
 	}
+	first, _ := toolMessages[0].(map[string]any)
+	if first["role"] != "system" {
+		t.Fatalf("messages=%v", toolMessages)
+	}
+}
+
+func TestPrepareBodyKeepsReasoningOnlyAssistant(t *testing.T) {
+	out := PrepareBody([]byte(`{"model":"m","messages":[{"role":"assistant","content":"","reasoning_content":"think"},{"role":"user","content":"hi"}]}`))
+	var body map[string]any
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range body["messages"].([]any) {
+		message, _ := item.(map[string]any)
+		if messageRole(message) == "assistant" && stringField(message, "reasoning_content") == "think" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("reasoning-only assistant dropped: %v", body["messages"])
+	}
+}
+
+func TestPrepareBodyRepairsInterruptedToolSequence(t *testing.T) {
+	out := PrepareBody([]byte(`{"model":"m","messages":[
+			{"role":"user","content":"look this up"},
+			{"role":"assistant","content":"","tool_calls":[{"id":"call_abc","type":"function","function":{"name":"search","arguments":"{\"q\":\"par"}},{"id":"","function":{"name":"search","arguments":""}}]},
+			{"role":"user","content":"continue"}
+		]}`))
+	var body map[string]any
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatal(err)
+	}
+	roles := messageRoles(body)
+	if strings.Join(roles, ",") != "system,user,user" {
+		t.Fatalf("interrupted tool_calls should be dropped: %v", body["messages"])
+	}
+
+	paired := PrepareBody([]byte(`{"model":"m","messages":[
+			{"role":"user","content":"look this up"},
+			{"role":"assistant","content":"","tool_calls":[{"id":"call_abc","type":"function","function":{"name":"search","arguments":"{}"}},{"id":"call_def","type":"function","function":{"name":"search","arguments":"{}"}}]},
+			{"role":"tool","tool_call_id":"call_abc","content":""},
+			{"role":"user","content":"go on"}
+		]}`))
+	if err := json.Unmarshal(paired, &body); err != nil {
+		t.Fatal(err)
+	}
+	roles = messageRoles(body)
+	if strings.Join(roles, ",") != "system,user,user" {
+		t.Fatalf("partial tool round should be dropped as a unit: %v", body["messages"])
+	}
+
+	complete := PrepareBody([]byte(`{"model":"m","messages":[
+			{"role":"user","content":"look this up"},
+			{"role":"assistant","content":"","tool_calls":[{"id":"call_abc","type":"function","function":{"name":"search","arguments":"{}"}}]},
+			{"role":"tool","tool_call_id":"call_abc","content":"ok"},
+			{"role":"user","content":"thanks"}
+		]}`))
+	if err := json.Unmarshal(complete, &body); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(messageRoles(body), ",") != "system,user,assistant,tool,user" {
+		t.Fatalf("complete tool round-trip rewritten: %v", body["messages"])
+	}
+
+	orphan := PrepareBody([]byte(`{"model":"m","messages":[
+			{"role":"user","content":"hi"},
+			{"role":"tool","tool_call_id":"call_orphan","content":"leftover"},
+			{"role":"user","content":"again"}
+		]}`))
+	if err := json.Unmarshal(orphan, &body); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(messageRoles(body), ",") != "system,user,user" {
+		t.Fatalf("orphan tool result kept: %v", body["messages"])
+	}
+}
+
+func messageRoles(body map[string]any) []string {
+	messages, _ := body["messages"].([]any)
+	roles := make([]string, 0, len(messages))
+	for _, item := range messages {
+		message, _ := item.(map[string]any)
+		role, _ := message["role"].(string)
+		roles = append(roles, role)
+	}
+	return roles
 }
 
 func TestPrepareBodyDropsNullAndEmptyTools(t *testing.T) {
@@ -771,6 +1250,79 @@ func TestPrepareBodyDropsNullAndEmptyTools(t *testing.T) {
 	}
 	if _, ok := emptyBody["tool_choice"]; ok {
 		t.Fatalf("tool_choice without tools should be dropped: %v", emptyBody)
+	}
+}
+
+func TestPrepareBodyExpandsNamespaceTools(t *testing.T) {
+	out := PrepareBody([]byte(`{"model":"m","tools":[
+		{"type":"namespace","name":"mcp__computer-use","tools":[
+			{"type":"function","name":"left_click","parameters":{"type":"object"}}
+		]},
+		{"type":"web_search"},
+		{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}
+	]}`))
+	var body map[string]any
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatal(err)
+	}
+	tools, _ := body["tools"].([]any)
+	if len(tools) != 2 {
+		t.Fatalf("tools=%v", body["tools"])
+	}
+	names := make([]string, 0, len(tools))
+	for _, item := range tools {
+		tool, _ := item.(map[string]any)
+		fn, _ := tool["function"].(map[string]any)
+		name, _ := fn["name"].(string)
+		names = append(names, name)
+	}
+	if names[0] != "mcp__computer-use__left_click" || names[1] != "lookup" {
+		t.Fatalf("names=%v", names)
+	}
+}
+
+func TestPrepareBodyKeepsEncodedCustomFunctionTools(t *testing.T) {
+	const encodedName = "functions__codex_custom__apply_patch"
+	out := PrepareBody([]byte(`{"model":"m","tools":[{"type":"function","function":{"name":"functions__codex_custom__apply_patch","parameters":{"type":"object","properties":{"input":{"type":"string"}},"required":["input"]}}}],"tool_choice":"functions__codex_custom__apply_patch"}`))
+	var body map[string]any
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatal(err)
+	}
+	tools, _ := body["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("tools=%v", body["tools"])
+	}
+	tool, _ := tools[0].(map[string]any)
+	fn, _ := tool["function"].(map[string]any)
+	if fn["name"] != encodedName {
+		t.Fatalf("encoded custom function name changed: %v", fn["name"])
+	}
+	choice, _ := body["tool_choice"].(string)
+	if choice != encodedName {
+		t.Fatalf("encoded custom tool choice changed: %v", body["tool_choice"])
+	}
+}
+
+func TestCatalogHeadersUseDesktopUAOnlyForGlobal(t *testing.T) {
+	global := http.Header{}
+	SetCatalogHeaders(global, Credential{AccessToken: "at", UID: "u1", Domain: "www.workbuddy.ai"})
+	if global.Get("User-Agent") != DesktopUserAgent {
+		t.Fatalf("global catalog UA=%q", global.Get("User-Agent"))
+	}
+	if global.Get("X-IDE-Type") != "" || global.Get("X-Agent-Intent") != "" || global.Get("X-Request-ID") != "" {
+		t.Fatalf("catalog must not carry chat CLI channel headers: %+v", global)
+	}
+	if global.Get("X-Product") != "SaaS" || global.Get("Authorization") != "Bearer at" {
+		t.Fatalf("catalog missing identity: %+v", global)
+	}
+
+	cn := http.Header{}
+	SetCatalogHeaders(cn, Credential{AccessToken: "at", UID: "u2", Domain: "www.codebuddy.cn"})
+	if cn.Get("User-Agent") != UserAgent {
+		t.Fatalf("CN catalog UA=%q want CLI %q", cn.Get("User-Agent"), UserAgent)
+	}
+	if cn.Get("X-IDE-Type") != "" {
+		t.Fatalf("CN catalog must not carry chat CLI channel headers: %+v", cn)
 	}
 }
 
@@ -891,6 +1443,63 @@ func TestAggregateUserResourceNegativeClamped(t *testing.T) {
 	}
 }
 
+func TestUserResourcePackageExpiry(t *testing.T) {
+	client, store := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 0,
+			"data": map[string]any{
+				"Response": map[string]any{
+					"Data": map[string]any{
+						"Accounts": []map[string]any{
+							{"CycleCapacitySize": 2000, "CycleCapacityRemain": 1200, "CycleCapacityUsed": 800, "CycleEndTime": "2026-12-31 23:59:59"},
+							{"CycleCapacitySize": 500, "CycleCapacityRemain": 300, "CycleCapacityUsed": 200, "CycleEndTime": "2026-10-01 00:00:00"},
+							{"CycleCapacitySize": 100, "CycleCapacityRemain": 100, "CycleCapacityUsed": 0},
+						},
+					},
+				},
+			},
+		})
+	}))
+	payload, _ := json.Marshal(Credential{
+		AccessToken: "at", RefreshToken: "rt", ExpiresAt: 4102444800, Domain: DomainCN, UID: "u1",
+	})
+	_ = store.SaveCredentialPayload(context.Background(), "acc1", CredentialFormat, payload)
+	info, err := client.Quota(context.Background(), "acc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.Packages) != 3 {
+		t.Fatalf("packages=%+v", info.Packages)
+	}
+	// UTC+8 2026-10-01 00:00:00 = UTC 2026-09-30 16:00:00
+	want := time.Date(2026, 9, 30, 16, 0, 0, 0, time.UTC).Unix()
+	if info.ExpiresAt != want {
+		t.Fatalf("expires_at=%d want %d", info.ExpiresAt, want)
+	}
+	if info.ExpiringRemain != 300 {
+		t.Fatalf("expiring_remain=%v want 300", info.ExpiringRemain)
+	}
+	if info.Packages[1].EndsAt != want || info.Packages[1].EndTime != "2026-10-01 00:00:00" {
+		t.Fatalf("pkg=%+v", info.Packages[1])
+	}
+	if info.Packages[2].EndsAt != 0 {
+		t.Fatalf("unexpired pkg ends_at=%d want 0", info.Packages[2].EndsAt)
+	}
+}
+
+func TestSoonestExpiry(t *testing.T) {
+	expiresAt, remain := soonestExpiry([]providers.QuotaPackage{
+		{Remain: 100, EndsAt: 200},
+		{Remain: 50, EndsAt: 200},
+		{Remain: 300, EndsAt: 0},
+		{Remain: 400, EndsAt: 100},
+	})
+	if expiresAt != 100 || remain != 400 {
+		t.Fatalf("expiresAt=%d remain=%v", expiresAt, remain)
+	}
+}
+
 func TestDailyCheckinSuccess(t *testing.T) {
 	client, store := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, pathDailyCheckin) {
@@ -982,6 +1591,69 @@ func TestDailyCheckinRetriesTransientFailures(t *testing.T) {
 	}
 }
 
+func TestDailyCheckinRetriesRequestProcessing(t *testing.T) {
+	originalDelays := dailyCheckinProcessingRetryDelays
+	dailyCheckinProcessingRetryDelays = []time.Duration{0, 0}
+	t.Cleanup(func() { dailyCheckinProcessingRetryDelays = originalDelays })
+
+	var calls atomic.Int32
+	client, store := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) < 3 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"code":10001,"msg":"请求处理中，请勿重复操作"}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "msg": "签到成功"})
+	}))
+	payload, _ := json.Marshal(Credential{
+		AccessToken: "at", RefreshToken: "rt", ExpiresAt: 4102444800, Domain: DomainCN, UID: "u1",
+	})
+	_ = store.SaveCredentialPayload(context.Background(), "acc1", CredentialFormat, payload)
+
+	message, err := client.DailyCheckin(context.Background(), "acc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message != "签到成功" || calls.Load() != 3 {
+		t.Fatalf("message=%q calls=%d", message, calls.Load())
+	}
+}
+
+func TestDailyCheckinUsesRequestedAccountCredential(t *testing.T) {
+	expected := map[string]string{
+		"token-account-one": "uid-account-one",
+		"token-account-two": "uid-account-two",
+	}
+	seen := map[string]bool{}
+	client, store := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		uid, found := expected[token]
+		if !found || r.Header.Get("X-User-Id") != uid {
+			t.Fatalf("unexpected credential authorization=%q uid=%q", r.Header.Get("Authorization"), r.Header.Get("X-User-Id"))
+		}
+		seen[token] = true
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "msg": "签到成功"})
+	}))
+	for accountID, credential := range map[string]Credential{
+		"acc-one": {AccessToken: "token-account-one", RefreshToken: "refresh-one", ExpiresAt: 4102444800, Domain: DomainCN, UID: "uid-account-one"},
+		"acc-two": {AccessToken: "token-account-two", RefreshToken: "refresh-two", ExpiresAt: 4102444800, Domain: DomainCN, UID: "uid-account-two"},
+	} {
+		payload, err := credential.Encode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveCredentialPayload(context.Background(), accountID, CredentialFormat, payload); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.DailyCheckin(context.Background(), accountID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(seen) != len(expected) {
+		t.Fatalf("seen credentials=%v", seen)
+	}
+}
+
 func TestDailyCheckinSessionDeadDoesNotObserve(t *testing.T) {
 	client, store := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -1059,7 +1731,203 @@ func TestRateLimitErrorCarriesResetCooldown(t *testing.T) {
 	if !errors.As(classifiedError(429, body), &out) {
 		t.Fatalf("expected classified error")
 	}
-	if out.Cooldown <= 28*time.Minute || out.Cooldown > 30*time.Minute {
-		t.Fatalf("cooldown=%v want ~30m", out.Cooldown)
+	if out.RetryAfter <= 28*time.Minute || out.RetryAfter > 30*time.Minute {
+		t.Fatalf("retry_after=%v want ~30m", out.RetryAfter)
+	}
+}
+
+func TestHTTPClientFailsClosedOnSecretError(t *testing.T) {
+	store := &memStore{secretErr: errors.New("db down")}
+	client := NewClient(store)
+	if _, err := client.httpClient(context.Background(), "acc1"); err == nil {
+		t.Fatal("httpClient succeeded despite a global proxy read error")
+	}
+}
+
+func TestHTTPClientAccountDirectSkipsGlobalRead(t *testing.T) {
+	store := &memStore{accountProxyURL: "direct", secretErr: errors.New("db down")}
+	client := NewClient(store)
+	if _, err := client.httpClient(context.Background(), "acc1"); err != nil {
+		t.Fatalf("account direct must not read the global proxy: %v", err)
+	}
+	if store.secretCalls != 0 {
+		t.Fatalf("global proxy was read %d times for an account with a proxy override", store.secretCalls)
+	}
+}
+
+func TestHTTPClientUsesGlobalProxyWhenAccountIsBlank(t *testing.T) {
+	store := &memStore{secretValue: "http://global.example:8080", secretFound: true}
+	client := NewClient(store)
+	httpClient, err := client.httpClient(context.Background(), "acc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport, ok := httpClient.Transport.(*http.Transport)
+	if !ok || transport == nil {
+		t.Fatalf("transport = %#v", httpClient.Transport)
+	}
+	req, _ := http.NewRequest(http.MethodGet, "https://example.com", nil)
+	proxyURL, err := transport.Proxy(req)
+	if err != nil || proxyURL == nil || proxyURL.String() != "http://global.example:8080" {
+		t.Fatalf("transport proxy = %v err=%v", proxyURL, err)
+	}
+}
+
+func TestHTTPClientKeepsInjectedTransportWhenUnconfigured(t *testing.T) {
+	store := &memStore{}
+	client := NewClient(store)
+	custom := rewriteTransport{}
+	client.http.Transport = custom
+	httpClient, err := client.httpClient(context.Background(), "acc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if httpClient.Transport != custom {
+		t.Fatalf("unconfigured client replaced the injected transport: %#v", httpClient.Transport)
+	}
+}
+
+func TestHTTPClientReusesTransportByProxyURL(t *testing.T) {
+	store := &memStore{secretValue: "http://global.example:8080", secretFound: true}
+	client := NewClient(store)
+
+	first, err := client.httpClient(context.Background(), "acc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := client.httpClient(context.Background(), "acc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Transport == nil || first.Transport != second.Transport {
+		t.Fatal("transport was not reused across requests")
+	}
+
+	// Different accounts sharing the same global proxy reuse the transport.
+	third, err := client.httpClient(context.Background(), "acc2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Transport != first.Transport {
+		t.Fatal("same global proxy did not share a transport across accounts")
+	}
+}
+
+func TestHTTPClientDifferentProxiesUseDifferentTransports(t *testing.T) {
+	store := &memStore{secretValue: "http://global.example:8080", secretFound: true}
+	client := NewClient(store)
+
+	inherited, err := client.httpClient(context.Background(), "acc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store.accountProxyURL = "http://account.example:9090"
+	overridden, err := client.httpClient(context.Background(), "acc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inherited.Transport == overridden.Transport {
+		t.Fatal("different proxy URLs shared a transport")
+	}
+
+	store.accountProxyURL = "direct"
+	direct, err := client.httpClient(context.Background(), "acc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if direct.Transport == inherited.Transport || direct.Transport == overridden.Transport {
+		t.Fatal("direct did not get its own transport")
+	}
+}
+
+func TestOutcomeFromAggregateReadsConsumedCredit(t *testing.T) {
+	aggregate, err := Aggregate(strings.NewReader(strings.Join([]string{
+		`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":""}]}`,
+		`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":16,"completion_tokens":2,"credit":0.75}}`,
+		`data: [DONE]`,
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := outcomeFromAggregate(aggregate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.PromptTokens != 16 || outcome.CompletionTokens != 2 {
+		t.Fatalf("tokens = %d/%d", outcome.PromptTokens, outcome.CompletionTokens)
+	}
+	if outcome.Credits == nil || *outcome.Credits != 0.75 {
+		t.Fatalf("consumed credit = %v, want 0.75", outcome.Credits)
+	}
+}
+
+func TestOutcomeFromAggregatePreservesCacheUsage(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		usage string
+		read  int
+		write int
+	}{
+		{name: "top-level cache fields", usage: `"cache_read_tokens":12,"cache_write_tokens":3`, read: 12, write: 3},
+		{name: "cached tokens detail fallback", usage: `"prompt_tokens_details":{"cached_tokens":7},"cache_write_tokens":0`, read: 7, write: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			aggregate, err := Aggregate(strings.NewReader(strings.Join([]string{
+				`data: {"id":"c1","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":16,"completion_tokens":2,` + test.usage + `}}`,
+				`data: [DONE]`,
+				"",
+			}, "\n")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			outcome, err := outcomeFromAggregate(aggregate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome.CacheReadTokens == nil || *outcome.CacheReadTokens != test.read {
+				t.Fatalf("cache read = %v, want %d", outcome.CacheReadTokens, test.read)
+			}
+			if outcome.CacheWriteTokens == nil || *outcome.CacheWriteTokens != test.write {
+				t.Fatalf("cache write = %v, want %d", outcome.CacheWriteTokens, test.write)
+			}
+		})
+	}
+}
+
+func TestOutcomeFromAggregateMissingCreditStaysNil(t *testing.T) {
+	aggregate, err := Aggregate(strings.NewReader(strings.Join([]string{
+		`data: {"id":"c1","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":1}}`,
+		`data: [DONE]`,
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := outcomeFromAggregate(aggregate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Credits != nil {
+		t.Fatalf("missing credit should stay nil, got %v", *outcome.Credits)
+	}
+}
+
+func TestOutcomeFromAggregateExplicitZeroCredit(t *testing.T) {
+	aggregate, err := Aggregate(strings.NewReader(strings.Join([]string{
+		`data: {"id":"c1","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":1,"credit":0}}`,
+		`data: [DONE]`,
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := outcomeFromAggregate(aggregate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Credits == nil || *outcome.Credits != 0 {
+		t.Fatalf("explicit zero credit should be recorded, got %v", outcome.Credits)
 	}
 }

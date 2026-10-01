@@ -33,6 +33,14 @@ export type RequestStreamDiagnostic = {
   saw_done: boolean
 }
 
+export type RequestUsageDetail = {
+  request_id: string
+  created_at: string
+  provider?: string
+  credit?: number | null
+  unit?: string
+}
+
 export type RequestLog = {
   id: string
   created_at: string
@@ -41,6 +49,8 @@ export type RequestLog = {
   status: string
   requested_model: string
   mapped_model?: string
+  requested_reasoning?: string
+  resolved_reasoning?: string
   account_id?: string
   provider?: string
   routing?: string
@@ -61,6 +71,7 @@ export type RequestLog = {
   message_roles?: string[]
   attempts?: RequestAttempt[]
   stream_diagnostic?: RequestStreamDiagnostic
+  usage_detail?: RequestUsageDetail
 }
 
 export type RequestLogList = {
@@ -96,6 +107,7 @@ export type RequestStatsWindow = {
 export type RequestStatsTotals = {
   requests: number
   ok: number
+  incomplete: number
   error: number
   canceled: number
   streaming: number

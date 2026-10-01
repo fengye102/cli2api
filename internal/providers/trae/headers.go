@@ -1,6 +1,9 @@
 package trae
 
-import "net/http"
+import (
+	"net/http"
+	"strings"
+)
 
 func clientUA() string { return UserAgent }
 
@@ -18,9 +21,37 @@ func SetUgHeaders(header http.Header, credential Credential) {
 		header.Set("Authorization", "Cloud-IDE-JWT "+credential.AccessToken)
 	}
 	header.Set("X-User-Region", "CN")
-	if credential.DeviceID != "" {
-		header.Set("X-Device-Id", credential.DeviceID)
+	if deviceID := ugDeviceID(credential.DeviceID); deviceID != "" {
+		header.Set("X-Device-Id", deviceID)
 	}
+}
+
+// ugDeviceID normalises the stored device id for the UG endpoints. The checkin
+// backend keys its per-device daily limit on X-Device-Id and is picky about the
+// shape: a bare hex id is rejected with 9074, so hex ids get the aha- prefix the
+// IDE client uses; but a *numeric* id (the shape current logins issue) must be
+// sent bare — "aha-<digits>" is itself rejected with 9074.
+func ugDeviceID(deviceID string) string {
+	trimmed := strings.TrimSpace(deviceID)
+	if trimmed == "" || strings.HasPrefix(trimmed, "aha-") {
+		return trimmed
+	}
+	if isAllDigits(trimmed) {
+		return trimmed
+	}
+	return "aha-" + trimmed
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func SetSOLOHeaders(header http.Header, credential Credential, stream bool) {

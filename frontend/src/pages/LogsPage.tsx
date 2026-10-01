@@ -46,7 +46,7 @@ import { useI18n } from '@/hooks/useI18n'
 import { accountProviderLabel } from '@/lib/provider'
 
 type PageTab = 'requests' | 'runtime'
-type RequestFilter = 'all' | 'ok' | 'error' | 'canceled'
+type RequestFilter = 'all' | 'ok' | 'incomplete' | 'error' | 'canceled'
 type RuntimeFilter = 'all' | 'info' | 'warn' | 'error'
 type StreamFilter = 'all' | 'stream' | 'sync'
 type TimeRange = 'all' | '1h' | '24h' | '7d' | 'custom'
@@ -56,7 +56,7 @@ type DateRangeValue = { start: DateValue; end: DateValue }
 
 function statusColor(status?: string): 'success' | 'warning' | 'danger' | 'default' {
   if (status === 'ok') return 'success'
-  if (status === 'streaming' || status === 'started') return 'warning'
+  if (status === 'streaming' || status === 'started' || status === 'incomplete') return 'warning'
   if (status === 'error' || status === 'canceled') return 'danger'
   return 'default'
 }
@@ -88,16 +88,45 @@ function formatTime(value?: string | null, lang: 'en' | 'zh' = 'zh') {
   }).format(date)
 }
 
-function TokenSplit({ log, inLabel, outLabel }: { log: RequestLog; inLabel: string; outLabel: string }) {
+function reasoningLabel(log: Pick<RequestLog, 'requested_reasoning' | 'resolved_reasoning'>) {
+  const requested = log.requested_reasoning?.trim() || ''
+  const resolved = log.resolved_reasoning?.trim() || ''
+  if (!requested && !resolved) return ''
+  if (requested && resolved && requested !== resolved) return `${requested} → ${resolved}`
+  return resolved || requested
+}
+
+function TokenSplit({
+  log,
+  inLabel,
+  outLabel,
+  pointsLabel,
+}: {
+  log: RequestLog
+  inLabel: string
+  outLabel: string
+  pointsLabel?: (value: string) => string
+}) {
   const prompt = log.prompt_tokens
   const completion = log.completion_tokens
-  if (prompt == null && completion == null) {
+  const credit = log.credits ?? log.usage_detail?.credit
+  const creditText = credit != null && Number.isFinite(credit) ? formatCredit(credit) : null
+  if (prompt == null && completion == null && creditText == null) {
     return <span className="mono text-xs text-muted">—</span>
   }
   return (
     <div className="leading-4">
-      <div className="mono text-xs">{prompt ?? 0} / {completion ?? 0}</div>
-      <div className="mt-0.5 text-[10px] text-muted">{inLabel} / {outLabel}</div>
+      {prompt != null || completion != null ? (
+        <>
+          <div className="mono text-xs">{prompt ?? 0} / {completion ?? 0}</div>
+          <div className="mt-0.5 text-[10px] text-muted">{inLabel} / {outLabel}</div>
+        </>
+      ) : null}
+      {creditText != null ? (
+        <div className={`mono text-[10px] text-success ${prompt != null || completion != null ? 'mt-0.5' : ''}`}>
+          {pointsLabel ? pointsLabel(creditText) : creditText}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -130,6 +159,11 @@ function formatLatency(ms?: number | null) {
   if (ms == null) return '—'
   if (ms < 1000) return `${ms}ms`
   return `${(ms / 1000).toFixed(1)}s`
+}
+
+function formatCredit(value?: number | null) {
+  if (value == null || !Number.isFinite(value)) return '—'
+  return String(Math.round(value * 10000) / 10000)
 }
 
 function dateValueToISO(value: DateValue | null | undefined, endOfMinute = false) {
@@ -477,6 +511,7 @@ export function LogsPage() {
                 options={[
                   { id: 'all', label: t('logsFilterAll') },
                   { id: 'ok', label: t('logsFilterOk') },
+                  { id: 'incomplete', label: t('logsFilterIncomplete') },
                   { id: 'error', label: t('logsFilterError') },
                   { id: 'canceled', label: t('logsFilterCanceled') },
                 ]}
@@ -680,6 +715,7 @@ export function LogsPage() {
                     <Table.Header>
                       <Table.Column isRowHeader>{t('logsColTime')}</Table.Column>
                       <Table.Column>{t('logsColModel')}</Table.Column>
+                      <Table.Column>{t('logsColReasoning')}</Table.Column>
                       <Table.Column>{t('logsColProvider')}</Table.Column>
                       <Table.Column>{t('logsColAccount')}</Table.Column>
                       <Table.Column>{t('logsColStatus')}</Table.Column>
@@ -704,6 +740,9 @@ export function LogsPage() {
                             ) : null}
                           </Table.Cell>
                           <Table.Cell>
+                            <span className="mono text-xs">{reasoningLabel(item) || '—'}</span>
+                          </Table.Cell>
+                          <Table.Cell>
                             <span className="text-xs">{providerLabel(item)}</span>
                           </Table.Cell>
                           <Table.Cell>
@@ -719,7 +758,14 @@ export function LogsPage() {
                           <Table.Cell><span className="text-xs text-muted">{item.stream ? t('logsStreamYes') : t('logsStreamNo')}</span></Table.Cell>
                           <Table.Cell><span className="mono text-xs">{formatLatency(item.latency_ms)}</span></Table.Cell>
                           <Table.Cell><span className="mono text-xs">{formatLatency(item.ttfb_ms)}</span></Table.Cell>
-                          <Table.Cell><TokenSplit log={item} inLabel={t('logsTokensIn')} outLabel={t('logsTokensOut')} /></Table.Cell>
+                          <Table.Cell>
+                            <TokenSplit
+                              log={item}
+                              inLabel={t('logsTokensIn')}
+                              outLabel={t('logsTokensOut')}
+                              pointsLabel={(value) => t('logsTokensPoints', { value })}
+                            />
+                          </Table.Cell>
                         </Table.Row>
                       ))}
                     </Table.Body>
@@ -918,6 +964,7 @@ export function LogsPage() {
                   {[
                     [t('logsColStatus'), selected?.status || '—'],
                     [t('logsColModel'), selected?.requested_model || '—'],
+                    [t('logsColReasoning'), selected ? (reasoningLabel(selected) || '—') : '—'],
                     [t('logsColProvider'), selected ? providerLabel(selected) : '—'],
                     [t('logsColAccount'), selected?.account_id ? (accountNameById.get(selected.account_id) || selected.account_id) : '—'],
                     [t('logsColLatency'), formatLatency(selected?.latency_ms)],
@@ -934,7 +981,12 @@ export function LogsPage() {
                     <dt className="text-[11px] text-muted">{t('logsColTokens')}</dt>
                     <dd className="mt-1">
                       {selected ? (
-                        <TokenSplit log={selected} inLabel={t('logsTokensIn')} outLabel={t('logsTokensOut')} />
+                        <TokenSplit
+                          log={selected}
+                          inLabel={t('logsTokensIn')}
+                          outLabel={t('logsTokensOut')}
+                          pointsLabel={(value) => t('logsTokensPoints', { value })}
+                        />
                       ) : '—'}
                     </dd>
                   </div>
@@ -979,6 +1031,22 @@ export function LogsPage() {
                         {selected.stream_diagnostic.relay_error ? <div>relay: {selected.stream_diagnostic.relay_error}</div> : null}
                       </div>
                     ) : null}
+                  </div>
+                ) : null}
+                {selected?.usage_detail ? (
+                  <div className="rounded-lg bg-surface-secondary px-3 py-3 text-xs">
+                    <div className="font-medium text-muted">{t('logsUsageDetail')}</div>
+                    <dl className="mt-2 grid gap-2 sm:grid-cols-2">
+                      {[
+                        [t('logsCreditConsumed'), `${formatCredit(selected.usage_detail.credit)} ${selected.usage_detail.unit || 'credits'}`],
+                        [t('logsColProvider'), selected.usage_detail.provider || '—'],
+                      ].map(([label, value]) => (
+                        <div key={String(label)}>
+                          <dt className="text-[10px] text-muted">{label}</dt>
+                          <dd className="mono mt-0.5 break-all">{value}</dd>
+                        </div>
+                      ))}
+                    </dl>
                   </div>
                 ) : null}
                 <div>

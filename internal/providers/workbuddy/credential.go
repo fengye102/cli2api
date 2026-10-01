@@ -25,6 +25,12 @@ const (
 	CLIVersion = "2.139.0"
 	UserAgent  = "CLI/" + CLIVersion + " CodeBuddy/" + CLIVersion
 
+	// DesktopUserAgent is for /v3/config only. Live A/B showed the same
+	// Global account returns the IDE dropdown (incl. deepseek-v4.1-flash)
+	// with a desktop UA, but the CLI UA returns a different model set.
+	DesktopVersion   = "5.4.2"
+	DesktopUserAgent = "WorkBuddy/" + DesktopVersion
+
 	productTypeCLI     = "CLI"
 	agentIntentDefault = "craft"
 	agentTypeMain      = "main"
@@ -37,16 +43,20 @@ const (
 	// CN still serves the console catalog to Bearer tokens. Global's
 	// /console/enterprises/personal/models is an OIDC page: unauthenticated
 	// 302 to Keycloak, authenticated 500 HTML. The plugin JSON catalog is
-	// /v2/enterprises/personal/models.
-	pathModelsCN     = "/console/enterprises/personal/models"
-	pathModelsGlobal = "/v2/enterprises/personal/models"
-	pathUserResource = "/v2/billing/meter/get-user-resource"
-	pathDailyCheckin = "/v2/billing/meter/daily-checkin"
+	// /v2/enterprises/personal/models. The IDE model dropdown is not that
+	// catalog: desktop loads authenticated GET /v3/config (product config).
+	pathModelsCN      = "/console/enterprises/personal/models"
+	pathModelsGlobal  = "/v2/enterprises/personal/models"
+	pathProductConfig = "/v3/config"
+	pathUserResource  = "/v2/billing/meter/get-user-resource"
+	pathDailyCheckin  = "/v2/billing/meter/daily-checkin"
 
 	sessionDeadCode         = 12153
 	sessionDeadText         = "Offline user session not found"
 	missingSystemPromptCode = 11128
 	missingSystemPromptText = "first message is not system prompt"
+	toolCallSequenceCode    = 11148
+	toolCallSequenceText    = "tool calls and tool results do not match"
 
 	// rateLimitCode marks a usage limit whose response carries the absolute
 	// reset timestamp. Cooling down for the generic rate-limit fallback would
@@ -149,11 +159,18 @@ func (c Credential) ChatBase() string {
 	return ChatBaseCN
 }
 
-func (c Credential) catalogPath() string {
-	if c.IsGlobal() {
-		return pathModelsGlobal
+// productConfigPath is the IDE dropdown source (CloudProductManager /v3/config).
+func (c Credential) productConfigPath() string {
+	return pathProductConfig
+}
+
+func isCLIAgent(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "cli", "codebuddy", "workbuddy":
+		return true
+	default:
+		return false
 	}
-	return pathModelsCN
 }
 
 func (c Credential) BillingBase() string {
@@ -185,13 +202,4 @@ func (c Credential) IsGlobal() bool {
 		return false
 	}
 	return strings.Contains(domain, DomainGlobal) || strings.Contains(domain, "workbuddy")
-}
-
-func isCLIAgent(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "cli", "codebuddy", "workbuddy":
-		return true
-	default:
-		return false
-	}
 }

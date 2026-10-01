@@ -1,4 +1,4 @@
-import type { AccountQuota, Overview } from '@/api/types'
+import type { AccountQuota, AccountQuotaWindow, Overview } from '@/api/types'
 
 export type AccountRow = NonNullable<Overview['accounts']>[number]
 export type AccountState = 'disabled' | 'quota_exhausted' | 'cooling' | 'hot' | 'ready' | 'login' | 'loading' | 'starting' | 'unavailable' | 'dead' | 'auth_failed'
@@ -74,9 +74,73 @@ export function quotaUsedRatio(quota: AccountQuota) {
   return Math.min(1, Math.max(0, percentage / 100))
 }
 
-export function quotaTone(quota: AccountQuota): QuotaTone {
+export function quotaTone(quota: Pick<AccountQuota, 'percentage' | 'exceeded'>): QuotaTone {
   const percentage = quota.percentage ?? 0
   if (quota.exceeded) return 'danger'
   if (percentage >= 80) return 'warn'
   return 'ok'
+}
+
+export function quotaWindows(quota: AccountQuota) {
+  return (quota.windows ?? []).filter((window) => Boolean(window.id))
+}
+
+const codexPlanLabels: Record<string, string> = {
+  free: 'Free',
+  go: 'Go',
+  plus: 'Plus',
+  pro: 'Pro',
+  prolite: 'Pro Lite',
+  promax: 'Pro Max',
+  team: 'Team',
+  business: 'Business',
+  enterprise: 'Enterprise',
+  edu: 'Edu',
+  edu_plus: 'Edu Plus',
+  edu_pro: 'Edu Pro',
+  education: 'Education',
+}
+
+// codexPlanLabel turns an upstream plan_type into the subscription name shown
+// on the account card. Unknown values stay readable; empty stays hidden.
+export function codexPlanLabel(plan: string | undefined) {
+  const raw = plan?.trim().toLowerCase() ?? ''
+  if (!raw || raw === 'unknown' || raw === 'guest') return ''
+  return codexPlanLabels[raw] ?? raw.replace(/[_-]+/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase())
+}
+
+export function quotaWindowLabel(window: AccountQuotaWindow, t: (key: string) => string) {
+  if (window.id === 'daily') return t('quotaDaily')
+  if (window.id === 'weekly') return t('quotaWeekly')
+  if (window.id === 'monthly') return t('quotaMonthly')
+  if (window.id === 'fiveHour') return t('quotaFiveHour')
+  if (window.id === 'weeklyLimit') return t('quotaWeeklyLimit')
+  if (window.id === 'monthlyLimit') return t('quotaMonthlyLimit')
+  return window.label || t('quota')
+}
+
+export function quotaResetLabel(resetAt: string | undefined, t: (key: string, vars?: Record<string, string | number>) => string) {
+  if (!resetAt) return ''
+  const milliseconds = Date.parse(resetAt) - Date.now()
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return t('quotaResetsSoon')
+  const minutes = Math.max(1, Math.ceil(milliseconds / 60000))
+  if (minutes < 60) return t('quotaResetsInMinutes', { n: minutes })
+  return t('quotaResetsInHours', { n: Math.round(minutes / 60) })
+}
+
+// quotaExpiryLabel renders the soonest package expiry, e.g.
+// "1,500 credits expire on 10/1". returns '' when the provider did not report
+// an expiry.
+export function quotaExpiryLabel(
+  quota: { expires_at?: number; expiring_remain?: number; unit?: string },
+  t: (key: string, vars?: Record<string, string | number>) => string,
+) {
+  if (!quota.expires_at || quota.expires_at <= 0 || !Number.isFinite(quota.expires_at)) return ''
+  const date = new Date(quota.expires_at * 1000)
+  if (Number.isNaN(date.getTime())) return ''
+  const day = `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`
+  const amount = quota.expiring_remain && quota.expiring_remain > 0
+    ? `${formatQuotaAmount(quota.expiring_remain)} `
+    : ''
+  return t('quotaExpiresOn', { amount, unit: quota.unit || 'credits', date: day })
 }

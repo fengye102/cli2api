@@ -1,12 +1,12 @@
 <div align="center">
 
-# CLI2API
+<h1><img src="./frontend/public/apple-touch-icon.svg" width="40" height="40" align="top" alt=""> CLI2API</h1>
 
 **Turn your own logins into a local OpenAI-compatible API**
 
-Supports **Qoder Global**, **Qoder CN**, **WorkBuddy Global**, **WorkBuddy CN**, and **Trae CN Solo**.
+Connect **Qoder (Global / CN)**, **WorkBuddy (Global / CN)**, **Trae CN Work**, and experimental **Devin** and **Command Code** accounts.
 
-Long-lived account runtimes, multi-account scheduling. Deploy with Docker; that is the supported install and update path.
+Deploy with Docker, manage accounts in the web console, and connect clients through compatible APIs.
 
 [![License](https://img.shields.io/github/license/caigee-cmd/cli2api)](LICENSE)
 [![LINUX DO](https://img.shields.io/badge/LINUX%20DO-community-ff6a00)](https://linux.do)
@@ -19,19 +19,16 @@ Long-lived account runtimes, multi-account scheduling. Deploy with Docker; that 
 
 ## Features
 
-- **OpenAI / Anthropic-compatible proxy**: `/v1/chat/completions`, `/v1/responses`, `/v1/messages`, `/v1/models` — streaming/non-streaming text and function tools; image support depends on the provider (currently supported by Qoder, not WorkBuddy / Trae); file inputs are rejected explicitly. `messages` / `responses` are stateless adapters today and do not support server-side conversations or upstream-specific tools.
-- **Multi-channel account pool**: Qoder Global / Qoder CN, WorkBuddy Global / WorkBuddy CN, Trae CN Solo — region isolation, account pinning, concurrency limits, cooldowns, and same-family failover
-- **Account-level runtimes**: Qoder accounts use an isolated Node process, HOME, and WASM context; WorkBuddy / Trae use in-process HTTP/SSE adapters. Each provider owns its login and upstream runtime boundary
-- **Provider-specific login methods**: browser Device Flow OAuth, PAT, and credential import/export where supported
-- **Web console**: accounts, models, access, request history, and runtime logs, with light and dark themes
-- **Deployment and ops**: single Docker Compose container, safe managed updates (pre-update snapshot, automatic rollback on failure, jump to the latest stable release, roll back to one of the three previous stables), binds `127.0.0.1` by default
-- **Cross-platform**: `linux/amd64` / `linux/arm64` images; macOS and Windows run them through Docker Desktop
+- **Compatible APIs**: Chat Completions, Responses, Anthropic Messages, and model listing, with streaming and function tools.
+- **Multi-account routing**: automatic selection, session affinity, concurrency limits, cooldowns, and failover.
+- **Web console**: manage accounts, models, client keys, and proxies; view quotas and request logs.
+- **Docker operations**: persistent account data; an optional host updater lets you download, confirm, and roll back updates from the console.
+
+Qoder CN, WorkBuddy, and Trae adapters are implemented, but live-account acceptance is still pending. Devin and Command Code are experimental, not production-ready. Live upgrade and rollback acceptance is also pending.
 
 ## Quick start
 
-**Deploy with Docker.** Published images and console managed updates (pre-update snapshot, automatic rollback, jump to the latest stable release) are built around the single Compose container. Running the Go / Node sources directly is not on that update path.
-
-Requirements: Docker (Docker Desktop on macOS/Windows, Docker Engine + Compose on Linux) and a Qoder, WorkBuddy, or Trae account you control. On Windows, Docker Desktop must use Linux containers.
+You need Docker and an upstream account you control. Use Docker Desktop on macOS / Windows; Windows must use Linux containers.
 
 ```bash
 git clone https://github.com/caigee-cmd/cli2api.git
@@ -39,18 +36,22 @@ cd cli2api
 ./scripts/start.sh        # Windows: scripts\start.ps1
 ```
 
-The first startup generates a random API key and prints it once in the logs — save it. Then open `http://127.0.0.1:3010`, sign in, and add accounts from **Accounts**. Full steps in the [deployment guide](deploy/README.md).
+1. Save the **administrator key** printed in the first-start logs.
+2. Open `http://127.0.0.1:3010`, sign in with that key, and add an account in **Accounts**.
+3. Create a client key in **API keys**, then choose a model and test it in **Access**.
+
+Docker Compose is the supported install and managed-update path; source runs are for development. See the [deployment guide](deploy/README.md).
 
 ## Connect a client
 
-Any OpenAI-compatible client (OpenAI SDKs, Codex, CherryStudio, …) works out of the box:
+In an OpenAI-compatible client, enter:
 
 ```text
 Base URL: http://127.0.0.1:3010/v1
-API Key:  <the key printed on first startup>
+API Key:  <a client key created in API keys>
 ```
 
-Without an account header the scheduler picks a ready account; pin a request with the `X-Qoder-Account: acc_...` header (a historical name that applies to every provider). Anthropic `POST /v1/messages` and OpenAI `POST /v1/responses` are also available; both require the complete conversation in each request and do not support server-side continuation through `previous_response_id` / `conversation`. Multi-turn requests stick to the same account from the first user message (including image-only turns) by default; `X-CLI2API-Session` remains an optional override. curl / PowerShell examples in the [deployment guide](deploy/README.md).
+Get a model ID from **Access** or `/v1/models`. Routing is automatic and prefers the same account for later turns. Account pinning, session headers, and curl / PowerShell examples are in the [deployment guide](deploy/README.md).
 
 ## How it works
 
@@ -58,7 +59,7 @@ Without an account header the scheduler picks a ready account; pin a request wit
   <img src="./docs/assets/readme/architecture-en.svg" width="100%" alt="CLI2API architecture: OpenAI clients are routed by the Go control plane to one isolated runtime per account, then to the provider upstream">
 </p>
 
-Each enabled account gets an isolated runtime: Qoder uses its own Node process, HOME, and WASM context, while WorkBuddy / Trae use in-process adapters. Go owns persistence, scheduling, concurrency limits, cooldowns, failover, and the lifecycle of providers that need child processes.
+The Go gateway handles authentication, routing, and request logging. Each Qoder account has its own Node process and HOME; WorkBuddy, Trae, Devin, and Command Code use Go in-process adapters. No full CLI is started per request.
 
 ## Console
 
@@ -66,34 +67,17 @@ Each enabled account gets an isolated runtime: Qoder uses its own Node process, 
   <img src="./docs/assets/readme/console-window-en.svg" width="100%" alt="CLI2API console Accounts page: each account shows its login method, ready state, and quota, with an Access panel offering the Base URL and a quick check">
 </p>
 
-Accounts, models, access, and logs all live in one web console. Each account signs in through the methods supported by its provider (browser OAuth, PAT, or credential import), readiness and quota are visible at a glance, and the Access page lets you copy the Base URL and run a quick check.
+Accounts, models, access, and logs all live in one web console: readiness and quota are visible at a glance, and the Access page lets you copy the Base URL and run a quick check.
 
-## Use cases
+Account cards provide WorkBuddy and Qoder CN check-in actions and automatic check-in switches (off by default), with history under More → Check-in records; no separate check-in page is needed. Set each provider's default time under System → Automatic check-in, then choose inheritance or an override in Edit account. Default changes apply to inheriting accounts immediately. Existing WorkBuddy accounts retain their previous times until switched to inheritance. Qoder Global has no check-in controls; inactive CN campaigns are skipped. Live-account check-in acceptance is still pending.
 
-- Connect Qoder / WorkBuddy / Trae to local or private-server tooling
-- Reuse OpenAI-compatible clients and scripts
-- Route requests across multiple accounts with failover
-- Keep login state available without starting a full CLI Agent per request
+## Limitations
 
-CLI2API is a local gateway: it does not provide accounts, quotas, or an official API service, and it is not a shared multi-user resale service.
-
-## Roadmap
-
-**In progress**
-
-- Live-account acceptance for Qoder CN and WorkBuddy (login, failover, mixed account pools)
-
-**Supported**
-
-- Stateless text and function-tool adapters for Anthropic `/v1/messages` and OpenAI `/v1/responses`; image input where the provider supports it
-- WorkBuddy daily check-in and token keepalive (per-account opt-in, off by default; console can check in now / refresh credits)
-- Session-sticky routing from conversation content (first user message, including image-only turns), or via `X-CLI2API-Session`, with rule-based failover when the bound account cannot serve the request
-- Request history filtering by account, plus request status, latency, token, and usage statistics
-
-**Longer term**
-
-- More upstream channels (Cursor, etc.)
-- Optional prompt/completion capture behind an explicit switch (off by default)
+- Bring your own accounts. CLI2API does not supply accounts, quotas, or an official API service.
+- Compatibility is not full API parity. Messages / Responses are stateless adapters, without server-side conversations or upstream-specific tool execution.
+- Image support depends on the upstream and model. WorkBuddy / Trae do not support images; file inputs are rejected. See the [deployment guide](deploy/README.md) for details.
+- Cross-provider routing for shared model IDs follows system settings, key grants, and region constraints; failover is not unrestricted.
+- Upstream changes can break compatibility. Request logs do not store prompt or completion bodies by default.
 
 ## Documentation
 
@@ -102,16 +86,16 @@ CLI2API is a local gateway: it does not provide accounts, quotas, or an official
 
 ## Security
 
-The service binds `127.0.0.1:3010` by default; all APIs and console data endpoints require the API key except `/health` and static frontend assets. Never commit `.qoder`, tokens, cookies, auth blobs, or raw captures; credential export is an explicit sensitive operation — protect exported files. Upstream API or CLI changes may affect compatibility; qodercli is pinned and checked. Please report security issues privately according to [SECURITY.md](SECURITY.md).
+The default deployment exposes only `127.0.0.1:3010`; do not expose it directly to the public internet. Administrator keys manage the console; client keys only access `/v1/*`. Protect keys, credential exports, and database backups. Report security issues privately as described in [SECURITY.md](SECURITY.md).
 
-## Community
+## Community & Contributing
 
-Chinese-language discussion is on [LINUX DO](https://linux.do). Bugs and feature requests still go to GitHub [Issues](https://github.com/caigee-cmd/cli2api/issues).
+Chinese-language discussion is on [LINUX DO](https://linux.do). Bugs and feature requests go to GitHub [Issues](https://github.com/caigee-cmd/cli2api/issues); documentation improvements and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Contributing
+## Acknowledgements
 
-Issues, documentation improvements, and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+Thanks to open-source projects including `workbuddy2api`, `CLIProxyAPI`, and `sub2api` for ideas and inspiration.
 
 ## License
 
-[MIT](LICENSE) — for personal learning use; please follow the terms of each upstream platform.
+[MIT](LICENSE). Follow each upstream platform's terms when using its accounts.

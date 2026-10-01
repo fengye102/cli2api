@@ -11,9 +11,15 @@ import (
 
 // officialTopLevelReasoningModels need the 2.132.0 CLI field names. The
 // nested reasoning object that GLM / Hy4 still accept returns no thinking
-// tokens for these ids.
+// tokens for these ids. deep-model is the older native id some Global
+// catalogs still expose for the same Deepseek Flash slot. deepseek-v4-pro
+// (and the older deepseek-v4-flash spelling) hit the same nested-object
+// silence on CN.
 var officialTopLevelReasoningModels = map[string]struct{}{
 	"deepseek-v4.1-flash": {},
+	"deepseek-v4-flash":   {},
+	"deepseek-v4-pro":     {},
+	"deep-model":          {},
 }
 
 func requestedReasoningLevel(req translate.ChatRequest) string {
@@ -57,9 +63,9 @@ func requestedReasoningLevel(req translate.ChatRequest) string {
 	return ""
 }
 
-func applyChatReasoning(obj map[string]any, req translate.ChatRequest, storedLevel string, caps providers.ModelCapabilities) {
+func applyChatReasoning(obj map[string]any, req translate.ChatRequest, storedLevel string, caps providers.ModelCapabilities) string {
 	if obj == nil {
-		return
+		return ""
 	}
 	level := requestedReasoningLevel(req)
 	if level == "" {
@@ -68,18 +74,18 @@ func applyChatReasoning(obj map[string]any, req translate.ChatRequest, storedLev
 	level = providers.ResolveReasoningLevel(level, caps)
 	if level == "" {
 		clearChatReasoning(obj)
-		return
+		return ""
 	}
 	if level == "none" {
 		if !caps.CanDisableThinking {
 			level = providers.ResolveReasoningLevel(caps.ReasoningDefault, caps)
 			if level == "" || level == "none" {
 				clearChatReasoning(obj)
-				return
+				return ""
 			}
 		} else {
 			clearChatReasoning(obj)
-			return
+			return ""
 		}
 	}
 	if level == "max" {
@@ -90,12 +96,13 @@ func applyChatReasoning(obj map[string]any, req translate.ChatRequest, storedLev
 		obj["reasoning_effort"] = level
 		obj["reasoning_summary"] = "auto"
 		obj["verbosity"] = "high"
-		return
+		return level
 	}
 	delete(obj, "reasoning_effort")
 	delete(obj, "reasoning_summary")
 	delete(obj, "verbosity")
 	obj["reasoning"] = map[string]any{"effort": level, "summary": "auto"}
+	return level
 }
 
 func clearChatReasoning(obj map[string]any) {

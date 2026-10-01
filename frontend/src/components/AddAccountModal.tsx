@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { Button, Description, Input, Label, ListBox, Modal, Select, Skeleton, TextArea } from '@heroui/react'
+import { Button, Input, Modal, NumberField, Skeleton, TextArea } from '@heroui/react'
 import { ArrowSquareOut, CaretLeft, CaretRight, CheckCircle, FileCode, Key, ShieldCheck, X } from '@phosphor-icons/react'
 import { BrandMark } from '@/components/BrandMark'
 import { ProviderMark } from '@/components/ProviderMark'
 import { CompactSwitch } from '@/components/ui/CompactSwitch'
 import { FilterToggle } from '@/components/ui/FilterToggle'
+import { FormRow } from '@/components/ui/FormRow'
 import { OptionTiles } from '@/components/ui/OptionTiles'
 import { useI18n } from '@/hooks/useI18n'
 import {
@@ -49,6 +50,9 @@ const labelKeys: Record<string, string> = {
   'workbuddy-cn': 'accountTypeWorkBuddyCN',
   'workbuddy-global': 'accountTypeWorkBuddyGlobal',
   'trae-cn': 'accountTypeTraeCN',
+  'devin-global': 'accountTypeDevinGlobal',
+  'command-global': 'accountTypeCommandGlobal',
+  'codex-global': 'accountTypeCodexGlobal',
 }
 
 const hintKeys: Record<string, string> = {
@@ -57,18 +61,18 @@ const hintKeys: Record<string, string> = {
   'workbuddy-cn': 'accountTypeWorkBuddyCNHint',
   'workbuddy-global': 'accountTypeWorkBuddyGlobalHint',
   'trae-cn': 'accountTypeTraeCNHint',
+  'devin-global': 'accountTypeDevinGlobalHint',
+  'command-global': 'accountTypeCommandGlobalHint',
+  'codex-global': 'accountTypeCodexGlobalHint',
 }
 
 function AccountTypeSkeleton({ ariaLabel }: { ariaLabel: string }) {
   return (
     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2" aria-busy="true" aria-label={ariaLabel}>
       {Array.from({ length: 4 }, (_, index) => (
-        <div key={index} className="flex items-start gap-2.5 rounded-xl border border-separator px-3.5 py-3">
-          <Skeleton className="mt-0.5 size-[18px] shrink-0 rounded-lg" />
-          <div className="min-w-0 flex-1 space-y-1.5">
-            <Skeleton className="h-4 w-28 rounded-lg" />
-            <Skeleton className="h-3 w-full rounded-lg" />
-          </div>
+        <div key={index} className="flex items-center gap-2.5 rounded-xl border border-separator px-3 py-2.5">
+          <Skeleton className="size-[18px] shrink-0 rounded-lg" />
+          <Skeleton className="h-4 w-28 rounded-lg" />
         </div>
       ))}
     </div>
@@ -116,7 +120,6 @@ type Phase = 'idle' | 'busy' | 'polling' | 'done'
 
 const POLL_ATTEMPTS = 90
 const POLL_INTERVAL = 2000
-const TILE_LIMIT = 6
 
 export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
   const { t } = useI18n()
@@ -127,11 +130,10 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
   const [typesLoading, setTypesLoading] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [name, setName] = useState('')
-  const [maxInFlight, setMaxInFlight] = useState('4')
-  const [priority, setPriority] = useState('50')
+  const [maxInFlight, setMaxInFlight] = useState(4)
+  const [priority, setPriority] = useState(50)
   const [dropSystemPrompt, setDropSystemPrompt] = useState(true)
-  const [autoCheckin, setAutoCheckin] = useState(false)
-  const [autoCheckinTime, setAutoCheckinTime] = useState('09:00')
+  const [proxyUrl, setProxyUrl] = useState('')
   const [pat, setPat] = useState('')
   const [json, setJson] = useState('')
   const [phase, setPhase] = useState<Phase>('idle')
@@ -178,9 +180,11 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
   const typesReady = Boolean(activeOption) && !typesLoading
   const showPatTab = activeOption?.descriptor.capabilities?.pat_login !== false
   const showImportTab = activeOption?.descriptor.capabilities?.import_export !== false
+  // Command Code has no browser login (a pasted user_… key is the only auth),
+  // so the wizard opens on the PAT tab instead of the browser tab.
+  const hasBrowserLogin = activeOption?.descriptor.capabilities?.browser_login !== false
   const showDropSystem = activeOption?.provider === 'workbuddy'
-  const showAutoCheckin = activeOption?.provider === 'workbuddy'
-  const showCallbackPaste = activeOption?.provider === 'trae'
+  const showCallbackPaste = activeOption?.provider === 'trae' || activeOption?.provider === 'devin' || activeOption?.provider === 'codex'
   const busy = phase === 'busy' || phase === 'polling'
   const settingsLocked = Boolean(createdId.current) || busy
   const isDone = phase === 'done'
@@ -191,16 +195,22 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
     if (tab === 'import' && !showImportTab) setTab('browser')
   }, [showImportTab, showPatTab, tab])
 
+  useEffect(() => {
+    // Providers without a browser login (e.g. Command Code) must not land on an
+    // empty browser tab; send the operator to the paste-key tab.
+    if (hasBrowserLogin) return
+    if (showPatTab) setTab('pat')
+    else if (showImportTab) setTab('import')
+  }, [hasBrowserLogin, showImportTab, showPatTab])
+
   function parsedMaxInFlight() {
-    const value = Number(maxInFlight)
-    if (!Number.isInteger(value) || value < 1 || value > 32) return 4
-    return value
+    if (!Number.isInteger(maxInFlight) || maxInFlight < 1 || maxInFlight > 32) return 4
+    return maxInFlight
   }
 
   function parsedPriority() {
-    const value = Number(priority)
-    if (!Number.isInteger(value) || value < 1 || value > 100) return 50
-    return value
+    if (!Number.isInteger(priority) || priority < 1 || priority > 100) return 50
+    return priority
   }
 
   function accountOptions() {
@@ -208,8 +218,7 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
       max_inflight: parsedMaxInFlight(),
       priority: parsedPriority(),
       drop_system_prompt: showDropSystem ? dropSystemPrompt : true,
-      workbuddy_auto_checkin: showAutoCheckin ? autoCheckin : false,
-      workbuddy_checkin_time: showAutoCheckin ? autoCheckinTime : undefined,
+      proxy_url: proxyUrl.trim(),
     }
   }
 
@@ -221,11 +230,10 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
     setProviderOptions([])
     setTypesLoading(false)
     setName('')
-    setMaxInFlight('4')
-    setPriority('50')
+    setMaxInFlight(4)
+    setPriority(50)
     setDropSystemPrompt(true)
-    setAutoCheckin(false)
-    setAutoCheckinTime('09:00')
+    setProxyUrl('')
     setPat('')
     setJson('')
     setAdvancedOpen(false)
@@ -359,6 +367,8 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
     if (!bundle.format) {
       if (activeOption.descriptor.id === 'workbuddy') bundle.format = 'workbuddy-oauth-v1'
       else if (activeOption.descriptor.id === 'trae') bundle.format = 'trae-oauth-v1'
+      else if (activeOption.descriptor.id === 'devin') bundle.format = 'devin-session-v1'
+      else if (activeOption.descriptor.id === 'command') bundle.format = 'command-key-v1'
       else bundle.format = 'qoder-native-v1'
     }
     try {
@@ -373,8 +383,6 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
         max_inflight: options.max_inflight,
         priority: options.priority,
         drop_system_prompt: options.drop_system_prompt,
-        workbuddy_auto_checkin: options.workbuddy_auto_checkin,
-        workbuddy_checkin_time: options.workbuddy_checkin_time,
       })
       setPhase('done')
       setMessage(t('accountImported'))
@@ -400,7 +408,6 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
   }
 
   const tabPending = (key: TabKey) => busy && tab === key
-  const useTypeSelect = providerOptions.length > TILE_LIMIT
   const typeOptions = providerOptions.map((option) => ({
     value: option.id,
     label: optionLabel(option, t),
@@ -410,7 +417,9 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
   }))
 
   const methodOptions = [
-    { value: 'browser' as const, label: t('tabBrowser'), icon: <ShieldCheck size={16} /> },
+    activeOption?.descriptor.capabilities?.browser_login !== false
+      ? { value: 'browser' as const, label: t('tabBrowser'), icon: <ShieldCheck size={16} /> }
+      : null,
     showPatTab ? { value: 'pat' as const, label: t('tabPat'), icon: <Key size={16} /> } : null,
     showImportTab ? { value: 'import' as const, label: t('tabImport'), icon: <FileCode size={16} /> } : null,
   ].filter(Boolean) as Array<{ value: TabKey; label: string; icon: React.ReactNode }>
@@ -418,13 +427,17 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
   const tabLead = tab === 'browser'
     ? t('wizardBrowserLead')
     : tab === 'pat'
-      ? t(activeOption?.region === 'cn' && activeOption?.provider === 'qoder' ? 'wizardPatLeadCN' : 'wizardPatLead')
+      ? t(activeOption?.provider === 'command'
+          ? 'wizardPatLeadCommand'
+          : activeOption?.region === 'cn' && activeOption?.provider === 'qoder'
+            ? 'wizardPatLeadCN'
+            : 'wizardPatLead')
       : t('wizardImportLead')
 
   return (
     <Modal.Root isOpen={isOpen} onOpenChange={(next: boolean) => { if (!next) close() }}>
       <Modal.Backdrop variant="blur" isDismissable={!busy}>
-        <Modal.Container size="lg" scroll="inside">
+        <Modal.Container size="lg" scroll="inside" className="sm:max-w-3xl">
           <Modal.Dialog>
             <Modal.Header className="items-start justify-between gap-4 px-5 pt-5">
               <div className="min-w-0">
@@ -449,47 +462,6 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
                         <span className="text-sm font-medium text-muted">{t('accountType')}</span>
                         <p className="rounded-lg border border-separator bg-surface-secondary/45 px-3.5 py-3 text-xs leading-5 text-muted">{t('accountTypeHint')}</p>
                       </>
-                    ) : useTypeSelect ? (
-                      <Select
-                        fullWidth
-                        aria-label={t('accountType')}
-                        value={accountType}
-                        isDisabled={settingsLocked}
-                        onChange={(next) => {
-                          if (typeof next === 'string' && next && !settingsLocked) setAccountType(next)
-                        }}
-                      >
-                        <Label className="text-sm font-medium text-muted">{t('accountType')}</Label>
-                        <Select.Trigger className="items-center">
-                          <Select.Value className="min-w-0 truncate">
-                            {({ defaultChildren, isPlaceholder }) => {
-                              const selected = typeOptions.find((option) => option.value === accountType)
-                              if (isPlaceholder || !selected) return defaultChildren
-                              return (
-                                <span className="flex min-w-0 items-center gap-2">
-                                  <span className="grid size-5 shrink-0 place-items-center">{selected.icon}</span>
-                                  <span className="truncate">{selected.label}</span>
-                                </span>
-                              )
-                            }}
-                          </Select.Value>
-                          <Select.Indicator />
-                        </Select.Trigger>
-                        <Select.Popover className="max-h-72">
-                          <ListBox>
-                            {typeOptions.map((option) => (
-                              <ListBox.Item key={option.value} id={option.value} textValue={option.label}>
-                                <span className="grid size-5 shrink-0 place-items-center">{option.icon}</span>
-                                <div className="min-w-0 flex-1">
-                                  <Label className="block truncate">{option.label}</Label>
-                                  {option.hint ? <Description className="truncate">{option.hint}</Description> : null}
-                                </div>
-                                <ListBox.ItemIndicator />
-                              </ListBox.Item>
-                            ))}
-                          </ListBox>
-                        </Select.Popover>
-                      </Select>
                     ) : (
                       <>
                         <span className="text-sm font-medium text-muted">{t('accountType')}</span>
@@ -499,21 +471,22 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
                           value={accountType}
                           onChange={(next) => { if (!settingsLocked) setAccountType(next) }}
                           options={typeOptions}
+                          className="max-h-72 overflow-y-auto overscroll-contain pr-1"
                         />
                       </>
                     )}
-                    {typesReady && hint ? <p className="min-h-5 text-xs leading-5 text-muted">{hint}</p> : null}
                   </section>
 
-                  <section className="mt-5 space-y-2.5">
-                    <Input
-                      className="h-12 text-base"
-                      value={name}
-                      onChange={(event) => setName(event.target.value)}
-                      placeholder={t('wizardNamePh')}
-                      aria-label={t('accountName')}
-                      disabled={settingsLocked}
-                    />
+                  <section className="mt-5 space-y-3">
+                    <FormRow label={t('accountName')}>
+                      <Input
+                        value={name}
+                        onChange={(event) => setName(event.target.value)}
+                        placeholder={t('wizardNamePh')}
+                        aria-label={t('accountName')}
+                        disabled={settingsLocked}
+                      />
+                    </FormRow>
                     <button
                       type="button"
                       onClick={() => setAdvancedOpen((open) => !open)}
@@ -524,40 +497,53 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
                       {t('wizardAdvanced')}
                     </button>
                     {advancedOpen ? (
-                      <div className="space-y-3 rounded-lg border border-separator px-3.5 py-3">
-                        <div className="grid gap-3 sm:grid-cols-2">
-                          <label className="block space-y-1.5">
-                            <span className="text-xs font-medium text-muted">{t('maxInflight')}</span>
-                            <Input
-                              type="number"
-                              min={1}
-                              max={32}
-                              value={maxInFlight}
-                              onChange={(event) => setMaxInFlight(event.target.value)}
-                              aria-label={t('maxInflight')}
-                              disabled={settingsLocked}
-                            />
-                            <p className="text-[11px] leading-4 text-muted">{t('maxInflightHint')}</p>
-                          </label>
-                          <label className="block space-y-1.5">
-                            <span className="text-xs font-medium text-muted">{t('priority')}</span>
-                            <Input
-                              type="number"
-                              min={1}
-                              max={100}
-                              value={priority}
-                              onChange={(event) => setPriority(event.target.value)}
-                              aria-label={t('priority')}
-                              disabled={settingsLocked}
-                            />
-                            <p className="text-[11px] leading-4 text-muted">{t('priorityHint')}</p>
-                          </label>
-                        </div>
+                      <div className="space-y-3 rounded-lg border border-separator px-3.5 py-3.5">
+                        <FormRow label={t('maxInflight')} hint={t('maxInflightHint')}>
+                          <NumberField
+                            value={maxInFlight}
+                            onChange={(value) => setMaxInFlight(value ?? 4)}
+                            minValue={1}
+                            maxValue={32}
+                            isDisabled={settingsLocked}
+                            isRequired
+                          >
+                            <NumberField.Group>
+                              <NumberField.DecrementButton />
+                              <NumberField.Input aria-label={t('maxInflight')} />
+                              <NumberField.IncrementButton />
+                            </NumberField.Group>
+                          </NumberField>
+                        </FormRow>
+                        <FormRow label={t('priority')} hint={t('priorityHint')}>
+                          <NumberField
+                            value={priority}
+                            onChange={(value) => setPriority(value ?? 50)}
+                            minValue={1}
+                            maxValue={100}
+                            isDisabled={settingsLocked}
+                            isRequired
+                          >
+                            <NumberField.Group>
+                              <NumberField.DecrementButton />
+                              <NumberField.Input aria-label={t('priority')} />
+                              <NumberField.IncrementButton />
+                            </NumberField.Group>
+                          </NumberField>
+                        </FormRow>
+                        <FormRow label={t('proxyUrl')} hint={t('proxyUrlHint')}>
+                          <Input
+                            value={proxyUrl}
+                            onChange={(event) => setProxyUrl(event.target.value)}
+                            placeholder={t('proxyUrlPlaceholder')}
+                            aria-label={t('proxyUrl')}
+                            disabled={settingsLocked}
+                          />
+                        </FormRow>
                         {showDropSystem ? (
                           <div className="flex items-center justify-between gap-3">
                             <div className="min-w-0">
-                              <div className="text-xs font-medium text-muted">{t('dropSystemPrompt')}</div>
-                              <p className="mt-0.5 text-[11px] leading-4 text-muted">{t('dropSystemPromptCreateHint')}</p>
+                              <div className="text-sm font-medium text-muted">{t('dropSystemPrompt')}</div>
+                              <p className="mt-0.5 text-xs leading-5 text-muted">{t('dropSystemPromptCreateHint')}</p>
                             </div>
                             <CompactSwitch
                               isSelected={dropSystemPrompt}
@@ -565,36 +551,6 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
                               ariaLabel={t('dropSystemPrompt')}
                               onChange={setDropSystemPrompt}
                             />
-                          </div>
-                        ) : null}
-                        {showAutoCheckin ? (
-                          <div className="space-y-2.5">
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="min-w-0">
-                                <div className="text-xs font-medium text-muted">{t('autoCheckin')}</div>
-                                <p className="mt-0.5 text-[11px] leading-4 text-muted">{t('autoCheckinCreateHint')}</p>
-                              </div>
-                              <CompactSwitch
-                                isSelected={autoCheckin}
-                                isDisabled={settingsLocked}
-                                ariaLabel={t('autoCheckin')}
-                                onChange={setAutoCheckin}
-                              />
-                            </div>
-                            {autoCheckin ? (
-                              <label className="block space-y-1.5 rounded-lg bg-surface-secondary/55 p-3">
-                                <span className="text-xs font-medium text-muted">{t('autoCheckinTime')}</span>
-                                <Input
-                                  className="h-11 w-full text-base sm:max-w-48"
-                                  type="time"
-                                  value={autoCheckinTime}
-                                  onChange={(event) => setAutoCheckinTime(event.target.value || '09:00')}
-                                  aria-label={t('autoCheckinTime')}
-                                  disabled={settingsLocked}
-                                />
-                                <p className="text-[11px] leading-4 text-muted">{t('autoCheckinTimeHint')}</p>
-                              </label>
-                            ) : null}
                           </div>
                         ) : null}
                       </div>
@@ -679,7 +635,9 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
                       </>
                     ) : tab === 'pat' ? (
                       <>
-                        <Input type="password" value={pat} onChange={(event) => setPat(event.target.value)} placeholder={t('wizardPatPh')} aria-label={t('wizardPatPh')} disabled={busy} />
+                        <FormRow label={t('tabPat')}>
+                          <Input type="password" value={pat} onChange={(event) => setPat(event.target.value)} placeholder={t('wizardPatPh')} aria-label={t('wizardPatPh')} disabled={busy} />
+                        </FormRow>
                         {message ? (
                           <p className="flex items-center gap-2 rounded-lg border border-separator bg-surface-secondary px-3 py-2 text-xs">{isDone ? <CheckCircle size={14} className="shrink-0 text-success" /> : null}<span className={isDone ? 'font-medium text-foreground' : 'text-muted'}>{message}</span></p>
                         ) : null}
