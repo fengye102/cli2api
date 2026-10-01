@@ -322,6 +322,7 @@ func TestAggregate_TextAndToolCalls(t *testing.T) {
 
 func TestChatStream_HeadersAndBody(t *testing.T) {
 	var sawAuth, sawAPIKey, sawVersion, sawUA string
+	var sawDeviceMid, sawOsCategory, sawTitle, sawChannel, sawAgent string
 	var sawBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Only the chat POST carries the auth header assertions; the catalog
@@ -336,6 +337,11 @@ func TestChatStream_HeadersAndBody(t *testing.T) {
 		sawAPIKey = r.Header.Get("x-api-key")
 		sawVersion = r.Header.Get("anthropic-version")
 		sawUA = r.Header.Get("User-Agent")
+		sawDeviceMid = r.Header.Get("X-Device-Mid")
+		sawOsCategory = r.Header.Get("X-Os-Category")
+		sawTitle = r.Header.Get("X-Title")
+		sawChannel = r.Header.Get("X-Release-Channel")
+		sawAgent = r.Header.Get("X-ZCode-Agent")
 		if err := json.NewDecoder(r.Body).Decode(&sawBody); err != nil {
 			t.Errorf("decode body: %v", err)
 		}
@@ -371,8 +377,24 @@ func TestChatStream_HeadersAndBody(t *testing.T) {
 		buf.WriteString(scanner.Text())
 		buf.WriteByte('\n')
 	}
-	if sawAPIKey != "jwt-abc" {
-		t.Errorf("x-api-key=%q", sawAPIKey)
+	// The plan channel is Bearer-only: x-api-key is the coding-plan shape
+	// and the mixed header set is itself a risk signal upstream.
+	if sawAPIKey != "" {
+		t.Errorf("x-api-key=%q want empty on the plan channel", sawAPIKey)
+	}
+	if sawDeviceMid == "" {
+		t.Error("X-Device-Mid missing")
+	}
+	if sawOsCategory != "macos" || sawTitle != "Z Code@electron" || sawChannel != "stable" || sawAgent != "glm" {
+		t.Errorf("identity headers: os=%q title=%q channel=%q agent=%q", sawOsCategory, sawTitle, sawChannel, sawAgent)
+	}
+	blocks, ok := sawBody["system"].([]any)
+	if !ok || len(blocks) == 0 {
+		t.Fatalf("plan identity blocks missing: %#v", sawBody["system"])
+	}
+	first, _ := blocks[0].(map[string]any)
+	if first["text"] != "You are ZCode, an interactive coding agent" {
+		t.Errorf("first system block=%v", first["text"])
 	}
 	if sawAuth != "Bearer jwt-abc" {
 		t.Errorf("Authorization=%q", sawAuth)

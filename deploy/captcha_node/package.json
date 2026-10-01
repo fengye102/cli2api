@@ -1,0 +1,11 @@
+{
+  "name": "cli2api-zcode-captcha",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Real-browser Aliyun traceless-verification solver for the cli2api ZCode plan channel",
+  "type": "commonjs",
+  "main": "solver.js",
+  "dependencies": {
+    "puppeteer-core": "^23.0.0"
+  }
+}

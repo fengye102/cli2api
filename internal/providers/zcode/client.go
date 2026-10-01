@@ -13,7 +13,7 @@ import (
 
 // Version is the pinned ZCode client build the upstream still accepts. The
 // console reports the same string via X-ZCode-App-Version.
-const Version = "3.10.2"
+const Version = "3.14.3"
 
 // userAgent is the pinned ZCode desktop UA. The upstream WAF rejects unknown
 // UAs on some endpoints, so keep this string verbatim.
@@ -68,6 +68,10 @@ type Client struct {
 	store Store
 	http  *http.Client
 
+	// captcha mints the Aliyun traceless-verification tokens the plan
+	// (OAuth) channel requires (see captcha.go).
+	captcha *captchaPool
+
 	// catalogURL overrides the catalogue endpoint; tests point this at a
 	// local server.
 	catalogURL string
@@ -102,7 +106,7 @@ type Client struct {
 // streaming responses can stay open; per-request timeouts are set by the
 // caller.
 func NewClient(store Store) *Client {
-	return &Client{
+	client := &Client{
 		store: store,
 		http: &http.Client{
 			CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -110,6 +114,8 @@ func NewClient(store Store) *Client {
 			},
 		},
 	}
+	client.captcha = newCaptchaPool(client.http)
+	return client
 }
 
 // SetBase satisfies the executor's optional base-override hook; ZCode

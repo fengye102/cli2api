@@ -3,6 +3,7 @@ package zcode
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -41,12 +42,14 @@ func chatURL(cred Credential) string {
 // gateway path). The wire never carries a sealed enc:v1: blob.
 func chatAuthHeaders(h http.Header, cred Credential) {
 	if cred.IsOAuth() {
+		// Plan channel: Bearer only. The desktop client never sends x-api-key
+		// on the plan gateway (that is the coding-plan/API-key shape), and the
+		// mixed shape is itself a risk signal.
 		token := strings.TrimSpace(cred.ZCodeJWT)
 		if token == "" {
 			token = strings.TrimSpace(cred.AccessToken)
 		}
 		if token != "" {
-			h.Set("x-api-key", token)
 			h.Set("Authorization", "Bearer "+token)
 		}
 		return
@@ -87,6 +90,11 @@ func (c *Client) chatRequest(ctx context.Context, accountID string, cred Credent
 	}
 	level = providers.ResolveReasoningLevel(level, caps)
 	body := anthropicBody(req, level, caps.MaxOutput)
+	if cred.IsOAuth() {
+		// The plan gateway reviews the system prompt and rejects a request
+		// that lacks the official ZCode identity blocks with 3012.
+		applyPlanIdentity(body, req.Model, credentialUserID(cred))
+	}
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, providers.ResolvedChat{}, err
@@ -95,13 +103,70 @@ func (c *Client) chatRequest(ctx context.Context, accountID string, cred Credent
 	if err != nil {
 		return nil, providers.ResolvedChat{}, err
 	}
-	for k, v := range defaultHeaders() {
+	for k, v := range identityHeaders(accountID) {
+		httpReq.Header.Set(k, v)
+	}
+	for k, v := range traceHeaders() {
 		httpReq.Header.Set(k, v)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 	chatAuthHeaders(httpReq.Header, cred)
+	if cred.IsOAuth() && c.captcha != nil && c.captcha.enabled() {
+		param, region, err := c.captcha.param(ctx)
+		if err != nil {
+			return nil, providers.ResolvedChat{}, fmt.Errorf("zcode plan channel verification: %w", err)
+		}
+		httpReq.Header.Set(CaptchaHeader, param)
+		httpReq.Header.Set(CaptchaRegionHeader, region)
+	}
 	return httpReq, providers.ResolvedChat{ReasoningLevel: level}, nil
+}
+
+// credentialUserID is the plan account identity stamped into metadata.user_id.
+func credentialUserID(cred Credential) string {
+	if id := strings.TrimSpace(cred.UserID); id != "" {
+		return id
+	}
+	return jwtUserID(cred.ZCodeJWT)
+}
+
+// jwtUserID decodes the user id out of the ZCode JWT payload (sub / user_id).
+func jwtUserID(token string) string {
+	token = strings.TrimSpace(token)
+	if strings.Count(token, ".") != 2 {
+		return ""
+	}
+	segment := strings.Split(token, ".")[1]
+	for len(segment)%4 != 0 {
+		segment += "="
+	}
+	decoded, err := base64.URLEncoding.DecodeString(segment)
+	if err != nil {
+		return ""
+	}
+	var payload map[string]any
+	if json.Unmarshal(decoded, &payload) != nil {
+		return ""
+	}
+	for _, key := range []string{"user_id", "sub"} {
+		if value, ok := payload[key].(string); ok && strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// noteRiskResponse empties the verification pool when the upstream reports a
+// risk block or a rejected token, so the next attempt solves a fresh one
+// instead of replaying a burnt batch.
+func (c *Client) noteRiskResponse(status int, body []byte) {
+	if c.captcha == nil {
+		return
+	}
+	if Classify(status, string(body)).Kind == accounts.KindRateLimit {
+		c.captcha.invalidate()
+	}
 }
 
 // modelSettingReader is the optional console-side reasoning store. It is
@@ -189,6 +254,7 @@ func (c *Client) ChatNonStream(ctx context.Context, accountID string, req transl
 		return providers.ChatOutcome{}, fmt.Errorf("read zcode stream: %w", readErr)
 	}
 	if resp.StatusCode >= 300 || resp.StatusCode < 200 {
+		c.noteRiskResponse(resp.StatusCode, body)
 		return providers.ChatOutcome{}, classifiedHTTPError(resp.StatusCode, body)
 	}
 	aggregate, err := Aggregate(bytes.NewReader(body))
@@ -222,6 +288,7 @@ func (c *Client) ChatStream(ctx context.Context, accountID string, req translate
 	if resp.StatusCode >= 300 || resp.StatusCode < 200 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
+		c.noteRiskResponse(resp.StatusCode, body)
 		return nil, providers.ResolvedChat{}, classifiedHTTPError(resp.StatusCode, body)
 	}
 	return rewriteChatStream(resp), resolved, nil

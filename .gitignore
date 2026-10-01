@@ -15,6 +15,7 @@ docs/PROVIDERS_TRAE.md
 docs/PROVIDERS_TRAE_SOLO.md
 frontend/node_modules/
 worker/node_modules/
+deploy/captcha_node/node_modules/
 frontend/dist/
 web/
 
