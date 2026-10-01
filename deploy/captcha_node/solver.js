@@ -196,13 +196,22 @@ async function mint(executablePath) {
       region,
       prefix,
       SOLVE_TIMEOUT_MS,
-    );
-  } finally {
-    try {
-      await browser.close();
-    } catch {
-      /* the exit code already carries the outcome */
-    }
+    ).then((token) => ({ browser, token }));
+  } catch (error) {
+    stopBrowser(browser);
+    throw error;
+  }
+}
+
+// The browser is killed rather than closed: shutting down a --single-process
+// Chromium can block for minutes, and a verification token is only valid for
+// about two minutes.
+function stopBrowser(browser) {
+  try {
+    const child = browser.process();
+    if (child && child.pid) process.kill(child.pid, "SIGKILL");
+  } catch {
+    /* already gone */
   }
 }
 
@@ -228,12 +237,14 @@ async function mint(executablePath) {
       continue;
     }
     try {
-      const token = await mint(executablePath);
+      const { browser, token } = await mint(executablePath);
       if (token && token.trim()) {
         log(`solved in ${Date.now() - STARTED_AT}ms`);
         process.stdout.write("VERIFY_PARAM=" + token.trim() + "\n");
+        stopBrowser(browser);
         process.exit(0);
       }
+      stopBrowser(browser);
       log(`attempt ${attempt}: no token`);
     } catch (error) {
       log(`attempt ${attempt}: ${(error && error.message) || error}`);

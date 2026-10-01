@@ -1,6 +1,7 @@
 package zcode
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -264,7 +265,10 @@ func (p *captchaPool) config(ctx context.Context) captchaConfig {
 	return cfg
 }
 
-// solve runs the Node solver once. It prints VERIFY_PARAM=<token> on success.
+// solve runs the Node solver once and returns the first token it prints. The
+// token is read off the pipe instead of waiting for the process to exit: the
+// solver kills its browser as soon as a token exists, and a token that arrived
+// late is worthless anyway (it is only valid for a couple of minutes).
 func (p *captchaPool) solve(ctx context.Context, cfg captchaConfig) (captchaToken, error) {
 	script := p.solverScript()
 	if _, err := os.Stat(script); err != nil {
@@ -276,19 +280,51 @@ func (p *captchaPool) solve(ctx context.Context, cfg captchaConfig) (captchaToke
 	cmd := exec.CommandContext(solveCtx, p.node, script, cfg.SceneID, cfg.Region, cfg.Prefix)
 	cmd.Dir = p.dir
 	cmd.Env = os.Environ()
-	var out, errOut bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errOut
-	runErr := cmd.Run()
+	isolateProcess(cmd)
 
-	if param := parseVerifyParam(out.String()); param != "" {
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return captchaToken{}, fmt.Errorf("zcode captcha solver stdout: %w", err)
+	}
+	var errOut bytes.Buffer
+	cmd.Stderr = &errOut
+	if err := cmd.Start(); err != nil {
+		return captchaToken{}, fmt.Errorf("zcode captcha solver start: %w", err)
+	}
+
+	tokens := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+		for scanner.Scan() {
+			if param := parseVerifyParam(scanner.Text()); param != "" {
+				tokens <- param
+				return
+			}
+		}
+	}()
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+
+	select {
+	case param := <-tokens:
+		killProcessGroup(cmd)
+		<-exited
 		return captchaToken{param: param, region: cfg.Region, born: time.Now()}, nil
+	case err := <-exited:
+		detail := lastNonEmptyLine(errOut.String())
+		if err != nil {
+			return captchaToken{}, fmt.Errorf("zcode captcha solve failed: %v%s", err, suffix(detail))
+		}
+		return captchaToken{}, fmt.Errorf("zcode captcha solve produced no token%s", suffix(detail))
+	case <-solveCtx.Done():
+		killProcessGroup(cmd)
+		<-exited
+		if ctx.Err() != nil {
+			return captchaToken{}, ctx.Err()
+		}
+		return captchaToken{}, fmt.Errorf("zcode captcha solve timed out after %s", p.timeout)
 	}
-	detail := lastNonEmptyLine(errOut.String())
-	if runErr != nil {
-		return captchaToken{}, fmt.Errorf("zcode captcha solve failed: %v%s", runErr, suffix(detail))
-	}
-	return captchaToken{}, fmt.Errorf("zcode captcha solve produced no token%s", suffix(detail))
 }
 
 func parseVerifyParam(stdout string) string {
