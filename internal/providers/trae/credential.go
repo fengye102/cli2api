@@ -209,7 +209,7 @@ func credentialFromStorage(value any) (Credential, bool) {
 
 // pickAuthField reads a field from the auth blob itself (including common
 // one-level nesting such as data.refreshToken or exchangeResponse.Result
-//.RefreshToken), falling back to a deep scan of the whole storage blob.
+// .RefreshToken), falling back to a deep scan of the whole storage blob.
 func pickAuthField(auth map[string]any, names ...string) string {
 	for _, name := range names {
 		if s, ok := auth[name].(string); ok && strings.TrimSpace(s) != "" {
