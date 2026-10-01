@@ -21,6 +21,9 @@ func (credentialCodec) PrepareImport(payload []byte) (providers.CredentialImport
 	if err != nil {
 		return providers.CredentialImport{}, err
 	}
+	if err := ensureDomesticRegion(credential); err != nil {
+		return providers.CredentialImport{}, err
+	}
 	encoded, err := credential.Encode()
 	if err != nil {
 		return providers.CredentialImport{}, err

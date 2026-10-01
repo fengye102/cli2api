@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/caigee-cmd/cli2api/internal/accounts"
 	"github.com/caigee-cmd/cli2api/internal/providers"
@@ -56,8 +57,9 @@ type Store interface {
 }
 
 // Client is the ZCode in-process adapter. It owns the credential codec, the
-// live catalogue fetch, chat against the Anthropic Messages upstream, and
-// the liveness / quota probe backed by the plan-gateway balance endpoint.
+// live catalogue fetch, chat against the Anthropic Messages upstream, the
+// browser-login round for the domestic (BigModel) service, and the liveness /
+// quota probe backed by the plan-gateway balance endpoint.
 type Client struct {
 	store Store
 	http  *http.Client
@@ -65,6 +67,19 @@ type Client struct {
 	// catalogURL overrides the catalogue endpoint; tests point this at a
 	// local server.
 	catalogURL string
+
+	// tokenURL overrides the OAuth token endpoint; tests point this at a
+	// local server.
+	tokenURL string
+
+	// userInfoURL overrides the BigModel customer-info endpoint used to fill
+	// the account identity after login; tests point this at a local server.
+	userInfoURL string
+
+	// mu guards pending, the in-flight browser-login rounds keyed by account
+	// id (see login.go).
+	mu      sync.Mutex
+	pending map[string]*loginPending
 }
 
 // NewClient builds the adapter. The http client has no global timeout so
@@ -87,13 +102,14 @@ func NewClient(store Store) *Client {
 func (c *Client) SetBase(_ string) {}
 
 // Adapter wires the capability surface: credential decode/validate, the
-// live+static catalogue, the import/export wizard, chat against the Anthropic
-// Messages upstream, and a Prober backed by the plan-gateway balance
-// endpoint.
+// browser login for the domestic service, the live+static catalogue, the
+// import/export wizard, chat against the Anthropic Messages upstream, and a
+// Prober backed by the plan-gateway balance endpoint.
 func (c *Client) Adapter() providers.Adapter {
 	return providers.Adapter{
 		ID:           "zcode",
 		Credential:   credentialCodec{},
+		Login:        c,
 		Models:       c,
 		Chat:         c,
 		Classifier:   classifier{},

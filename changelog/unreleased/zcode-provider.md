@@ -1,7 +1,7 @@
 ### English
 
-- Add a new `zcode` provider for ZCode (Z.ai / BigModel) Coding Plan accounts. Import accepts a pasted ZCode credential bundle, a plaintext `apiKey` from the official client's `~/.zcode/**/config.json`, a `credentials.json` document, or a bare API key / ZCode JWT; machine-bound `enc:v1:` values are rejected with an actionable message.
-- Chat runs against the Anthropic Messages upstream (`https://api.z.ai/api/anthropic/v1/messages` or `https://open.bigmodel.cn/api/anthropic/v1/messages`) and is translated to OpenAI-compatible streaming and non-streaming responses, including tool calls and `reasoning_content` for thinking blocks. Reasoning levels are catalog-driven via `output_config.effort` for the GLM-5.x family.
+- Add a new `zcode` provider for ZCode (BigModel) Coding Plan accounts. Import accepts a pasted ZCode credential bundle, a plaintext `apiKey` from the official client's `~/.zcode/**/config.json`, a `credentials.json` document, or a bare API key / ZCode JWT; machine-bound `enc:v1:` values are rejected with an actionable message.
+- Chat runs against the Anthropic Messages upstream (`https://open.bigmodel.cn/api/anthropic/v1/messages`) and is translated to OpenAI-compatible streaming and non-streaming responses, including tool calls and `reasoning_content` for thinking blocks. Reasoning levels are catalog-driven via `output_config.effort` for the GLM-5.x family.
 - Account probe and quota use the ZCode plan-gateway balance endpoint, surfacing remaining balance and plan name on the account card; a 401 marks the account as re-login required. Live model catalogue is fetched from `https://zcode.z.ai/api/v1/client/configs` with a static GLM-5.3 / GLM-5.3-Flash / GLM-5.2 / GLM-5-Turbo fallback.
 
 ### 中文

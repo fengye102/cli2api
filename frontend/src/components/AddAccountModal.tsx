@@ -184,7 +184,13 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
   // so the wizard opens on the PAT tab instead of the browser tab.
   const hasBrowserLogin = activeOption?.descriptor.capabilities?.browser_login !== false
   const showDropSystem = activeOption?.provider === 'workbuddy'
-  const showCallbackPaste = activeOption?.provider === 'trae' || activeOption?.provider === 'devin' || activeOption?.provider === 'codex'
+  // Providers whose callback redirect uses a custom scheme the server can
+  // never receive (trae / devin / codex / zcode) need the pasted callback URL.
+  const showCallbackPaste =
+    activeOption?.provider === 'trae' ||
+    activeOption?.provider === 'devin' ||
+    activeOption?.provider === 'codex' ||
+    activeOption?.provider === 'zcode'
   const busy = phase === 'busy' || phase === 'polling'
   const settingsLocked = Boolean(createdId.current) || busy
   const isDone = phase === 'done'
