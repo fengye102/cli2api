@@ -82,8 +82,11 @@ type Credential struct {
 	Nickname     string `json:"nickname"`
 }
 
-// DecodeCredential accepts both the canonical flat payload and the nested
-// {account, auth} export shape.
+// DecodeCredential accepts the canonical flat payload, the nested
+// {account, auth} export shape, and raw CodeBuddy state.vscdb values. The
+// nested shape only wins when it actually carries an access token: identity
+// alone (account.uid) falls through to the vscdb walk, which can still find a
+// token stored under another key.
 func DecodeCredential(payload []byte) (Credential, error) {
 	var nested struct {
 		Account struct {
@@ -98,8 +101,7 @@ func DecodeCredential(payload []byte) (Credential, error) {
 			Domain       string `json:"domain"`
 		} `json:"auth"`
 	}
-	if err := json.Unmarshal(payload, &nested); err == nil &&
-		(nested.Auth.AccessToken != "" || nested.Account.UID != "") {
+	if err := json.Unmarshal(payload, &nested); err == nil && nested.Auth.AccessToken != "" {
 		return Credential{
 			AccessToken:  nested.Auth.AccessToken,
 			RefreshToken: nested.Auth.RefreshToken,
@@ -163,6 +165,11 @@ func credentialFromVscdbValue(value any) (Credential, bool) {
 		return Credential{}, false
 	}
 	access := pickLocalField(auth, "accessToken", "access_token", "token")
+	if access == "" {
+		// The object that won on a refresh token alone carries no access
+		// token; it can sit in a sibling blob of the same dump.
+		access = providers.DeepPickString(value, "accessToken", "access_token", "token")
+	}
 	uid, access := splitPackedToken(access)
 	if access == "" {
 		return Credential{}, false
@@ -203,13 +210,45 @@ func pickLocalField(auth map[string]any, names ...string) string {
 }
 
 // splitPackedToken handles CodeBuddy's local token format "uid+token".
+//
+// The uid half is a short identifier, so a '+' that opens the token itself
+// (standard-base64 padding/signature material) must not be mistaken for the
+// delimiter: splitting "eyJ...ab+cd/ef==" on the first '+' would hand back
+// "cd/ef==" as the access token and a JWT fragment as the uid, and the
+// non-empty garbage uid also suppressed the caller's uid fallback.
 func splitPackedToken(token string) (uid string, value string) {
 	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", ""
+	}
 	prefix, suffix, found := strings.Cut(token, "+")
-	if !found || strings.TrimSpace(suffix) == "" {
+	if !found {
 		return "", token
 	}
-	return strings.TrimSpace(prefix), strings.TrimSpace(suffix)
+	prefix = strings.TrimSpace(prefix)
+	suffix = strings.TrimSpace(suffix)
+	if suffix == "" || !looksLikeUID(prefix) {
+		// No uid in front of the delimiter: the whole string is the token.
+		return "", token
+	}
+	return prefix, suffix
+}
+
+// looksLikeUID reports whether s can be the uid half of a packed token.
+// Identifier-safe characters only, and short: JWTs and base64 blobs carry
+// '.'/'='/'/' and are therefore never read as a uid.
+func looksLikeUID(s string) bool {
+	if s == "" || len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func (c Credential) Encode() ([]byte, error) {
