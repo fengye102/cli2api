@@ -88,10 +88,6 @@ type Client struct {
 	// account identity after login; tests point this at a local server.
 	userInfoURL string
 
-	// customerURL overrides the BigModel customer-info fallback endpoint (see
-	// login.go realmIdentity); tests point this at a local server.
-	customerURL string
-
 	// cliBaseURL overrides the plan-gateway base the Z.ai CLI sign-in runs on
 	// (see login.go startCLILogin); tests point this at a local server.
 	cliBaseURL string
@@ -124,7 +120,7 @@ func NewClient(store Store) *Client {
 func (c *Client) SetBase(_ string) {}
 
 // Adapter wires the capability surface: credential decode/validate, the
-// browser login for both ZCode services, the live+static catalogue, the
+// browser login, the live+static catalogue, the
 // import/export wizard, chat against the Anthropic Messages upstream, and a
 // Prober backed by the plan-gateway balance endpoint.
 func (c *Client) Adapter() providers.Adapter {

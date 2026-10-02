@@ -160,6 +160,39 @@ func SelectPreviousReleases(current string, releases []Release, limit int) []Rel
 	return candidates
 }
 
+// SelectReleaseHistory returns the newest-first upstream history without a
+// running version to anchor it: used when the local build's version cannot be
+// compared against the feed (a fork or development build), so the System page
+// still lists the official versions even though no update is offered.
+func SelectReleaseHistory(releases []Release, limit int) []Release {
+	if limit <= 0 {
+		return nil
+	}
+	stable := make([]Release, 0, len(releases))
+	seen := map[string]bool{}
+	for _, release := range releases {
+		if release.Draft || release.Prerelease {
+			continue
+		}
+		version, err := ParseVersion(release.TagName)
+		if err != nil || seen[version.String()] {
+			continue
+		}
+		seen[version.String()] = true
+		release.TagName = version.String()
+		stable = append(stable, release)
+	}
+	sort.SliceStable(stable, func(i, j int) bool {
+		left, _ := ParseVersion(stable[i].TagName)
+		right, _ := ParseVersion(stable[j].TagName)
+		return left.Compare(right) > 0
+	})
+	if len(stable) > limit {
+		stable = stable[:limit]
+	}
+	return stable
+}
+
 // SelectRecentReleases returns a bounded newest-first history for the System page:
 // the latest update when one exists, the running version, a few older rollback
 // targets, then skipped versions in between. Extra older releases fill remaining slots.

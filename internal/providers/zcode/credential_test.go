@@ -131,13 +131,13 @@ func TestDecodeCredential_ConfigJSONZAI(t *testing.T) {
 	}
 }
 
-func TestDecodeCredential_ConfigJSONBigModel(t *testing.T) {
+func TestDecodeCredential_ConfigJSONZaiBaseURL(t *testing.T) {
 	doc := `{
 		"provider": {
-			"custom:big": {
+			"custom:zai": {
 				"options": {
-					"apiKey": "plain-bigmodel-key",
-					"baseURL": "https://open.bigmodel.cn/api/anthropic"
+					"apiKey": "plain-zai-key",
+					"baseURL": "https://api.z.ai/api/anthropic"
 				}
 			}
 		}
@@ -146,8 +146,8 @@ func TestDecodeCredential_ConfigJSONBigModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeCredential: %v", err)
 	}
-	if cred.Provider != RegionBigModel {
-		t.Errorf("Provider=%q want bigmodel", cred.Provider)
+	if cred.Provider != RegionZAI {
+		t.Errorf("Provider=%q want zai", cred.Provider)
 	}
 }
 
@@ -182,7 +182,7 @@ func TestDecodeCredential_CredentialsJSONPlaintext(t *testing.T) {
 	jwt := jwtForTest(t, map[string]any{"user_id": "u-4"})
 	doc := `{
 		"zcodejwttoken": "` + jwt + `",
-		"oauth:active_provider": "bigmodel",
+		"oauth:active_provider": "zai",
 		"oauth:zai:access_token": "at-plain",
 		"oauth:zai:refresh_token": "rt-plain"
 	}`
@@ -196,8 +196,8 @@ func TestDecodeCredential_CredentialsJSONPlaintext(t *testing.T) {
 	if cred.ZCodeJWT != jwt {
 		t.Errorf("ZCodeJWT mismatch")
 	}
-	if cred.Provider != RegionBigModel {
-		t.Errorf("Provider=%q want bigmodel", cred.Provider)
+	if cred.Provider != RegionZAI {
+		t.Errorf("Provider=%q want zai", cred.Provider)
 	}
 }
 
@@ -324,12 +324,12 @@ func TestDecodeCredential_ArrayExport(t *testing.T) {
 
 	// Several elements: the first element with usable material wins.
 	multi := `[{"auth_mode":"oauth","provider":"zai"},` +
-		`{"auth_mode":"api_key","provider":"bigmodel","api_key":"bm-key"}]`
+		`{"auth_mode":"api_key","provider":"zai","api_key":"zai-key"}]`
 	credential, err = DecodeCredential([]byte(multi))
 	if err != nil {
 		t.Fatalf("multi-element array export rejected: %v", err)
 	}
-	if credential.APIKey != "bm-key" || credential.Provider != RegionBigModel {
+	if credential.APIKey != "zai-key" || credential.Provider != RegionZAI {
 		t.Errorf("multi-element pick = %+v", credential)
 	}
 

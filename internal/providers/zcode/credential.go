@@ -1,4 +1,4 @@
-// Package zcode implements the ZCode (Z.ai / BigModel) in-process provider.
+// Package zcode implements the ZCode (Z.ai) in-process provider.
 // Protocol constants live only in this package.
 package zcode
 
@@ -18,8 +18,7 @@ const (
 	AuthModeAPIKey = "api_key"
 	AuthModeOAuth  = "oauth"
 
-	RegionZAI      = "zai"
-	RegionBigModel = "bigmodel"
+	RegionZAI = "zai"
 
 	// encV1Prefix marks credentials.json values sealed with the desktop
 	// client's machine-bound AES-256-GCM key. They cannot be decrypted
@@ -27,17 +26,14 @@ const (
 	encV1Prefix = "enc:v1:"
 )
 
-// Credential is the canonical storage payload for provider=zcode. API-key
-// mode carries a plain key (a BigModel key from bigmodel.cn, or a Z.ai
-// "id.secret" pair from z.ai) and is sent as x-api-key. OAuth mode carries the
-// ZCode JWT (zcodejwttoken, 3 segments) plus the provider access/refresh tokens
-// from the plan gateway. Provider names the region the credential belongs to:
-// the two ZCode services have different authorize hosts, redirect schemes and
-// API bases, so a credential is only ever sent to its own.
+// Credential is the canonical storage payload for provider=zcode. API-key mode
+// carries a plain key (a Z.ai "id.secret" pair) and is sent as x-api-key. OAuth
+// mode carries the ZCode JWT (zcodejwttoken, 3 segments) plus the provider
+// access/refresh tokens from the plan gateway.
 type Credential struct {
 	Format        string `json:"format"`
 	AuthMode      string `json:"auth_mode"`
-	Provider      string `json:"provider"` // zai | bigmodel
+	Provider      string `json:"provider"` // zai
 	APIKey        string `json:"api_key,omitempty"`
 	ZCodeJWT      string `json:"zcode_jwt_token,omitempty"`
 	AccessToken   string `json:"access_token,omitempty"`
@@ -118,7 +114,7 @@ func fillJWTIdentity(c *Credential, token string) {
 	if c.Provider == "" {
 		if provider, ok := payload["provider"].(string); ok {
 			normalized := normalizeRegion(provider)
-			if normalized == RegionZAI || normalized == RegionBigModel {
+			if normalized == RegionZAI {
 				c.Provider = normalized
 			}
 		}
@@ -389,14 +385,12 @@ func activeProviderFrom(value any) string {
 	return ""
 }
 
-// regionFromBaseURL maps a provider baseURL onto zai | bigmodel.
+// regionFromBaseURL maps a provider baseURL onto the Z.ai service.
 func regionFromBaseURL(c *Credential, baseURL string) {
 	lower := strings.ToLower(strings.TrimSpace(baseURL))
 	switch {
 	case lower == "":
 		return
-	case strings.Contains(lower, "bigmodel.cn"):
-		c.Provider = RegionBigModel
 	case strings.Contains(lower, "z.ai"):
 		c.Provider = RegionZAI
 	}
@@ -406,8 +400,6 @@ func normalizeRegion(s string) string {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "zai", "z.ai":
 		return RegionZAI
-	case "bigmodel", "bigmodel.cn":
-		return RegionBigModel
 	default:
 		return strings.ToLower(strings.TrimSpace(s))
 	}
@@ -427,16 +419,15 @@ func normalize(c *Credential) {
 	c.Provider = normalizeRegion(c.Provider)
 }
 
-// ensureSupportedRegion rejects credentials that name neither ZCode service.
-// The two realms have different authorize hosts, redirect schemes and API
-// bases, so an unrecognised region would authenticate nowhere and only surface
-// as a confusing upstream 401 later.
+// ensureSupportedRegion rejects credentials that name another service. An
+// unrecognised region would authenticate nowhere and only surface as a
+// confusing upstream 401 later.
 func ensureSupportedRegion(c Credential) error {
 	switch normalizeRegion(c.Provider) {
-	case RegionZAI, RegionBigModel, "":
+	case RegionZAI, "":
 		return nil
 	default:
-		return fmt.Errorf("unknown zcode provider %q: use %s (Z.ai) or %s (BigModel)", c.Provider, RegionZAI, RegionBigModel)
+		return fmt.Errorf("unknown zcode provider %q: use %s (Z.ai)", c.Provider, RegionZAI)
 	}
 }
 

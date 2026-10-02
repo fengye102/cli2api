@@ -229,7 +229,7 @@ func TestProbe_Balance401_APIKey(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":{"message":"令牌已过期或验证不正确","type":"401"}}`))
 	})
 	store := &observeStore{memStore: memStore{items: map[string][]byte{
-		"acc1": []byte(`{"format":"zcode-credential-v1","auth_mode":"api_key","provider":"bigmodel","api_key":"abc.def"}`),
+		"acc1": []byte(`{"format":"zcode-credential-v1","auth_mode":"api_key","provider":"zai","api_key":"abc.def"}`),
 	}}}
 	client := newProbeClient(t, handler, store)
 

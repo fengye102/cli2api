@@ -39,7 +39,17 @@ func NewChecker(currentVersion string, source ReleaseSource) *Checker {
 func (c *Checker) Check(ctx context.Context, force bool) (Info, error) {
 	current, err := ParseVersion(c.currentVersion)
 	if err != nil {
-		return Info{CurrentVersion: c.currentVersion, Managed: false, Warning: "development build"}, nil
+		// A fork or development build carries a version the release feed cannot
+		// be compared against. Nothing can be offered as an update, but the
+		// System page still lists the upstream history, with the running build
+		// first so the operator can see what is actually deployed.
+		info := Info{CurrentVersion: c.currentVersion, Managed: false, Warning: "development build"}
+		releases, listErr := c.source.ListReleases(ctx)
+		if listErr != nil {
+			return info, nil
+		}
+		info.RecentReleases = append([]Release{{TagName: c.currentVersion}}, SelectReleaseHistory(releases, 7)...)
+		return info, nil
 	}
 	currentVersion := current.String()
 	if !force {

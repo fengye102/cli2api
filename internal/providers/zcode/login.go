@@ -20,12 +20,9 @@ import (
 // realms and each one is its own round trip, so the flow below is always
 // driven from a per-region profile rather than from shared constants:
 //
-//   - zai (chat.z.ai) — the client's default service. Authorize on
-//     chat.z.ai/api/oauth/authorize, and an extra business exchange
-//     (api.z.ai/api/auth/z/login) that mints the ZCode JWT from the provider
-//     access token.
-//   - bigmodel (bigmodel.cn) — authorize on bigmodel.cn/login; its token
-//     response already carries the ZCode JWT.
+//   - zai (chat.z.ai) — authorize on chat.z.ai/api/oauth/authorize, plus an
+//     extra business exchange (api.z.ai/api/auth/z/login) that mints the ZCode
+//     JWT from the provider access token.
 //
 // Z.ai signs in through the round trip the ZCode CLI runs: the plan gateway
 // hands back an authorize URL whose redirect is its own callback
@@ -36,10 +33,10 @@ import (
 // StartLogin mints the flow upstream, PollLogin asks until it answers ready, and
 // the credential is stored right there.
 //
-// The paste round trip stays as the fallback for Z.ai and remains the only flow
-// BigModel has: both realms register a zcode:// custom scheme, the pasted link
-// must carry the state this process minted, and the redirect the browser
-// actually used is echoed back to the token endpoint, which rejects a mismatch.
+// The paste round trip stays as the fallback: the realm registers a zcode://
+// custom scheme, the pasted link must carry the state this process minted, and
+// the redirect the browser actually used is echoed back to the token endpoint,
+// which rejects a mismatch.
 const (
 	loginTokenURL = "https://zcode.z.ai/api/v1/oauth/token"
 
@@ -60,14 +57,6 @@ const (
 	zaiCLIPollPath = "/oauth/cli/poll/"
 	zaiCLIProvider = "zai"
 
-	// BigModel realm (region bigmodel).
-	bigmodelAuthorizeURL    = "https://bigmodel.cn/login"
-	bigmodelAppID           = "zcode"
-	bigmodelRedirectURI     = "zcode://oauth/callback"
-	bigmodelLegacyRedirect  = "zcode://bigmodel-auth/callback"
-	bigmodelUserInfoURL     = "https://zcode.z.ai/api/oauth/userinfo"
-	bigmodelCustomerInfoURL = "https://open.bigmodel.cn/api/biz/customer/getCustomerInfo"
-
 	// loginPendingTTL bounds how long a pasted callback is still paired with
 	// the state it was minted for.
 	loginPendingTTL = 15 * time.Minute
@@ -76,18 +65,14 @@ const (
 	loginExchangeTimeout = 30 * time.Second
 )
 
-// loginRealm is the OAuth profile of one region: authorize host, redirect
-// schemes, token-exchange dialect and identity endpoint. The two services share
-// only the token URL and the credential shape.
+// loginRealm is the OAuth profile of the service an account signs in to:
+// authorize host, redirect schemes, token-exchange dialect and identity
+// endpoint.
 type loginRealm struct {
 	region       string
 	authorizeURL string
-	// authorizeClientID is the client_id / appId parameter the authorize host
-	// expects.
+	// authorizeClientID is the client_id parameter the authorize host expects.
 	authorizeClientID string
-	// bigmodelDialect distinguishes the two authorize dialects: Z.ai uses
-	// client_id/response_type/redirect_uri, BigModel uses redirect/appId.
-	bigmodelDialect bool
 	// authorizeRedirectURI is the redirect the authorize URL asks for. It has
 	// to be registered against the realm's client id.
 	authorizeRedirectURI string
@@ -99,11 +84,8 @@ type loginRealm struct {
 	tokenProvider string
 	userInfoURL   string
 	// businessLoginURL, when set, mints the ZCode JWT from the provider access
-	// token (Z.ai). Empty means the token response already carries the JWT.
+	// token. Empty means the token response already carries the JWT.
 	businessLoginURL string
-	// customerInfoURL is a region-specific identity fallback, tried only when
-	// the shared userinfo endpoint yields nothing.
-	customerInfoURL string
 }
 
 // loginRealmFor maps an account region onto its profile. An empty or unknown
@@ -111,21 +93,6 @@ type loginRealm struct {
 // the region existed still logs in.
 func loginRealmFor(region string) loginRealm {
 	switch normalizeRegion(region) {
-	case RegionBigModel:
-		return loginRealm{
-			region:               RegionBigModel,
-			authorizeURL:         bigmodelAuthorizeURL,
-			authorizeClientID:    bigmodelAppID,
-			bigmodelDialect:      true,
-			authorizeRedirectURI: bigmodelRedirectURI,
-			registeredRedirectURIs: []string{
-				bigmodelRedirectURI,
-				bigmodelLegacyRedirect,
-			},
-			tokenProvider:   RegionBigModel,
-			userInfoURL:     bigmodelUserInfoURL,
-			customerInfoURL: bigmodelCustomerInfoURL,
-		}
 	default:
 		return loginRealm{
 			region:               RegionZAI,
@@ -148,14 +115,9 @@ func loginRealmFor(region string) loginRealm {
 // trip.
 func (r loginRealm) authorize(state string) string {
 	query := url.Values{}
-	if r.bigmodelDialect {
-		query.Set("redirect", r.authorizeRedirectURI)
-		query.Set("appId", r.authorizeClientID)
-	} else {
-		query.Set("client_id", r.authorizeClientID)
-		query.Set("redirect_uri", r.authorizeRedirectURI)
-		query.Set("response_type", "code")
-	}
+	query.Set("client_id", r.authorizeClientID)
+	query.Set("redirect_uri", r.authorizeRedirectURI)
+	query.Set("response_type", "code")
 	query.Set("state", state)
 	return r.authorizeURL + "?" + query.Encode()
 }
@@ -390,7 +352,7 @@ func (c *Client) accountRegion(ctx context.Context, accountID string) string {
 		return region
 	}
 	if provider := strings.TrimSpace(account.Provider); provider != "" {
-		// An account row may carry the region in provider ("zcode/bigmodel").
+		// An account row may carry the region in the provider value.
 		if _, after, ok := strings.Cut(provider, "/"); ok {
 			return after
 		}
@@ -518,8 +480,8 @@ func parseCallbackURL(raw, expectedState string, realm loginRealm) (string, stri
 }
 
 // apiEnvelope is the {code,msg,data} shape every ZCode endpoint answers with.
-// data stays raw because the provider-specific sub-object (data.zai /
-// data.bigmodel) is keyed by the realm's provider id.
+// data stays raw because the provider-specific sub-object (data.zai) is keyed
+// by the realm's provider id.
 type apiEnvelope struct {
 	Code    *int                       `json:"code"`
 	Msg     string                     `json:"msg"`
@@ -611,8 +573,9 @@ func objectString(fields map[string]json.RawMessage, keys ...string) string {
 // exchange when it does not match the one the code was issued for.
 //
 // The realm decides the body's provider value and where the ZCode JWT comes
-// from: BigModel answers with data.token directly, while Z.ai hands back the
-// provider access token and the JWT is minted by the business login exchange.
+// from: the token response may carry data.token directly, while Z.ai hands back
+// the provider access token and the JWT is minted by the business login
+// exchange.
 func (c *Client) exchangeAuthorizationCode(ctx context.Context, realm loginRealm, code, state, redirectURI string) (Credential, error) {
 	if strings.TrimSpace(redirectURI) == "" {
 		redirectURI = realm.authorizeRedirectURI
@@ -736,28 +699,15 @@ func (c *Client) businessLogin(ctx context.Context, realm loginRealm, providerTo
 	return token, nil
 }
 
-// realmIdentity reads the account identity from the realm's userinfo endpoint
-// (and, for BigModel, its customer endpoint). It is best-effort: login succeeds
-// on the tokens alone, and this only fills the console's email / user id
-// labels.
+// realmIdentity reads the account identity from the realm's userinfo endpoint.
+// It is best-effort: login succeeds on the tokens alone, and this only fills
+// the console's email / user id labels.
 func (c *Client) realmIdentity(ctx context.Context, realm loginRealm, accessToken string) (string, string) {
 	endpoint := strings.TrimSpace(c.userInfoURL)
 	if endpoint == "" {
 		endpoint = realm.userInfoURL
 	}
-	// The shared userinfo endpoint takes a Bearer token; the BigModel customer
-	// endpoint takes the raw access token.
-	if email, userID := c.identityFrom(ctx, endpoint, "Bearer "+accessToken); email != "" || userID != "" {
-		return email, userID
-	}
-	if realm.customerInfoURL == "" {
-		return "", ""
-	}
-	customer := strings.TrimSpace(c.customerURL)
-	if customer == "" {
-		customer = realm.customerInfoURL
-	}
-	return c.identityFrom(ctx, customer, accessToken)
+	return c.identityFrom(ctx, endpoint, "Bearer "+accessToken)
 }
 
 func (c *Client) identityFrom(ctx context.Context, endpoint, authorization string) (string, string) {

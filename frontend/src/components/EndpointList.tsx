@@ -4,7 +4,7 @@ import { Button, Card, Chip } from '@heroui/react'
 import { ArrowSquareOut, BracketsCurly, Check, Copy, Heartbeat, ListBullets, PaperPlaneTilt } from '@phosphor-icons/react'
 import type { Overview } from '@/api/types'
 import { useI18n } from '@/hooks/useI18n'
-import { absUrl } from '@/lib/url'
+import { absUrl, originBase } from '@/lib/url'
 
 type EndpointListProps = {
   access?: Overview['access']
@@ -14,14 +14,20 @@ export function EndpointList({ access }: EndpointListProps) {
   const { t } = useI18n()
   const [copiedEndpoint, setCopiedEndpoint] = useState('')
   const base = absUrl(access?.openai_base_url || '/v1')
+  // Anthropic-compatible clients append /v1/messages themselves, so their base
+  // URL is the origin: sending them the OpenAI base (which carries /v1) makes
+  // every request land on /v1/v1/messages.
+  const anthropicBase = originBase()
   const endpoints = useMemo(() => [
     { name: t('endpointOpenAI'), url: base, method: 'BASE', hint: t('endpointBaseHint'), icon: <BracketsCurly size={17} /> },
+    { name: t('endpointAnthropic'), url: anthropicBase, method: 'BASE', hint: t('endpointAnthropicHint'), icon: <BracketsCurly size={17} /> },
     { name: t('endpointChat'), url: absUrl(access?.chat_completions || `${base}/chat/completions`), method: 'POST', hint: t('endpointChatHint'), icon: <PaperPlaneTilt size={17} /> },
     { name: t('endpointMessages'), url: absUrl(access?.messages || `${base}/messages`), method: 'POST', hint: t('endpointMessagesHint'), icon: <PaperPlaneTilt size={17} /> },
     { name: t('endpointResponses'), url: absUrl(access?.responses || `${base}/responses`), method: 'POST', hint: t('endpointResponsesHint'), icon: <PaperPlaneTilt size={17} /> },
     { name: t('endpointModels'), url: absUrl(access?.models || `${base}/models`), method: 'GET', hint: t('endpointModelsHint'), icon: <ListBullets size={17} /> },
     { name: t('endpointHealth'), url: absUrl(access?.health || '/health'), method: 'GET', hint: t('endpointHealthHint'), icon: <Heartbeat size={17} /> },
-  ], [access, base, t])
+  ], [access, anthropicBase, base, t])
+  const routeCount = endpoints.filter((item) => item.method !== 'BASE').length
 
   return (
     <Card data-gsap-reveal className="overflow-hidden border-border p-0 shadow-none">
@@ -29,7 +35,7 @@ export function EndpointList({ access }: EndpointListProps) {
         <div>
           <div className="flex items-center gap-2">
             <h3 className="font-semibold tracking-[-0.015em]">{t('endpoints')}</h3>
-            <Chip size="sm" variant="soft">{t('endpointCount', { count: endpoints.length - 1 })}</Chip>
+            <Chip size="sm" variant="soft">{t('endpointCount', { count: routeCount })}</Chip>
           </div>
           <p className="mt-1 text-xs leading-5 text-muted">{t('routesHint')}</p>
         </div>

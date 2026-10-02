@@ -19,6 +19,10 @@ export function isCommandProvider(provider?: string) {
   return String(provider || '').toLowerCase() === 'command'
 }
 
+export function isZCodeProvider(provider?: string) {
+  return String(provider || '').toLowerCase() === 'zcode'
+}
+
 export function accountProviderFamilyLabel(
   provider: string | undefined,
   t: (key: string) => string,
@@ -28,6 +32,7 @@ export function accountProviderFamilyLabel(
   if (isTraeProvider(providerID)) return 'Trae'
   if (isDevinProvider(providerID)) return 'Devin'
   if (isCommandProvider(providerID)) return 'Command Code'
+  if (isZCodeProvider(providerID)) return t('accountTypeZCode')
   if (isQoderProvider(providerID)) return 'Qoder'
   return provider || t('account')
 }
@@ -50,6 +55,9 @@ export function accountProviderLabel(
   }
   if (isCommandProvider(providerID)) {
     return t('accountTypeCommandGlobal')
+  }
+  if (isZCodeProvider(providerID)) {
+    return t('accountTypeZCode')
   }
   if (isQoderProvider(providerID)) {
     return regionID === 'cn' ? t('accountTypeQoderCN') : t('accountTypeQoderGlobal')

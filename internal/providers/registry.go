@@ -245,13 +245,9 @@ var Codex = ProviderDescriptor{
 	DefaultRegion: "global",
 }
 
-// ZCode descriptor. The channel ships both services the desktop client signs
-// in to, because they are separate OAuth realms rather than two endpoints of
-// one: Z.ai (chat.z.ai — international, the client's default, redirect
-// zcode://zai-auth/callback) and BigModel (bigmodel.cn — domestic, redirect
-// zcode://oauth/callback). Each region carries its own authorize host, callback
-// scheme and API base, so an account is created for one service and stays
-// there.
+// ZCode descriptor. Accounts sign in to the service the desktop client uses by
+// default: Z.ai (chat.z.ai, redirect zcode://zai-auth/callback), whose
+// authorize host, callback scheme and API base live in the region below.
 var ZCode = ProviderDescriptor{
 	ID:                "zcode",
 	Label:             "ZCode",
@@ -265,17 +261,11 @@ var ZCode = ProviderDescriptor{
 	},
 	Regions: []RegionDescriptor{
 		{
-			ID: "zai", Label: "Z.ai（国际版）",
+			ID: "zai", Label: "Z.ai",
 			ChatBase:     "https://api.z.ai/api/anthropic",
 			PlanChatBase: "https://zcode.z.ai/api/v1/zcode-plan/anthropic",
 			AuthBase:     "https://zcode.z.ai/api/v1/oauth/token",
 			BillingBase:  "https://api.z.ai",
-		},
-		{
-			ID: "bigmodel", Label: "BigModel（国内版）",
-			ChatBase:    "https://open.bigmodel.cn/api/anthropic",
-			AuthBase:    "https://zcode.z.ai/api/v1/oauth/token",
-			BillingBase: "https://open.bigmodel.cn",
 		},
 	},
 	DefaultRegion: "zai",

@@ -32,7 +32,7 @@ func (s *memStore) Get(ctx context.Context, id string) (accounts.Account, error)
 		acct.ProviderRegion = s.region
 	}
 	if acct.ProviderRegion == "" {
-		acct.ProviderRegion = RegionBigModel
+		acct.ProviderRegion = RegionZAI
 	}
 	return acct, nil
 }

@@ -53,6 +53,7 @@ const labelKeys: Record<string, string> = {
   'devin-global': 'accountTypeDevinGlobal',
   'command-global': 'accountTypeCommandGlobal',
   'codex-global': 'accountTypeCodexGlobal',
+  'zcode-zai': 'accountTypeZCode',
 }
 
 const hintKeys: Record<string, string> = {
@@ -64,6 +65,7 @@ const hintKeys: Record<string, string> = {
   'devin-global': 'accountTypeDevinGlobalHint',
   'command-global': 'accountTypeCommandGlobalHint',
   'codex-global': 'accountTypeCodexGlobalHint',
+  'zcode-zai': 'accountTypeZCodeHint',
 }
 
 function AccountTypeSkeleton({ ariaLabel }: { ariaLabel: string }) {

@@ -25,7 +25,6 @@ type loginServers struct {
 	token    string
 	identity string
 	business string
-	customer string
 	cli      string
 }
 
@@ -43,7 +42,6 @@ func newLoginClient(t *testing.T, store Store, servers loginServers) *Client {
 	client.tokenURL = local(servers.token)
 	client.userInfoURL = local(servers.identity)
 	client.businessLoginURL = local(servers.business)
-	client.customerURL = local(servers.customer)
 	client.cliBaseURL = local(servers.cli)
 	return client
 }
@@ -72,30 +70,6 @@ func TestLoginRealmAuthorizeURLs(t *testing.T) {
 		t.Errorf("state=%q want state-123", query.Get("state"))
 	}
 
-	// The BigModel realm keeps the desktop client's other dialect: redirect and
-	// appId rather than the OAuth spelling.
-	bigmodel := loginRealmFor(RegionBigModel)
-	parsed, err = url.Parse(bigmodel.authorize("state-456"))
-	if err != nil {
-		t.Fatalf("bigmodel authorize URL does not parse: %v", err)
-	}
-	if parsed.Host != "bigmodel.cn" || parsed.Path != "/login" {
-		t.Fatalf("bigmodel authorize target = %s%s, want bigmodel.cn/login", parsed.Host, parsed.Path)
-	}
-	query = parsed.Query()
-	if query.Get("redirect") != bigmodelRedirectURI {
-		t.Errorf("redirect=%q want %q", query.Get("redirect"), bigmodelRedirectURI)
-	}
-	if query.Get("appId") != bigmodelAppID {
-		t.Errorf("appId=%q want %q", query.Get("appId"), bigmodelAppID)
-	}
-	if query.Get("state") != "state-456" {
-		t.Errorf("state=%q want state-456", query.Get("state"))
-	}
-	if query.Get("client_id") != "" {
-		t.Errorf("bigmodel authorize URL must not carry client_id, got %q", query.Get("client_id"))
-	}
-
 	// An unknown or empty region falls back to the default (Z.ai) realm.
 	if loginRealmFor("").region != providers.ZCode.DefaultRegion {
 		t.Errorf("empty region realm=%q want the default %q", loginRealmFor("").region, providers.ZCode.DefaultRegion)
@@ -117,10 +91,7 @@ func TestParseCallbackURL(t *testing.T) {
 	}{
 		{name: "zai deep link callback", region: RegionZAI, raw: zaiRedirectURI + "?code=abc&state=s1", state: "s1", want: "abc", wantURI: zaiRedirectURI},
 		{name: "zai legacy deep link", region: RegionZAI, raw: zaiLegacyRedirectURI + "?code=abc&state=s1", state: "s1", want: "abc", wantURI: zaiLegacyRedirectURI},
-		{name: "zai rejects bigmodel callback", region: RegionZAI, raw: bigmodelLegacyRedirect + "?code=abc&state=s1", state: "s1", wantErr: "unexpected callback target"},
-		{name: "bigmodel callback", region: RegionBigModel, raw: bigmodelRedirectURI + "?code=abc&state=s1", state: "s1", want: "abc", wantURI: bigmodelRedirectURI},
-		{name: "bigmodel legacy callback", region: RegionBigModel, raw: bigmodelLegacyRedirect + "?code=abc&state=s1", state: "s1", want: "abc", wantURI: bigmodelLegacyRedirect},
-		{name: "zai rejects a bigmodel deep link", region: RegionZAI, raw: bigmodelLegacyRedirect + "?code=abc&state=s1", state: "s1", wantErr: "unexpected callback target"},
+		{name: "unregistered scheme rejected", region: RegionZAI, raw: "zcode://other-auth/callback?code=abc&state=s1", state: "s1", wantErr: "unexpected callback target"},
 		{name: "authCode spelling", region: RegionZAI, raw: zaiRedirectURI + "?authCode=xyz&state=s1", state: "s1", want: "xyz", wantURI: zaiRedirectURI},
 		{name: "urlencoded code", region: RegionZAI, raw: zaiRedirectURI + "?code=a%2Bb%2Fc%3D&state=s1", state: "s1", want: "a+b/c=", wantURI: zaiRedirectURI},
 		{name: "browser fragment tolerated", region: RegionZAI, raw: zaiRedirectURI + "?code=abc&state=s1#section", state: "s1", want: "abc", wantURI: zaiRedirectURI},
@@ -400,7 +371,7 @@ func TestStartLoginZaiFallsBackWhenTheFlowIsUnusable(t *testing.T) {
 }
 
 // TestStartLoginFollowsAccountRegion pins the region on the account row, not on
-// a compile-time constant: a BigModel account must get the bigmodel.cn round.
+// a compile-time constant: the row decides which authorize host the round uses.
 func TestStartLoginFollowsAccountRegion(t *testing.T) {
 	for _, tc := range []struct {
 		region string
@@ -408,7 +379,6 @@ func TestStartLoginFollowsAccountRegion(t *testing.T) {
 		hint   string
 	}{
 		{region: RegionZAI, host: "chat.z.ai", hint: zaiRedirectURI},
-		{region: RegionBigModel, host: "bigmodel.cn", hint: bigmodelRedirectURI},
 	} {
 		t.Run(tc.region, func(t *testing.T) {
 			client := newLoginClient(t, &memStore{region: tc.region}, loginServers{})
@@ -556,101 +526,6 @@ func TestCompleteLoginZaiMintsJWTThroughBusinessLogin(t *testing.T) {
 	}
 }
 
-// TestCompleteLoginBigModelKeepsExchangedJWT covers the BigModel realm, whose
-// token response already carries the ZCode JWT — no business login is
-// involved.
-func TestCompleteLoginBigModelKeepsExchangedJWT(t *testing.T) {
-	jwt := jwtForTest(t, map[string]any{"user_id": "u-1", "provider": RegionBigModel})
-	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"code":0,"data":{"token":"` + jwt + `","bigmodel":{"access_token":"at-1","refresh_token":"rt-1"},"expires_in":3600}}`))
-	}))
-	defer tokenServer.Close()
-
-	identityServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"data":{"user_id":"u-1","email":"domestic@example.com"}}`))
-	}))
-	defer identityServer.Close()
-
-	store := &memStore{region: RegionBigModel}
-	client := newLoginClient(t, store, loginServers{token: tokenServer.URL, identity: identityServer.URL})
-
-	session, err := client.StartLogin(context.Background(), "acc1")
-	if err != nil {
-		t.Fatalf("StartLogin: %v", err)
-	}
-	callback := bigmodelRedirectURI + "?code=CODE-1&state=" + url.QueryEscape(session.State)
-	if err := client.CompleteLogin(context.Background(), "acc1", callback); err != nil {
-		t.Fatalf("CompleteLogin: %v", err)
-	}
-
-	credential, err := DecodeCredential(store.items["acc1"])
-	if err != nil {
-		t.Fatalf("stored credential does not decode: %v", err)
-	}
-	if !credential.IsOAuth() || credential.ZCodeJWT != jwt {
-		t.Errorf("stored credential=%+v want an oauth credential with the exchanged JWT", credential)
-	}
-	if credential.Provider != RegionBigModel {
-		t.Errorf("stored provider=%q want %q", credential.Provider, RegionBigModel)
-	}
-	if credential.AccessToken != "at-1" || credential.RefreshToken != "rt-1" {
-		t.Errorf("stored tokens=%q/%q want at-1/rt-1", credential.AccessToken, credential.RefreshToken)
-	}
-	if credential.Email != "domestic@example.com" || credential.UserID != "u-1" {
-		t.Errorf("stored identity=%q/%q want domestic@example.com/u-1", credential.Email, credential.UserID)
-	}
-}
-
-// TestBigModelIdentityFallsBackToCustomerEndpoint covers the raw-token customer
-// endpoint the BigModel console uses, tried only when the shared userinfo
-// endpoint answers nothing useful.
-func TestBigModelIdentityFallsBackToCustomerEndpoint(t *testing.T) {
-	const jwtToken = "h.p.s"
-	var customerAuth string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/userinfo":
-			w.WriteHeader(http.StatusUnauthorized)
-		case "/customer":
-			customerAuth = r.Header.Get("Authorization")
-			_, _ = w.Write([]byte(`{"data":{"user_id":"u-7","email":"cust@example.com"}}`))
-		default:
-			t.Errorf("unexpected identity path %s", r.URL.Path)
-		}
-	}))
-	defer server.Close()
-
-	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"code":0,"data":{"token":"` + jwtToken + `","bigmodel":{"access_token":"bm-at"}}}`))
-	}))
-	defer tokenServer.Close()
-
-	store := &memStore{region: RegionBigModel}
-	client := newLoginClient(t, store, loginServers{
-		token:    tokenServer.URL,
-		identity: server.URL + "/userinfo",
-		customer: server.URL + "/customer",
-	})
-	session, err := client.StartLogin(context.Background(), "acc1")
-	if err != nil {
-		t.Fatalf("StartLogin: %v", err)
-	}
-	if err := client.CompleteLogin(context.Background(), "acc1",
-		bigmodelRedirectURI+"?code=c&state="+url.QueryEscape(session.State)); err != nil {
-		t.Fatalf("CompleteLogin: %v", err)
-	}
-	if customerAuth != "bm-at" {
-		t.Errorf("customer Authorization=%q want the raw access token without a Bearer prefix", customerAuth)
-	}
-	credential, err := DecodeCredential(store.items["acc1"])
-	if err != nil {
-		t.Fatalf("stored credential does not decode: %v", err)
-	}
-	if credential.Email != "cust@example.com" || credential.UserID != "u-7" {
-		t.Errorf("stored identity=%q/%q want cust@example.com/u-7", credential.Email, credential.UserID)
-	}
-}
-
 func TestCompleteLoginRejectsStateFromAnotherRound(t *testing.T) {
 	tokenCalls := 0
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -694,18 +569,6 @@ func TestCompleteLoginSurfacesExchangeErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "3001") && !strings.Contains(err.Error(), "HTTP 400") {
 		t.Fatalf("error %q should carry the upstream failure", err.Error())
-	}
-}
-
-func TestBigModelExchangeRejectsMissingJWT(t *testing.T) {
-	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"code":0,"data":{"bigmodel":{"access_token":"at"}}}`))
-	}))
-	defer tokenServer.Close()
-
-	client := newLoginClient(t, &memStore{region: RegionBigModel}, loginServers{token: tokenServer.URL})
-	if _, err := client.exchangeAuthorizationCode(context.Background(), loginRealmFor(RegionBigModel), "c", "s", bigmodelRedirectURI); err == nil {
-		t.Fatal("exchange should fail when the response carries no ZCode JWT")
 	}
 }
 
@@ -756,9 +619,9 @@ func TestZCodeAdapterExposesBrowserLogin(t *testing.T) {
 	}
 }
 
-func TestProviderDescriptorShipsBothRealms(t *testing.T) {
-	if len(providers.ZCode.Regions) != 2 {
-		t.Fatalf("zcode regions=%d want 2 (zai + bigmodel)", len(providers.ZCode.Regions))
+func TestProviderDescriptorShipsOneRealm(t *testing.T) {
+	if len(providers.ZCode.Regions) != 1 {
+		t.Fatalf("zcode regions=%d want 1 (zai)", len(providers.ZCode.Regions))
 	}
 	if providers.ZCode.DefaultRegion != RegionZAI {
 		t.Errorf("default region=%q want %q (the desktop client's default service)", providers.ZCode.DefaultRegion, RegionZAI)
@@ -776,20 +639,13 @@ func TestProviderDescriptorShipsBothRealms(t *testing.T) {
 	if !strings.Contains(zai.PlanChatBase, "zcode.z.ai/api/v1/zcode-plan/anthropic") {
 		t.Errorf("zai plan chat base=%q want the zcode plan gateway", zai.PlanChatBase)
 	}
-	bigmodel, ok := providers.ZCode.Region(RegionBigModel)
-	if !ok {
-		t.Fatal("the bigmodel region must be advertised")
-	}
-	if !strings.Contains(bigmodel.ChatBase, "bigmodel.cn") {
-		t.Errorf("bigmodel chat base=%q want bigmodel.cn", bigmodel.ChatBase)
-	}
 	if !providers.ZCode.Capabilities.BrowserLogin || !providers.ZCode.Capabilities.Login {
 		t.Error("zcode descriptor must advertise the browser login")
 	}
 }
 
-func TestImportAcceptsBothRealmsAndRejectsUnknownRegion(t *testing.T) {
-	for _, region := range []string{RegionZAI, RegionBigModel} {
+func TestImportAcceptsZaiRealmAndRejectsUnknownRegion(t *testing.T) {
+	for _, region := range []string{RegionZAI} {
 		payload := []byte(`{"format":"zcode-credential-v1","auth_mode":"api_key","provider":"` + region + `","api_key":"k1"}`)
 		if err := ValidateCredential(payload); err != nil {
 			t.Fatalf("ValidateCredential(%s): %v", region, err)
@@ -849,11 +705,11 @@ func TestExchangeDefaultsRedirectWhenUnset(t *testing.T) {
 	}))
 	defer tokenServer.Close()
 
-	client := newLoginClient(t, &memStore{region: RegionBigModel}, loginServers{token: tokenServer.URL})
-	if _, err := client.exchangeAuthorizationCode(context.Background(), loginRealmFor(RegionBigModel), "c", "s", ""); err != nil {
+	client := newLoginClient(t, &memStore{region: RegionZAI}, loginServers{token: tokenServer.URL})
+	if _, err := client.exchangeAuthorizationCode(context.Background(), loginRealmFor(RegionZAI), "c", "s", ""); err != nil {
 		t.Fatalf("exchange: %v", err)
 	}
-	if tokenBody["redirect_uri"] != bigmodelRedirectURI {
-		t.Fatalf("redirect_uri=%q want the realm default %q", tokenBody["redirect_uri"], bigmodelRedirectURI)
+	if tokenBody["redirect_uri"] != zaiRedirectURI {
+		t.Fatalf("redirect_uri=%q want the realm default %q", tokenBody["redirect_uri"], zaiRedirectURI)
 	}
 }
