@@ -53,11 +53,20 @@ Use **Accounts** to add an account with its supported login method:
 | Qoder | Global / CN | Browser OAuth, PAT, `qoder-native-v1` |
 | WorkBuddy | Global / CN | Browser OAuth, `workbuddy-oauth-v1` |
 | Trae Work | CN | Browser OAuth, `trae-oauth-v1` |
+| ZCode (Z.ai) | Global | Browser OAuth (ZCode CLI flow or pasted callback), PAT, `zcode-credential-v1` |
 | Devin (experimental) | Global | Browser OAuth, `devin-session-v1` |
 
 Qoder CN, WorkBuddy, and Trae still need live-account acceptance; Devin is not
 claimed production-ready. Qoder uses one isolated Node worker per account.
-Other providers use Go in-process adapters. All durable credentials stay in SQLite.
+Other providers (including ZCode) use Go in-process adapters. All durable
+credentials stay in SQLite.
+
+The ZCode plan channel rejects a chat request that does not carry a fresh Aliyun
+verification token, so it needs the companion solver in `deploy/captcha_node`
+(Chromium plus `npm install` inside that directory). Point `ZCODE_CAPTCHA_DIR`
+(default `/app/captcha_node`) and `ZCODE_CHROMIUM_PATH` (default
+`/usr/bin/chromium`) at it; without the solver, plan-channel chat fails upstream
+with `3012`. The account itself imports or signs in fine either way.
 
 WorkBuddy daily check-in and token keepalive are per-account opt-in and disabled
 by default. Enable them only if you want those automatic account operations.
@@ -137,6 +146,9 @@ console; environment variables cannot replace it.
 | `QODER_PROXY_URL` | empty | Initial global outbound proxy: `http(s)://`, `direct`, or `none`; saved console settings take precedence |
 | `QODERCLI_JS` | image default | Pinned Qoder Global CLI bundle |
 | `QODERCNCLI_JS` | image default | Pinned Qoder CN CLI bundle |
+| `ZCODE_CAPTCHA_DIR` | `/app/captcha_node` | Directory of the ZCode plan-channel verification solver (`solver.js`, `page.html`, `node_modules`) |
+| `ZCODE_CHROMIUM_PATH` | `/usr/bin/chromium` | Chromium binary used by that solver |
+| `WORKBUDDY_EXTRA_MODELS` | empty (Compose ships one entry) | JSON array of extra WorkBuddy models to inject: `[{"id","name","context","output"}]` |
 | `UPDATE_GITHUB_TOKEN` | empty | Optional GitHub token for release checks |
 | `UPDATE_AGENT_URL` | empty | Docker Desktop host updater URL, written by the installer |
 | `UPDATE_AGENT_TOKEN` | empty | Docker Desktop updater token, written by the installer |
