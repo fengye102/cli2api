@@ -1,6 +1,7 @@
 package antigravity
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -138,6 +139,9 @@ func entryInfo(entry catalogEntry) (providers.ModelInfo, bool) {
 }
 
 func (c *Client) fetchCatalog(ctx context.Context, accountID string, credential Credential) ([]providers.ModelInfo, error) {
+	if credential.IsOAuth() {
+		return c.fetchOAuthCatalog(ctx, accountID, credential)
+	}
 	base, err := credential.ChatBase()
 	if err != nil {
 		return nil, err
@@ -177,6 +181,100 @@ func (c *Client) fetchCatalog(ctx context.Context, accountID string, credential 
 	return models, nil
 }
 
+// fetchOAuthCatalog reads the v1internal model catalog. The three environments
+// are tried in order; 429/5xx/transport failures move on, 4xx stops (a retry
+// against another host would hit the same wall). A 403 while a project header
+// was sent is retried once without it, which is the documented degradation path
+// for non-content methods.
+func (c *Client) fetchOAuthCatalog(ctx context.Context, accountID string, credential Credential) ([]providers.ModelInfo, error) {
+	client, err := c.httpClient(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]any{}
+	if project := strings.TrimSpace(credential.ProjectID); project != "" {
+		body["project"] = project
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	var lastErr error
+	for _, base := range v1BaseURLs {
+		models, retry, err := c.fetchOAuthCatalogOnce(ctx, client, base, credential, encoded)
+		if err == nil {
+			return models, nil
+		}
+		lastErr = err
+		if !retry {
+			return nil, err
+		}
+	}
+	// Every environment failed on a retryable error (429/5xx/transport): the
+	// account is still usable, so keep the built-in Gemini list rather than
+	// leaving the console with nothing to route to.
+	if len(catalogModelInfos()) > 0 {
+		return catalogModelInfos(), nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("antigravity catalog: all environments unavailable")
+	}
+	return nil, lastErr
+}
+
+// fetchOAuthCatalogOnce sends one catalog request. The bool reports whether
+// another environment is worth trying.
+func (c *Client) fetchOAuthCatalogOnce(ctx context.Context, client *http.Client, base string, credential Credential, encoded []byte) ([]providers.ModelInfo, bool, error) {
+	models, status, raw, err := c.sendCatalogRequest(ctx, client, base, credential, encoded, true)
+	if err == nil {
+		return models, false, nil
+	}
+	if status == 403 && strings.TrimSpace(credential.ProjectID) != "" {
+		// Retry without x-goog-user-project: the header may itself be the
+		// trigger on a non-content method.
+		models, _, _, retryErr := c.sendCatalogRequest(ctx, client, base, credential, encoded, false)
+		if retryErr == nil {
+			return models, false, nil
+		}
+		return nil, false, retryErr
+	}
+	if status == 429 || status >= 500 || status == 0 {
+		return nil, true, newProviderError(status, raw)
+	}
+	return nil, false, newProviderError(status, raw)
+}
+
+// sendCatalogRequest performs one catalog POST. withProjectHeader controls
+// whether x-goog-user-project is attached.
+func (c *Client) sendCatalogRequest(ctx context.Context, client *http.Client, base string, credential Credential, encoded []byte, withProjectHeader bool) ([]providers.ModelInfo, int, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fetchAvailableModelsURL(base), bytes.NewReader(encoded))
+	if err != nil {
+		return nil, 0, "", err
+	}
+	projectID := ""
+	if withProjectHeader {
+		projectID = credential.ProjectID
+	}
+	for key, value := range adminHeaders(credential.AccessToken, projectID) {
+		req.Header.Set(key, value)
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, resp.StatusCode, string(raw), fmt.Errorf("antigravity catalog HTTP %d", resp.StatusCode)
+	}
+	models := parseV1Catalog(raw)
+	if len(models) == 0 {
+		return nil, resp.StatusCode, string(raw), fmt.Errorf("antigravity catalog: empty model list")
+	}
+	return models, resp.StatusCode, string(raw), nil
+}
+
 // Models implements providers.ModelCatalogProvider. The list is per account
 // (keyed by credential) because the OpenAI-compat layer may publish different
 // models for different keys.
@@ -184,7 +282,7 @@ func (c *Client) Models(ctx context.Context, accountID string) ([]providers.Mode
 	if models, ok := c.cachedModels(accountID, timeNow()); ok {
 		return models, nil
 	}
-	credential, err := c.credential(ctx, accountID)
+	credential, err := c.freshCredential(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}

@@ -32,3 +32,12 @@ func (importer) ValidateImport(payload []byte) error { return ValidateCredential
 func (importer) Export(context.Context, string) (map[string]any, error) {
 	return nil, providers.ErrUnsupported
 }
+
+// oauthImporter validates the browser-login credential format.
+type oauthImporter struct{}
+
+func (oauthImporter) ValidateImport(payload []byte) error { return ValidateOAuthCredential(payload) }
+
+func (oauthImporter) Export(context.Context, string) (map[string]any, error) {
+	return nil, providers.ErrUnsupported
+}

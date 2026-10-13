@@ -95,7 +95,7 @@ Go 网关统一鉴权、调度和记录请求。Qoder 每个账号使用独立 N
 - **控制台细节**：zcode 账号显示 `ZCode Z.ai` 与官方图标；API 访问页给 Anthropic 兼容端点单独一张**根地址** Base URL 卡片（Anthropic 客户端自己会拼 `/v1/messages`，填带 `/v1` 的地址会变成 `/v1/v1/messages`）；系统设置在 fork / 开发版构建下也会列出官方版本历史。
 - **WorkBuddy 额外模型**：用 `WORKBUDDY_EXTRA_MODELS` 注入不在 Grayscale 目录里的模型（默认已注入 `deepseek-v4.1-flash`，见 `deploy/docker-compose.yml`）。
 - **小浣熊 Raccoon 渠道**：导入 Raccoon（商汤）网页端的 access/refresh token 对即用，OpenAI 兼容对话、远程 `model_catalog` 目录刷新、401 自动刷新重试。
-- **Antigravity 渠道**：粘贴 Gemini API Key（Google AI Studio）即用，走 Google Gemini 的 OpenAI 兼容层（`/v1beta/openai`），gemini-* 模型带推理档位。
+- **Antigravity 渠道**：两种鉴权方式都支持 —— ①**浏览器登录**：用 Google 账号授权（授权码 + loopback 回调，回调落在网关自身的 `/oauth-callback`，也可粘贴回调链接），走 Antigravity IDE 同款协议 **Cloud Code Assist（`v1internal`）**，`streamGenerateContent` 流式推理、`fetchAvailableModels` 目录、`loadCodeAssist`/`onboardUser` 自动发现 `cloudaicompanionProject`，access token 临期/401 自动刷新；②**粘贴 Gemini API Key**（Google AI Studio）：走 Gemini 的 OpenAI 兼容层（`/v1beta/openai`）。两种模式 gemini-* 模型都带推理档位。
 - **ZCode Start-Plan 每日领取**：控制台账号操作新增 `claim` / `claim/preview`，可每日领取 ZCode 限时体验套餐（Trust Build 等），复用了计划网关的 preview/claim 协议与验证码节点。
 
 除以上差异外，功能与部署方式与上游一致，上游文档与更新说明仍然适用。

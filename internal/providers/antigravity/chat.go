@@ -12,34 +12,43 @@ import (
 	"github.com/caigee-cmd/cli2api/internal/translate"
 )
 
-// ChatStream posts the internal chat request to Gemini's OpenAI-compat
-// /chat/completions and returns the upstream SSE body unchanged. The gateway
-// already speaks this dialect, so there is no stream rewrite.
+// Chat execution. The adapter has two upstream planes and picks the one the
+// account's credential belongs to:
+//
+//	key mode   — Gemini's OpenAI-compatibility layer; the upstream SSE body is
+//	             already chat-shaped and is relayed unchanged.
+//	oauth mode — Cloud Code Assist (v1internal); the upstream speaks a Gemini
+//	             envelope, so the body is translated into chat SSE here.
+
+// ChatStream posts the internal chat request and returns a chat-shaped SSE body.
 func (c *Client) ChatStream(ctx context.Context, accountID string, req translate.ChatRequest) (*http.Response, providers.ResolvedChat, error) {
-	resp, resolved, err := c.doChat(ctx, accountID, req)
+	credential, err := c.freshCredential(ctx, accountID)
 	if err != nil {
 		return nil, providers.ResolvedChat{}, err
 	}
-	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		resp.Body.Close()
-		return nil, providers.ResolvedChat{}, newProviderError(resp.StatusCode, string(body))
+	if !credential.IsOAuth() {
+		resp, resolved, err := c.doChat(ctx, accountID, credential, req)
+		if err != nil {
+			return nil, providers.ResolvedChat{}, err
+		}
+		if resp.StatusCode >= 300 {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
+			return nil, providers.ResolvedChat{}, newProviderError(resp.StatusCode, string(body))
+		}
+		return resp, resolved, nil
 	}
-	return resp, resolved, nil
+	return c.doOAuthChat(ctx, accountID, credential, req)
 }
 
 // ChatNonStream forces a stream, then collects it. One path keeps usage and
 // tool-call assembly in one place, matching the sibling providers.
 func (c *Client) ChatNonStream(ctx context.Context, accountID string, req translate.ChatRequest) (providers.ChatOutcome, error) {
-	resp, resolved, err := c.doChat(ctx, accountID, req)
+	resp, resolved, err := c.ChatStream(ctx, accountID, req)
 	if err != nil {
 		return providers.ChatOutcome{}, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return providers.ChatOutcome{}, newProviderError(resp.StatusCode, string(body))
-	}
 	outcome, err := collectChatSSE(resp.Body, req.Model)
 	if err != nil {
 		return providers.ChatOutcome{}, err
@@ -48,11 +57,9 @@ func (c *Client) ChatNonStream(ctx context.Context, accountID string, req transl
 	return outcome, nil
 }
 
-func (c *Client) doChat(ctx context.Context, accountID string, req translate.ChatRequest) (*http.Response, providers.ResolvedChat, error) {
-	credential, err := c.credential(ctx, accountID)
-	if err != nil {
-		return nil, providers.ResolvedChat{}, err
-	}
+// doChat posts to the OpenAI-compatibility layer (key mode) and relays its SSE
+// body unchanged.
+func (c *Client) doChat(ctx context.Context, accountID string, credential Credential, req translate.ChatRequest) (*http.Response, providers.ResolvedChat, error) {
 	model := resolveModel(req.Model)
 	if model == "" {
 		return nil, providers.ResolvedChat{}, newProviderError(400, "antigravity model is required")
@@ -82,6 +89,78 @@ func (c *Client) doChat(ctx context.Context, accountID string, req translate.Cha
 		return nil, providers.ResolvedChat{}, err
 	}
 	return resp, providers.ResolvedChat{ReasoningLevel: level}, nil
+}
+
+// doOAuthChat posts a v1internal envelope (oauth mode) and rewrites the Gemini
+// SSE body into chat SSE.
+func (c *Client) doOAuthChat(ctx context.Context, accountID string, credential Credential, req translate.ChatRequest) (*http.Response, providers.ResolvedChat, error) {
+	model := resolveModel(req.Model)
+	if model == "" {
+		return nil, providers.ResolvedChat{}, newProviderError(400, "antigravity model is required")
+	}
+	payload, err := chatRequestBody(req, model, credential.ProjectID)
+	if err != nil {
+		return nil, providers.ResolvedChat{}, err
+	}
+	client, err := c.httpClient(ctx, accountID)
+	if err != nil {
+		return nil, providers.ResolvedChat{}, err
+	}
+	var lastErr error
+	// The three environments are tried in order: 429/5xx/transport failures move
+	// to the next one, a 4xx is this request's own problem and does not.
+	for _, base := range v1BaseURLs {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, streamGenerateURL(base), bytes.NewReader(payload))
+		if err != nil {
+			return nil, providers.ResolvedChat{}, err
+		}
+		for key, value := range contentHeaders(credential.AccessToken) {
+			httpReq.Header.Set(key, value)
+		}
+		httpReq.Header.Set("Accept", "text/event-stream")
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			lastErr = &providers.Error{Kind: "unavailable", Status: 502, Message: "Antigravity 请求失败：" + err.Error()}
+			continue
+		}
+		if resp.StatusCode >= 300 {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
+			providerErr := newProviderError(resp.StatusCode, string(body))
+			if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+				lastErr = providerErr
+				continue
+			}
+			return nil, providers.ResolvedChat{}, providerErr
+		}
+		return rewriteGeminiStream(resp, model), providers.ResolvedChat{}, nil
+	}
+	if lastErr == nil {
+		lastErr = &providers.Error{Kind: "unavailable", Status: 502, Message: "Antigravity 的所有环境均不可用"}
+	}
+	return nil, providers.ResolvedChat{}, lastErr
+}
+
+// rewriteGeminiStream wraps the upstream body so callers see chat SSE.
+func rewriteGeminiStream(resp *http.Response, model string) *http.Response {
+	pr, pw := io.Pipe()
+	go func() {
+		defer resp.Body.Close()
+		defer pw.Close()
+		if err := translateGeminiStream(resp.Body, pw, model); err != nil {
+			_ = pw.CloseWithError(err)
+		}
+	}()
+	out := *resp
+	out.Body = pr
+	out.ContentLength = -1
+	header := resp.Header.Clone()
+	header.Del("Content-Length")
+	header.Set("Content-Type", "text/event-stream")
+	header.Set("Cache-Control", "no-cache")
+	header.Set("X-Accel-Buffering", "no")
+	out.Header = header
+	return &out
 }
 
 func resolveModel(model string) string {

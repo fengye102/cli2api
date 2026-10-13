@@ -3,6 +3,7 @@ package antigravity
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -33,7 +34,7 @@ type catalogCache struct {
 }
 
 // Client is the in-process Antigravity adapter. One client serves every
-// account; credentials and catalogs stay keyed by account id.
+// account; credentials, catalogs and login rounds stay keyed by account id.
 type Client struct {
 	store Store
 	http  *http.Client
@@ -42,6 +43,19 @@ type Client struct {
 
 	mu       sync.Mutex
 	catalogs map[string]catalogCache
+	rounds   map[string]*loginRound
+	listener net.Listener
+
+	// refreshing dedupes concurrent token renewals for one account, so N
+	// in-flight requests do not each burn a refresh round.
+	refreshing map[string]*refreshFlight
+}
+
+// refreshFlight is one in-flight token renewal other callers can wait on.
+type refreshFlight struct {
+	done chan struct{}
+	cred Credential
+	err  error
 }
 
 func NewClient(store Store) *Client {
@@ -53,7 +67,9 @@ func NewClient(store Store) *Client {
 				return http.ErrUseLastResponse
 			},
 		},
-		catalogs: map[string]catalogCache{},
+		catalogs:   map[string]catalogCache{},
+		rounds:     map[string]*loginRound{},
+		refreshing: map[string]*refreshFlight{},
 	}
 }
 
@@ -134,12 +150,13 @@ func (c *Client) Probe(ctx context.Context, accountID string) (providers.Account
 	return providers.AccountHealth{Ready: true, Hot: true}, nil
 }
 
-// Adapter wires the capability surface. Login is absent: the only auth is a
-// pasted Gemini API key, exposed through the PAT tab.
+// Adapter wires the capability surface. Login is present: besides the pasted
+// Gemini API key, the account can be created through Google browser login.
 func (c *Client) Adapter() providers.Adapter {
 	return providers.Adapter{
 		ID:           "antigravity",
 		Credential:   credentialCodec{},
+		Login:        c,
 		Chat:         c,
 		Models:       c,
 		Classifier:   classifier{},

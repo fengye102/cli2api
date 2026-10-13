@@ -8,6 +8,11 @@ const (
 	// provider=antigravity.
 	CredentialFormat = "antigravity-key-v1"
 
+	// CredentialFormatOAuth is the stored credential format for the
+	// browser-login (Google OAuth) mode. It is a separate format so the store
+	// and the console can tell the two auth modes apart.
+	CredentialFormatOAuth = "antigravity-oauth-v1"
+
 	// BaseURL is the OpenAI-compatibility origin, already including the
 	// v1beta/openai version segment. Chat and models live under it.
 	BaseURL = "https://generativelanguage.googleapis.com/v1beta/openai"

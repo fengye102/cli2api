@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/caigee-cmd/cli2api/internal/accounts"
+	"github.com/caigee-cmd/cli2api/internal/providers"
 	"github.com/caigee-cmd/cli2api/internal/translate"
 )
 
@@ -282,18 +283,18 @@ func TestClassifyMapsAntigravityErrors(t *testing.T) {
 }
 
 func TestAdapterWiring(t *testing.T) {
-	client := NewClient(&memoryStore{payload: mustJSON(t, Credential{APIKey: "sk-live"})})
+	client := NewClient(&memoryStore{payload: mustJSON(t, Credential{APIKey: "AIza-test"})})
 	adapter := client.Adapter()
 	if adapter.ID != "antigravity" {
 		t.Fatalf("adapter id = %q", adapter.ID)
 	}
-	for _, capability := range []string{"credential", "chat", "models", "prober"} {
+	for _, capability := range []string{"credential", "login", "chat", "models", "prober"} {
 		if !adapter.Supports(capability) {
 			t.Fatalf("adapter must support %s", capability)
 		}
 	}
-	if adapter.Supports("login") {
-		t.Fatal("antigravity has no login flow")
+	if _, ok := adapter.Login.(providers.LoginCompleter); !ok {
+		t.Fatal("the login provider must accept a pasted callback URL")
 	}
 }
 

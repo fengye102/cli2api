@@ -318,24 +318,27 @@ var Raccoon = ProviderDescriptor{
 	DefaultRegion: "global",
 }
 
-// Antigravity descriptor (Google's AI IDE). In-process provider talking to
-// the Gemini OpenAI-compatibility layer with an imported Gemini API key. No
-// browser login.
+// Antigravity descriptor (Google's AI IDE). In-process provider with two auth
+// modes: a pasted Gemini API key (OpenAI-compatibility layer) and Google
+// browser login (Cloud Code Assist / v1internal, the protocol the IDE itself
+// speaks). Both modes are first-class; browser login additionally supports a
+// pasted callback URL for browsers on another machine.
 var Antigravity = ProviderDescriptor{
 	ID:                "antigravity",
 	Label:             "Antigravity",
 	Runtime:           RuntimeInProcess,
-	AuthTypes:         []AuthType{AuthPAT},
-	CredentialFormats: []string{"antigravity-key-v1"},
+	AuthTypes:         []AuthType{AuthOAuth, AuthPAT},
+	CredentialFormats: []string{"antigravity-key-v1", "antigravity-oauth-v1"},
 	Capabilities: ProviderCapabilities{
-		Chat: true, Stream: true, Tools: true, Images: false, Reasoning: true,
-		ModelCatalog: true, Usage: true, Login: false, BrowserLogin: false,
+		Chat: true, Stream: true, Tools: true, Images: true, Reasoning: true,
+		ModelCatalog: true, Usage: true, Login: true, BrowserLogin: true,
 		PATLogin: true, ImportExport: true,
 	},
 	Regions: []RegionDescriptor{
 		{
 			ID: "global", Label: "Global",
-			ChatBase: "https://generativelanguage.googleapis.com/v1beta/openai",
+			ChatBase: "https://cloudcode-pa.googleapis.com/v1internal",
+			AuthBase: "https://accounts.google.com/o/oauth2/v2/auth",
 		},
 	},
 	DefaultRegion: "global",
