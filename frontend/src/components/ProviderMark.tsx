@@ -33,6 +33,7 @@ export function ProviderMark({ provider, size = 16, className = '' }: Props) {
   }
   if (id === 'zcode') {
     return <ZCodeMark size={size} className={className} />
+  }
   if (id === 'zhipu') {
     return <ZhipuMark size={size} className={className} />
   }

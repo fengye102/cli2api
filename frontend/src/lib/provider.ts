@@ -21,6 +21,8 @@ export function isCommandProvider(provider?: string) {
 
 export function isZCodeProvider(provider?: string) {
   return String(provider || '').toLowerCase() === 'zcode'
+}
+
 export function isZhipuProvider(provider?: string) {
   return String(provider || '').toLowerCase() === 'zhipu'
 }
@@ -61,6 +63,7 @@ export function accountProviderLabel(
   }
   if (isZCodeProvider(providerID)) {
     return t('accountTypeZCode')
+  }
   if (isZhipuProvider(providerID)) {
     return t('accountTypeZhipuCN')
   }
