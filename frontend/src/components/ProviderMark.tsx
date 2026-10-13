@@ -6,6 +6,8 @@ import { TraeMark } from '@/components/TraeMark'
 import { WorkBuddyMark } from '@/components/WorkBuddyMark'
 import { ZCodeMark } from '@/components/ZCodeMark'
 import { ZhipuMark } from '@/components/ZhipuMark'
+import { RaccoonMark } from '@/components/RaccoonMark'
+import { AntigravityMark } from '@/components/AntigravityMark'
 
 type Props = {
   provider?: string
@@ -36,6 +38,12 @@ export function ProviderMark({ provider, size = 16, className = '' }: Props) {
   }
   if (id === 'zhipu') {
     return <ZhipuMark size={size} className={className} />
+  }
+  if (id === 'raccoon') {
+    return <RaccoonMark size={size} className={className} />
+  }
+  if (id === 'antigravity') {
+    return <AntigravityMark size={size} className={className} />
   }
   return <QoderMark size={size} className={className} />
 }

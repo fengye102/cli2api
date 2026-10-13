@@ -56,6 +56,8 @@ const labelKeys: Record<string, string> = {
   'codex-global': 'accountTypeCodexGlobal',
   'zcode-zai': 'accountTypeZCode',
   'zhipu-cn': 'accountTypeZhipuCN',
+  'raccoon-global': 'accountTypeRaccoon',
+  'antigravity-global': 'accountTypeAntigravity',
 }
 
 const hintKeys: Record<string, string> = {
@@ -69,6 +71,8 @@ const hintKeys: Record<string, string> = {
   'codex-global': 'accountTypeCodexGlobalHint',
   'zcode-zai': 'accountTypeZCodeHint',
   'zhipu-cn': 'accountTypeZhipuCNHint',
+  'raccoon-global': 'accountTypeRaccoonHint',
+  'antigravity-global': 'accountTypeAntigravityHint',
 }
 
 function AccountTypeSkeleton({ ariaLabel }: { ariaLabel: string }) {

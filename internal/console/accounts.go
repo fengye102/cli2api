@@ -177,6 +177,8 @@ func (h *Handler) HandleAccountByID(w http.ResponseWriter, r *http.Request) {
 		"login/device":   http.MethodPost,
 		"login/status":   http.MethodGet,
 		"login/callback": http.MethodPost,
+		"claim":          http.MethodPost,
+		"claim/preview":  http.MethodGet,
 	}
 	if want, ok := required[action]; ok && r.Method != want {
 		writeErr(w, http.StatusMethodNotAllowed, "method_not_allowed", want+" only")
@@ -242,6 +244,27 @@ func (h *Handler) HandleAccountByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, updated)
+	case "claim":
+		var input struct {
+			PlanID string `json:"plan_id"`
+		}
+		if err := json.Unmarshal(body, &input); err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		claimed, err := h.Control.Accounts.Claim(r.Context(), accountID, input.PlanID)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "claim_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, claimed)
+	case "claim/preview":
+		plans, err := h.Control.Accounts.PreviewClaim(r.Context(), accountID)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "claim_preview_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": plans})
 	case "login_start":
 		writeJSON(w, http.StatusOK, map[string]any{"authUrl": result.Session.AuthURL, "status": result.LoginStatus})
 	case "login_status":

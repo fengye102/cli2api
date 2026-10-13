@@ -353,6 +353,16 @@ func (r *fakeRuntime) CheckinAccount(_ context.Context, id string) (accounts.Acc
 	}
 	return r.checkedIn, nil
 }
+
+func (r *fakeRuntime) ClaimAccount(_ context.Context, _ string, planID string) (providers.ClaimResult, error) {
+	r.log.add("runtime.ClaimAccount")
+	return providers.ClaimResult{Claimed: true, PlanID: planID, Message: "claimed"}, nil
+}
+
+func (r *fakeRuntime) PreviewClaimAccount(_ context.Context, _ string) ([]providers.ClaimPlan, error) {
+	r.log.add("runtime.PreviewClaimAccount")
+	return []providers.ClaimPlan{{PlanID: "plan-x", Name: "Test Plan"}}, nil
+}
 func (r *fakeRuntime) ReloadProxyURL(_ context.Context, value string) error {
 	r.log.add("runtime.ReloadProxyURL")
 	r.proxyURL = value

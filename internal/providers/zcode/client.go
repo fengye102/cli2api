@@ -133,6 +133,7 @@ func (c *Client) Adapter() providers.Adapter {
 		Classifier:   classifier{},
 		ImportExport: importer{},
 		Prober:       c,
+		Claim:        c,
 	}
 }
 

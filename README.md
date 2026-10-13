@@ -4,7 +4,7 @@
 
 **把你自己的登录态，变成一个本机 OpenAI 兼容 API**
 
-接入 **Qoder（国际版 / 国内版）**、**WorkBuddy（国际版 / 国内版）**、**Trae 国内版 Work**、**ZCode（Z.ai）**，以及实验性的 **Devin** 和 **Command Code**。
+接入 **Qoder（国际版 / 国内版）**、**WorkBuddy（国际版 / 国内版）**、**Trae 国内版 Work**、**ZCode（Z.ai）**、**小浣熊 Raccoon**、**Antigravity（Google）**，以及实验性的 **Devin** 和 **Command Code**。
 
 用 Docker 部署，在 Web 控制台管理账号，再通过兼容 API 接入客户端。
 
@@ -94,6 +94,9 @@ Go 网关统一鉴权、调度和记录请求。Qoder 每个账号使用独立 N
 - **凭证导入修复**：多个候选字段按字段优先级确定性解析（此前依赖 map 迭代顺序，同一份内容会随机选中不同账号且不报错）；保留 token 自身含 `+` 的 `uid+token` 拼接形式；`{account, auth}` 这类嵌套导出结构只有在确实带 access token 时才按该结构解析。
 - **控制台细节**：zcode 账号显示 `ZCode Z.ai` 与官方图标；API 访问页给 Anthropic 兼容端点单独一张**根地址** Base URL 卡片（Anthropic 客户端自己会拼 `/v1/messages`，填带 `/v1` 的地址会变成 `/v1/v1/messages`）；系统设置在 fork / 开发版构建下也会列出官方版本历史。
 - **WorkBuddy 额外模型**：用 `WORKBUDDY_EXTRA_MODELS` 注入不在 Grayscale 目录里的模型（默认已注入 `deepseek-v4.1-flash`，见 `deploy/docker-compose.yml`）。
+- **小浣熊 Raccoon 渠道**：导入 Raccoon（商汤）网页端的 access/refresh token 对即用，OpenAI 兼容对话、远程 `model_catalog` 目录刷新、401 自动刷新重试。
+- **Antigravity 渠道**：粘贴 Gemini API Key（Google AI Studio）即用，走 Google Gemini 的 OpenAI 兼容层（`/v1beta/openai`），gemini-* 模型带推理档位。
+- **ZCode Start-Plan 每日领取**：控制台账号操作新增 `claim` / `claim/preview`，可每日领取 ZCode 限时体验套餐（Trust Build 等），复用了计划网关的 preview/claim 协议与验证码节点。
 
 除以上差异外，功能与部署方式与上游一致，上游文档与更新说明仍然适用。
 

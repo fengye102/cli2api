@@ -21,6 +21,8 @@ type Runtime interface {
 	RefreshAccount(ctx context.Context, id string, forceQuota bool) error
 	RefreshAll(ctx context.Context, forceQuota bool) error
 	CheckinAccount(ctx context.Context, accountID string) (accounts.Account, error)
+	ClaimAccount(ctx context.Context, accountID, planID string) (providers.ClaimResult, error)
+	PreviewClaimAccount(ctx context.Context, accountID string) ([]providers.ClaimPlan, error)
 	ReloadProxyURL(ctx context.Context, value string) error
 	ReplaceProxyAPIKey(ctx context.Context, key string) error
 	WorkerAdmin(ctx context.Context, input providers.AdminRequest) (providers.AdminResponse, error)
@@ -186,6 +188,34 @@ func (a *Accounts) Checkin(ctx context.Context, id string) (accounts.Account, er
 	return a.runtime.CheckinAccount(ctx, id)
 }
 
+// Claim claims a provider plan for the account (e.g. ZCode's daily Start-Plan
+// trust build). Returns the claim result or a provider_unsupported error when
+// the account's provider has no claim flow.
+func (a *Accounts) Claim(ctx context.Context, id, planID string) (providers.ClaimResult, error) {
+	account, err := a.GetStored(ctx, id)
+	if err != nil {
+		return providers.ClaimResult{}, err
+	}
+	adapter, ok := a.Providers.Get(account.Provider)
+	if !ok || adapter.Claim == nil {
+		return providers.ClaimResult{}, operationError("provider_unsupported", "claim is not available for this provider")
+	}
+	return a.runtime.ClaimAccount(ctx, id, planID)
+}
+
+// PreviewClaim lists the claimable plans for an account.
+func (a *Accounts) PreviewClaim(ctx context.Context, id string) ([]providers.ClaimPlan, error) {
+	account, err := a.GetStored(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	adapter, ok := a.Providers.Get(account.Provider)
+	if !ok || adapter.Claim == nil {
+		return nil, operationError("provider_unsupported", "claim is not available for this provider")
+	}
+	return a.runtime.PreviewClaimAccount(ctx, id)
+}
+
 func (a *Accounts) LoadCredentialPayload(ctx context.Context, id string) (string, []byte, error) {
 	return a.store().LoadCredentialPayload(ctx, id)
 }
@@ -264,6 +294,24 @@ func (a *Accounts) Admin(ctx context.Context, input AccountAdminAction) (Account
 		}
 		if _, supported := providers.CheckinFor(account.Provider, account.ProviderRegion); !supported {
 			return AccountAdminResult{}, operationError("provider_unsupported", "check-in is not available for this provider and region")
+		}
+		return AccountAdminResult{Kind: input.Action}, nil
+	case "claim":
+		if storeErr != nil {
+			return AccountAdminResult{}, storeErr
+		}
+		adapter, ok := a.Providers.Get(account.Provider)
+		if !ok || adapter.Claim == nil {
+			return AccountAdminResult{}, operationError("provider_unsupported", "claim is not available for this provider")
+		}
+		return AccountAdminResult{Kind: input.Action}, nil
+	case "claim/preview":
+		if storeErr != nil {
+			return AccountAdminResult{}, storeErr
+		}
+		adapter, ok := a.Providers.Get(account.Provider)
+		if !ok || adapter.Claim == nil {
+			return AccountAdminResult{}, operationError("provider_unsupported", "claim is not available for this provider")
 		}
 		return AccountAdminResult{Kind: input.Action}, nil
 	case "login/device":

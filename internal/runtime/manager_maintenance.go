@@ -18,6 +18,46 @@ func (manager *Manager) CheckinAccount(ctx context.Context, accountID string) (A
 	return manager.checkinAccount(ctx, accountID, false)
 }
 
+// ClaimAccount previews and claims a provider plan (ZCode Start-Plan trust
+// builds). It dispatches to the account's provider adapter when it implements
+// the claim capability; providers without claims return ErrUnsupported.
+func (manager *Manager) ClaimAccount(ctx context.Context, accountID, planID string) (providers.ClaimResult, error) {
+	if manager == nil {
+		return providers.ClaimResult{}, fmt.Errorf("account manager unavailable")
+	}
+	account, err := manager.store.Get(ctx, accountID)
+	if err != nil {
+		return providers.ClaimResult{}, err
+	}
+	adapter, registered := manager.providers.Get(account.Provider)
+	if !registered || adapter.Claim == nil {
+		return providers.ClaimResult{}, providers.ErrUnsupported
+	}
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	stop := context.AfterFunc(manager.runCtx, cancel)
+	defer stop()
+	return adapter.Claim.Claim(ctx, accountID, planID)
+}
+
+// PreviewClaimAccount lists the claimable plans for an account.
+func (manager *Manager) PreviewClaimAccount(ctx context.Context, accountID string) ([]providers.ClaimPlan, error) {
+	if manager == nil {
+		return nil, fmt.Errorf("account manager unavailable")
+	}
+	account, err := manager.store.Get(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	adapter, registered := manager.providers.Get(account.Provider)
+	if !registered || adapter.Claim == nil {
+		return nil, providers.ErrUnsupported
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	return adapter.Claim.PreviewClaim(ctx, accountID)
+}
+
 func (manager *Manager) checkinAccount(ctx context.Context, accountID string, allowDisabled bool) (Account, error) {
 	if manager == nil {
 		return Account{}, fmt.Errorf("account manager unavailable")

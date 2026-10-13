@@ -296,15 +296,62 @@ var Zhipu = ProviderDescriptor{
 	DefaultRegion: "cn",
 }
 
+// Raccoon descriptor (小浣熊 / SenseTime). In-process OpenAI-compatible
+// gateway; auth is an imported access/refresh token pair. No browser login.
+var Raccoon = ProviderDescriptor{
+	ID:                "raccoon",
+	Label:             "Raccoon",
+	Runtime:           RuntimeInProcess,
+	AuthTypes:         []AuthType{AuthPAT},
+	CredentialFormats: []string{"raccoon-credential-v1"},
+	Capabilities: ProviderCapabilities{
+		Chat: true, Stream: true, Tools: true, Images: true, Reasoning: true,
+		ModelCatalog: true, Usage: true, Login: false, BrowserLogin: false,
+		PATLogin: true, ImportExport: true,
+	},
+	Regions: []RegionDescriptor{
+		{
+			ID: "global", Label: "Global",
+			ChatBase: "https://xiaohuanxiong.com/api/web/llm/v2",
+		},
+	},
+	DefaultRegion: "global",
+}
+
+// Antigravity descriptor (Google's AI IDE). In-process provider talking to
+// the Gemini OpenAI-compatibility layer with an imported Gemini API key. No
+// browser login.
+var Antigravity = ProviderDescriptor{
+	ID:                "antigravity",
+	Label:             "Antigravity",
+	Runtime:           RuntimeInProcess,
+	AuthTypes:         []AuthType{AuthPAT},
+	CredentialFormats: []string{"antigravity-key-v1"},
+	Capabilities: ProviderCapabilities{
+		Chat: true, Stream: true, Tools: true, Images: false, Reasoning: true,
+		ModelCatalog: true, Usage: true, Login: false, BrowserLogin: false,
+		PATLogin: true, ImportExport: true,
+	},
+	Regions: []RegionDescriptor{
+		{
+			ID: "global", Label: "Global",
+			ChatBase: "https://generativelanguage.googleapis.com/v1beta/openai",
+		},
+	},
+	DefaultRegion: "global",
+}
+
 var registry = map[string]ProviderDescriptor{
-	Qoder.ID:     Qoder,
-	WorkBuddy.ID: WorkBuddy,
-	Trae.ID:      Trae,
-	Devin.ID:     Devin,
-	Command.ID:   Command,
-	Codex.ID:     Codex,
-	ZCode.ID:     ZCode,
-	Zhipu.ID:     Zhipu,
+	Qoder.ID:       Qoder,
+	WorkBuddy.ID:   WorkBuddy,
+	Trae.ID:        Trae,
+	Devin.ID:       Devin,
+	Command.ID:     Command,
+	Codex.ID:       Codex,
+	ZCode.ID:       ZCode,
+	Zhipu.ID:       Zhipu,
+	Raccoon.ID:     Raccoon,
+	Antigravity.ID: Antigravity,
 }
 
 func Get(id string) (ProviderDescriptor, bool) {
@@ -313,7 +360,7 @@ func Get(id string) (ProviderDescriptor, bool) {
 }
 
 func List() []ProviderDescriptor {
-	return []ProviderDescriptor{Qoder, WorkBuddy, Trae, Devin, Command, Codex, ZCode, Zhipu}
+	return []ProviderDescriptor{Qoder, WorkBuddy, Trae, Devin, Command, Codex, ZCode, Zhipu, Raccoon, Antigravity}
 }
 
 // Resolve validates a provider/region pair. Empty values fall back to the

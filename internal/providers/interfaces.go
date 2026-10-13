@@ -257,6 +257,9 @@ type Adapter struct {
 	ImportExport ImportExporter
 	Prober       AccountProber
 	Checkin      AccountCheckiner
+	// Claim previews and claims provider plans (e.g. ZCode's daily Start-Plan
+	// trust builds). Nil for providers without a claim flow.
+	Claim AccountClaimer
 	// StreamFormat declares the SSE dialect ChatStream returns (see
 	// StreamFormat* constants). Empty means chat-completions deltas.
 	StreamFormat string
@@ -283,6 +286,8 @@ func (a Adapter) Supports(capability string) bool {
 		return a.Prober != nil
 	case "checkin":
 		return a.Checkin != nil
+	case "claim":
+		return a.Claim != nil
 	case "native_responses":
 		return a.NativeResponses != nil
 	default:

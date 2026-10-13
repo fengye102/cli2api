@@ -22,10 +22,12 @@ import (
 	apigateway "github.com/caigee-cmd/cli2api/internal/gateway"
 	applogs "github.com/caigee-cmd/cli2api/internal/logs"
 	"github.com/caigee-cmd/cli2api/internal/providers"
+	"github.com/caigee-cmd/cli2api/internal/providers/antigravity"
 	"github.com/caigee-cmd/cli2api/internal/providers/codex"
 	"github.com/caigee-cmd/cli2api/internal/providers/command"
 	"github.com/caigee-cmd/cli2api/internal/providers/devin"
 	"github.com/caigee-cmd/cli2api/internal/providers/qoder"
+	"github.com/caigee-cmd/cli2api/internal/providers/raccoon"
 	"github.com/caigee-cmd/cli2api/internal/providers/trae"
 	"github.com/caigee-cmd/cli2api/internal/providers/workbuddy"
 	"github.com/caigee-cmd/cli2api/internal/providers/zcode"
@@ -120,6 +122,8 @@ func New(cfg config.Config) *App {
 	providerReg.Register(codex.NewClient(store).Adapter())
 	providerReg.Register(zcode.NewClient(store).Adapter())
 	providerReg.Register(zhipu.NewClient(store).Adapter())
+	providerReg.Register(raccoon.NewClient(store).Adapter())
+	providerReg.Register(antigravity.NewClient(store).Adapter())
 	qoderClient := qoder.NewClient()
 	qoderClient.Bind(manager.AccountURL, manager.ProxyAPIKey)
 	qoderClient.SetDirect(qoder.NewDirect(store, func(ctx context.Context, accountID string) (string, error) {
