@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/caigee-cmd/cli2api/internal/accounts"
 	"github.com/caigee-cmd/cli2api/internal/providers"
 )
 
@@ -81,12 +82,24 @@ func TestClassifyErrorKeepsJSONRetryAfterWhenCodeIsSet(t *testing.T) {
 	}
 }
 
+func TestClassifyErrorHonorsProviderQuotaReset(t *testing.T) {
+	got := ClassifyError(&providers.Error{
+		Kind: KindQuota, Status: 429, Message: "usage quota exhausted", RetryAfter: 13 * time.Minute,
+	})
+	if got.Kind != KindQuota || got.Failover || got.Cooldown != 13*time.Minute || got.RetryAfter != 13*time.Minute {
+		t.Fatalf("quota reset hint must replace local midnight without failing over, got %+v", got)
+	}
+	if got.Model != "" {
+		t.Fatalf("quota cooldown must stay account-wide, got model %q", got.Model)
+	}
+}
+
 func TestClassifyErrorIgnoresProviderFailoverAndAuthCooldown(t *testing.T) {
 	got := ClassifyError(&providers.Error{
-		Kind: KindQuota, Status: 429, Message: "plan exhausted", RetryAfter: time.Minute,
+		Kind: KindQuota, Status: 429, Message: "plan exhausted",
 	})
 	if got.Kind != KindQuota || got.Failover || got.Cooldown <= 0 || got.Cooldown > 24*time.Hour {
-		t.Fatalf("quota must not fail over and must use local midnight, got %+v", got)
+		t.Fatalf("quota without a reset hint must use local midnight, got %+v", got)
 	}
 
 	got = ClassifyError(&providers.Error{
@@ -269,5 +282,41 @@ func TestObserveStreamFailureIgnoresCancellation(test *testing.T) {
 				test.Fatalf("cancellation mutated pool state: %+v", after)
 			}
 		})
+	}
+}
+
+func TestClassifyErrorUpstreamEmptyNoCooldown(t *testing.T) {
+	// A heartbeat-only empty upstream stream says nothing about the account's
+	// health: fail over, but never cool the account down.
+	err := ClassifyError(&providers.Error{
+		Kind:    accounts.KindUnavailable,
+		Status:  http.StatusBadGateway,
+		Code:    "upstream_empty",
+		Message: "upstream returned empty content (possible context overflow / silent reject)",
+	})
+	if err.Code != "upstream_empty" {
+		t.Errorf("expected Code='upstream_empty', got '%s'", err.Code)
+	}
+	if !err.Failover {
+		t.Error("expected Failover=true for upstream_empty")
+	}
+	if err.Cooldown != 0 {
+		t.Errorf("expected Cooldown=0 for upstream_empty, got %v", err.Cooldown)
+	}
+	if err.RetryAfter != 0 {
+		t.Errorf("expected RetryAfter=0 for upstream_empty, got %v", err.RetryAfter)
+	}
+	if err.Kind != accounts.KindUnavailable {
+		t.Errorf("expected Kind='unavailable', got '%s'", err.Kind)
+	}
+	// A plain unavailable error keeps its default cooldown so only the
+	// upstream_empty special case is exempt.
+	generic := ClassifyError(&providers.Error{
+		Kind:    accounts.KindUnavailable,
+		Status:  http.StatusBadGateway,
+		Message: "connection reset by peer",
+	})
+	if generic.Cooldown <= 0 {
+		t.Errorf("expected generic unavailable to keep cooldown, got %v", generic.Cooldown)
 	}
 }

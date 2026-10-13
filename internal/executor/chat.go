@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,7 +15,6 @@ import (
 
 	"github.com/caigee-cmd/cli2api/internal/accounts"
 	"github.com/caigee-cmd/cli2api/internal/providers"
-	"github.com/caigee-cmd/cli2api/internal/providers/qoder"
 	"github.com/caigee-cmd/cli2api/internal/translate"
 )
 
@@ -130,6 +130,12 @@ const (
 	routingSticky       = "sticky"
 	routingStickyEscape = "sticky_escape"
 )
+
+// maxWorkerResponseBytes caps a fully buffered worker response. Non-stream
+// completions are decoded from a single []byte; without a limit one inflated
+// upstream payload could pin unbounded memory per in-flight request. 64 MiB
+// matches translate.MaxCollectedResponseBytes used by the other collectors.
+const maxWorkerResponseBytes = 64 << 20
 
 type routingPlan struct {
 	Source       string
@@ -480,6 +486,17 @@ func keyGrantedSingleRegion(providerFilter string, allowed []string) (string, bo
 	return regions[0], true
 }
 
+// qoderDirect reports whether this Qoder account chats through the registered
+// adapter instead of its login worker. Tests that stub a worker URL and do not
+// register the adapter stay on the worker path.
+func (e ChatExecutor) qoderDirect(item Item) bool {
+	if itemProvider(item) != "qoder" || e.Providers == nil {
+		return false
+	}
+	adapter, ok := e.Providers.Get("qoder")
+	return ok && adapter.Chat != nil
+}
+
 func isInProcessItem(item Item) bool {
 	if item.Runtime == string(providers.RuntimeInProcess) {
 		return true
@@ -598,6 +615,34 @@ func (e ChatExecutor) recordAttempt(ctx context.Context, attempt accounts.Reques
 	e.OnAttempt(attempt)
 }
 
+// buildWorkerChatPayload is the OpenAI-shaped body a non-Qoder worker stub
+// still accepts. Qoder production chat does not use it.
+func buildWorkerChatPayload(req translate.ChatRequest, stream bool) map[string]any {
+	payload := map[string]any{
+		"model":    req.Model,
+		"messages": req.Messages,
+		"stream":   stream,
+	}
+	if len(req.MaxCompletionTokens) > 0 {
+		payload["max_tokens"] = json.RawMessage(req.MaxCompletionTokens)
+	} else if len(req.MaxTokens) > 0 {
+		payload["max_tokens"] = json.RawMessage(req.MaxTokens)
+	}
+	if len(req.Temperature) > 0 {
+		payload["temperature"] = json.RawMessage(req.Temperature)
+	}
+	if len(req.Tools) > 0 {
+		payload["tools"] = json.RawMessage(req.Tools)
+	}
+	if len(req.ToolChoice) > 0 {
+		payload["tool_choice"] = json.RawMessage(req.ToolChoice)
+	}
+	if len(req.ReasoningEffort) > 0 {
+		payload["reasoning_effort"] = json.RawMessage(req.ReasoningEffort)
+	}
+	return payload
+}
+
 func (e ChatExecutor) newWorkerRequest(ctx context.Context, item Item, payload []byte, prefer string) (*http.Request, error) {
 	account := prefer
 	if account == "" {
@@ -607,7 +652,21 @@ func (e ChatExecutor) newWorkerRequest(ctx context.Context, item Item, payload [
 	if e.WorkerKeySource != nil {
 		key = e.WorkerKeySource()
 	}
-	return qoder.NewChatRequest(ctx, item.URL, account, RequestIDFromContext(ctx), key, payload)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(item.URL, "/")+"/v1/chat/completions", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if key != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+key)
+	}
+	if account != "" {
+		httpReq.Header.Set("X-Qoder-Account", account)
+	}
+	if requestID := RequestIDFromContext(ctx); requestID != "" {
+		httpReq.Header.Set("X-Request-Id", requestID)
+	}
+	return httpReq, nil
 }
 
 func classifyWorkerErr(resp *http.Response, body string) Classified {
@@ -719,10 +778,6 @@ func (l routeLoop) pickFailure(err error) (int, string, string, error) {
 func (e ChatExecutor) ChatNonStream(ctx context.Context, req translate.ChatRequest, prefer, providerFilter string) (result ChatResult, returnErr error) {
 	loop := e.newRouteLoop(ctx, prefer, providerFilter, req)
 	defer func() { result.Routing = loop.routing.Source }()
-	payload, err := json.Marshal(qoder.BuildChatPayload(req, false))
-	if err != nil {
-		return ChatResult{}, err
-	}
 	for loop.index < loop.attempts {
 		item, i, err := loop.pickNext(e, req.Model)
 		if err != nil {
@@ -732,7 +787,7 @@ func (e ChatExecutor) ChatNonStream(ctx context.Context, req translate.ChatReque
 			}
 			return ChatResult{}, pickErr
 		}
-		if isInProcessItem(item) {
+		if isInProcessItem(item) || e.qoderDirect(item) {
 			result, classified, err := e.chatInProcessNonStreamAttempt(ctx, item, req, i)
 			if err == nil {
 				result.AttemptCount = i + 1
@@ -749,6 +804,10 @@ func (e ChatExecutor) ChatNonStream(ctx context.Context, req translate.ChatReque
 				continue
 			}
 			return ChatResult{AttemptCount: i + 1, AccountID: item.ID, Provider: item.Provider}, err
+		}
+		payload, err := json.Marshal(buildWorkerChatPayload(req, false))
+		if err != nil {
+			return ChatResult{}, err
 		}
 		headerAccount := loop.headerAccount(item, i)
 		httpReq, err := e.newWorkerRequest(ctx, item, payload, headerAccount)
@@ -777,7 +836,9 @@ func (e ChatExecutor) ChatNonStream(ctx context.Context, req translate.ChatReque
 			loop.exclude(item)
 			continue
 		}
-		body, _ := io.ReadAll(resp.Body)
+		// Non-stream worker responses are buffered whole; cap them so a
+		// pathological upstream cannot pin unbounded memory per request.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxWorkerResponseBytes))
 		resp.Body.Close()
 		finished := time.Now().UTC()
 		latency := int(finished.Sub(started).Milliseconds())
@@ -1020,7 +1081,7 @@ func decodeChatResult(req translate.ChatRequest, body []byte) (ChatResult, error
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return ChatResult{}, fmt.Errorf("decode worker response: %w; body=%s", err, string(body))
+		return ChatResult{}, fmt.Errorf("decode worker response: %w; body=%s", err, truncateErr(string(body)))
 	}
 	content := ""
 	reasoning := ""
@@ -1132,14 +1193,6 @@ func (e ChatExecutor) chatStreamProxy(ctx context.Context, req translate.ChatReq
 		loop.attempts = e.attemptsFor(loop.providerFilter, loop.regionFilter, req.Model, loop.allowed, loop.eligible)
 	}
 	defer func() { result.Routing = loop.routing.Source }()
-	var payload []byte
-	if !preferNativeResponses || native == nil {
-		var err error
-		payload, err = json.Marshal(qoder.BuildChatPayload(req, true))
-		if err != nil {
-			return StreamResult{}, err
-		}
-	}
 	startedAll := time.Now()
 	for loop.index < loop.attempts {
 		item, i, err := loop.pickNext(e, req.Model)
@@ -1150,7 +1203,7 @@ func (e ChatExecutor) chatStreamProxy(ctx context.Context, req translate.ChatReq
 			}
 			return StreamResult{}, pickErr
 		}
-		if isInProcessItem(item) {
+		if isInProcessItem(item) || (e.qoderDirect(item) && !(preferNativeResponses && native != nil)) {
 			result, classified, err := e.chatInProcessStreamAttempt(ctx, item, req, native, i, preferNativeResponses)
 
 			if err == nil {
@@ -1167,6 +1220,10 @@ func (e ChatExecutor) chatStreamProxy(ctx context.Context, req translate.ChatReq
 				continue
 			}
 			return StreamResult{AttemptCount: i + 1, AccountID: item.ID, Provider: item.Provider}, err
+		}
+		payload, err := json.Marshal(buildWorkerChatPayload(req, true))
+		if err != nil {
+			return StreamResult{}, err
 		}
 		headerAccount := loop.headerAccount(item, i)
 		httpReq, err := e.newWorkerRequest(ctx, item, payload, headerAccount)
@@ -1199,7 +1256,7 @@ func (e ChatExecutor) chatStreamProxy(ctx context.Context, req translate.ChatReq
 			item.ID = account
 		}
 		if resp.StatusCode >= 300 {
-			body, _ := io.ReadAll(resp.Body)
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, maxWorkerResponseBytes))
 			resp.Body.Close()
 			msg := strings.TrimSpace(string(body))
 			classified := classifyWorkerErr(resp, msg)

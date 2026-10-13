@@ -21,6 +21,8 @@ export function isCommandProvider(provider?: string) {
 
 export function isZCodeProvider(provider?: string) {
   return String(provider || '').toLowerCase() === 'zcode'
+export function isZhipuProvider(provider?: string) {
+  return String(provider || '').toLowerCase() === 'zhipu'
 }
 
 export function accountProviderFamilyLabel(
@@ -33,6 +35,7 @@ export function accountProviderFamilyLabel(
   if (isDevinProvider(providerID)) return 'Devin'
   if (isCommandProvider(providerID)) return 'Command Code'
   if (isZCodeProvider(providerID)) return t('accountTypeZCode')
+  if (isZhipuProvider(providerID)) return 'Zhipu GLM'
   if (isQoderProvider(providerID)) return 'Qoder'
   return provider || t('account')
 }
@@ -58,6 +61,8 @@ export function accountProviderLabel(
   }
   if (isZCodeProvider(providerID)) {
     return t('accountTypeZCode')
+  if (isZhipuProvider(providerID)) {
+    return t('accountTypeZhipuCN')
   }
   if (isQoderProvider(providerID)) {
     return regionID === 'cn' ? t('accountTypeQoderCN') : t('accountTypeQoderGlobal')

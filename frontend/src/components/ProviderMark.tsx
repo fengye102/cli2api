@@ -5,6 +5,7 @@ import { QoderMark } from '@/components/QoderMark'
 import { TraeMark } from '@/components/TraeMark'
 import { WorkBuddyMark } from '@/components/WorkBuddyMark'
 import { ZCodeMark } from '@/components/ZCodeMark'
+import { ZhipuMark } from '@/components/ZhipuMark'
 
 type Props = {
   provider?: string
@@ -32,6 +33,8 @@ export function ProviderMark({ provider, size = 16, className = '' }: Props) {
   }
   if (id === 'zcode') {
     return <ZCodeMark size={size} className={className} />
+  if (id === 'zhipu') {
+    return <ZhipuMark size={size} className={className} />
   }
   return <QoderMark size={size} className={className} />
 }
