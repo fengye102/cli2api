@@ -324,6 +324,10 @@ var Raccoon = ProviderDescriptor{
 			ID: "global", Label: "Global",
 			ChatBase: "https://xiaohuanxiong.com/api/web/llm/v2",
 			AuthBase: "https://xiaohuanxiong.com/api/web/auth/v1",
+			// The daily credit settles on Beijing calendar days (UTC+8
+			// midnight), so the schedule and the "already done today" check
+			// must both run in that zone.
+			Checkin: &CheckinPolicy{Timezone: "Asia/Shanghai"},
 		},
 	},
 	DefaultRegion: "global",

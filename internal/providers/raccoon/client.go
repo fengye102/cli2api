@@ -212,6 +212,7 @@ func (c *Client) Adapter() providers.Adapter {
 		Login:        c,
 		ImportExport: importer{},
 		Prober:       c,
+		Checkin:      c,
 	}
 }
 
