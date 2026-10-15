@@ -40,7 +40,7 @@ import (
 // account-level proxy exists for the long streaming chat requests, and the main
 // site is a different host from the LLM gateway. Attaching the account proxy
 // here would diverge from the verified upstream behaviour, so these requests go
-// out directly (c.http) like the balance queries do.
+// out directly (c.http) like the balance queries do (see quota.go).
 
 const (
 	// settingInfoPath is the desktop login entry that settles the daily grant.
@@ -77,7 +77,7 @@ func (c *Client) Checkin(ctx context.Context, accountID string) (providers.Check
 	if err != nil {
 		return providers.CheckinResult{}, err
 	}
-	token, err := c.checkinToken(ctx, accountID, credential)
+	token, err := c.siteToken(ctx, accountID, credential)
 	if err != nil {
 		return providers.CheckinResult{}, err
 	}
@@ -131,14 +131,14 @@ func (c *Client) Checkin(ctx context.Context, accountID string) (providers.Check
 	return providers.CheckinResult{}, fmt.Errorf("小浣熊签到：今日未见积分入账（发放触发未生效，稍后重试）")
 }
 
-// checkinToken returns an access token for the check-in calls, minting one from
-// the refresh token when the stored credential only holds that.
-func (c *Client) checkinToken(ctx context.Context, accountID string, credential Credential) (string, error) {
+// siteToken returns an access token for the main-site calls (check-in, quota),
+// minting one from the refresh token when the stored credential only holds that.
+func (c *Client) siteToken(ctx context.Context, accountID string, credential Credential) (string, error) {
 	if token := strings.TrimSpace(credential.AccessToken); token != "" {
 		return token, nil
 	}
 	if strings.TrimSpace(credential.RefreshToken) == "" {
-		return "", fmt.Errorf("raccoon checkin needs a token or refresh token")
+		return "", fmt.Errorf("raccoon site call needs a token or refresh token")
 	}
 	refreshed, err := c.refresh(ctx, accountID, credential)
 	if err != nil {
@@ -146,7 +146,7 @@ func (c *Client) checkinToken(ctx context.Context, accountID string, credential 
 	}
 	token := strings.TrimSpace(refreshed.AccessToken)
 	if token == "" {
-		return "", fmt.Errorf("raccoon checkin: refresh returned no access token")
+		return "", fmt.Errorf("raccoon site call: refresh returned no access token")
 	}
 	return token, nil
 }
