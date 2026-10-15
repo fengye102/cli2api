@@ -8,33 +8,52 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/caigee-cmd/cli2api/internal/auth"
 	"github.com/caigee-cmd/cli2api/internal/providers"
 )
 
 // Browser login for Raccoon (小浣熊).
 //
-// The official web client opens a desktop-login round at
+// ── Two callback modes upstream, and why only one works here ────────────
+// The authorize page (`/authorize`) picks its callback from `login_source`:
 //
-//	{main}/code/authorize?login_source=desktop&appname=<client>&state=<state>
+//	desktop  → always redirects to the custom scheme office-raccoon://auth/callback
+//	           (verified in the page bundle: desktop ? "office-raccoon://auth/callback" : e.redirect)
+//	other    → redirects to the `redirect` parameter
 //
-// and the page then redirects to a *custom-scheme* callback,
+// Desktop mode is useless to a gateway: the browser hands the URL to a
+// registered *desktop client* instead of showing it, so nothing appears in the
+// address bar for an operator to copy, and the callback never reaches us. That
+// is why this provider does NOT use login_source=desktop.
 //
-//	office-raccoon://auth/callback?code=…&state=…
+// The page also constrains `redirect` — it must be a loopback http URL *with an
+// explicit port* (127.0.0.1 / localhost / [::1]), or a vscode: scheme. A public
+// https callback is rejected outright (verified: the page's parsed context comes
+// back null). So the redirect points at this process's own loopback listener:
 //
-// which this gateway can never receive: only a desktop client that registered
-// that scheme can. The console therefore always finishes this provider from a
-// pasted callback URL — the same fallback trae / devin / codex / zcode use.
+//   - if the browser can reach that port (same host, or a tunnel), the round
+//     completes by itself, and
+//   - otherwise the callback URL is delivered into a popup window, whose address
+//     bar shows the full http://127.0.0.1:<port>/…?authorization_code=…&state=…
+//     link for the operator to paste back. That is the "callback address" the
+//     desktop mode never produced.
+//
+// ── Two parameter names ────────────────────────────────────────────────
+// The page sets `authorization_code` for the non-desktop (loopback) callback but
+// `code` for the desktop custom-scheme one. Both spellings are accepted so a
+// pasted link from either mode imports.
 //
 // ── Why the state is minted here and compared byte-for-byte ─────────────
 // The callback is out of band, so anything able to observe or forge one could
 // hand back a code that belongs to somebody else; the credential stored would
-// then point at that other account. `state` is the only value that answers
-// "was this callback produced by the round this process just started", so it is
+// then point at that other account. `state` is the only value that answers "was
+// this callback produced by the round this process just started", so it is
 // minted per round from crypto/rand, echoed by the page, and compared exactly
 // before the code is spent. A stale link from an earlier round cannot complete
 // a newer session.
@@ -51,24 +70,31 @@ const (
 	// round that minted its state.
 	loginRoundTTL = 15 * time.Minute
 
-	// authorizePath is the official desktop-login entry point.
-	authorizePath = "/code/authorize"
-	// loginSource marks the desktop branch of that page.
-	loginSource = "desktop"
-	// appName is the client name the page reports back. It is Chinese, so the
-	// authorize URL must percent-encode it rather than paste it raw.
-	appName = "办公小浣熊客户端"
+	// authorizePath is the page that hosts the consent UI. The older
+	// `/code/authorize` form only redirects here, so it is skipped.
+	authorizePath = "/authorize"
+
+	// appName is the label the consent page shows. A gateway name keeps the copy
+	// honest instead of naming a desktop client this flow does not use.
+	appName = "CLI2API 网关"
+
+	// callbackPath is the loopback callback path. The redirect_uri echoes it
+	// verbatim, so it must stay stable across rounds.
+	callbackPath = "/raccoon-callback"
 
 	// exchangePath spends an authorization code for a token pair.
 	exchangePath = "/login_with_authorization_code"
 
-	// callbackScheme/Host/Path are the fixed callback shape the official page
-	// redirects to. They are matched one by one, never by prefix: a prefix test
-	// would also accept office-raccoon://auth/callback@evil.example or
+	// desktopScheme/Host/Path are the *legacy* desktop callback shape. It is
+	// still accepted so an operator holding a link produced by the desktop
+	// client can import it, but it is never used to start a round.
+	//
+	// They are matched one by one, never by prefix: a prefix test would also
+	// accept office-raccoon://auth/callback@evil.example or
 	// office-raccoon://auth/callback.evil.
-	callbackScheme = "office-raccoon"
-	callbackHost   = "auth"
-	callbackPath   = "/callback"
+	desktopScheme = "office-raccoon"
+	desktopHost   = "auth"
+	desktopPath   = "/callback"
 
 	// codeExpired is the upstream business code for "this code was already
 	// spent, or sat around too long". It deserves its own message: retrying the
@@ -85,6 +111,7 @@ const (
 // loginRound is one browser-login round for an account.
 type loginRound struct {
 	state     string
+	redirect  string
 	createdAt time.Time
 	done      bool
 	message   string
@@ -109,15 +136,51 @@ func (c *Client) mainOrigin() string {
 	return siteBaseURL
 }
 
-// buildAuthorizeURL assembles the desktop-login URL. It uses url.Values rather
-// than string concatenation because appName is Chinese and state is opaque:
-// both must be percent-encoded, and a hand-built "&" would hand the page half
-// an argument.
-func (c *Client) buildAuthorizeURL(state string) string {
+// loopbackListener binds the callback listener once per client and keeps it for
+// the process lifetime: the redirect_uri must stay stable across rounds so a
+// browser that lands on an old popup still reaches this process.
+func (c *Client) loopbackListener() (net.Listener, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.listener != nil {
+		return c.listener, nil
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, fmt.Errorf("raccoon callback listen: %w", err)
+	}
+	c.listener = ln
+	auth.ServeLoopback(ln, callbackPath, "Raccoon", c.acceptCallback)
+	return ln, nil
+}
+
+// redirectURI is the loopback callback URL the authorize URL must carry. The
+// page requires an explicit port, which the listener always has.
+func (c *Client) redirectURI() (string, error) {
+	ln, err := c.loopbackListener()
+	if err != nil {
+		return "", err
+	}
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		return "", fmt.Errorf("raccoon callback address unavailable")
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d%s", addr.Port, callbackPath), nil
+}
+
+// buildAuthorizeURL assembles the consent URL. It uses url.Values rather than
+// string concatenation because appName is Chinese and the redirect/state are
+// opaque: all must be percent-encoded, and a hand-built "&" would hand the page
+// half an argument.
+//
+// login_source is deliberately omitted: the page rejects any value other than
+// "desktop", and "desktop" would send the callback to the custom scheme instead
+// of the loopback URL this gateway can receive.
+func (c *Client) buildAuthorizeURL(state, redirect string) string {
 	query := url.Values{}
-	query.Set("login_source", loginSource)
 	query.Set("appname", appName)
 	query.Set("state", state)
+	query.Set("redirect", redirect)
 	return c.mainOrigin() + authorizePath + "?" + query.Encode()
 }
 
@@ -127,16 +190,20 @@ func (c *Client) StartLogin(ctx context.Context, accountID string) (providers.Lo
 	if err != nil {
 		return providers.LoginSession{}, err
 	}
-	c.setLoginRound(accountID, &loginRound{state: state, createdAt: time.Now()})
+	redirect, err := c.redirectURI()
+	if err != nil {
+		return providers.LoginSession{}, err
+	}
+	c.setLoginRound(accountID, &loginRound{state: state, redirect: redirect, createdAt: time.Now()})
 	return providers.LoginSession{
-		AuthURL: c.buildAuthorizeURL(state),
+		AuthURL: c.buildAuthorizeURL(state, redirect),
 		State:   state,
 	}, nil
 }
 
-// PollLogin reports the round's state. The callback arrives out of band, so the
-// poll only ever reads what CompleteLogin recorded; it cannot finish the round
-// on its own.
+// PollLogin reports the round's state. The loopback listener completes the round
+// on its own when it is reachable; otherwise the operator finishes it from the
+// pasted callback URL, so the poll only reads what was recorded.
 func (c *Client) PollLogin(ctx context.Context, accountID string) (bool, string, error) {
 	round := c.loginRoundFor(accountID)
 	if round == nil {
@@ -159,7 +226,7 @@ func (c *Client) PollLogin(ctx context.Context, accountID string) (bool, string,
 		c.clearLoginRound(accountID)
 		return false, "", fmt.Errorf("登录已过期，请重新发起网页登录")
 	}
-	return false, "授权页已打开：登录成功后浏览器会跳到一个 office-raccoon:// 开头的链接（它只会唤起本机客户端，打不开也没关系）。把地址栏里的完整链接粘贴到下面的输入框即可完成。", nil
+	return false, "授权页已打开：登录并确认授权后，浏览器会弹出一个新窗口，地址栏里是 http://127.0.0.1:…/raccoon-callback?authorization_code=…&state=… 形式的链接（该窗口本身打不开是正常的，回调端口在服务器上）。把那个完整链接复制粘贴到下面的输入框即可完成。", nil
 }
 
 // CompleteLogin finishes a round from a pasted callback URL.
@@ -183,21 +250,56 @@ func (c *Client) CompleteLogin(ctx context.Context, accountID, callbackURL strin
 	return c.storeLoginCredential(ctx, accountID, credential)
 }
 
-// parseCallbackCode validates the callback shape and extracts the code, after
+// acceptCallback is the loopback handler. It receives a *relative* URL (the
+// listener's own path plus query), so it reads the query directly: the listener
+// already guarantees the shape, and only the state needs checking.
+func (c *Client) acceptCallback(ctx context.Context, rawURL string) error {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return fmt.Errorf("parse callback url: %w", err)
+	}
+	query := parsed.Query()
+	state := strings.TrimSpace(query.Get("state"))
+	accountID, round := c.roundByState(state)
+	if round == nil {
+		return fmt.Errorf("回调里的 state 不属于任何进行中的登录，请重新发起网页登录")
+	}
+	if failure := strings.TrimSpace(query.Get("error")); failure != "" {
+		description := strings.TrimSpace(query.Get("error_description"))
+		if description == "" {
+			description = failure
+		}
+		authErr := fmt.Errorf("小浣熊拒绝了这次授权：%s", description)
+		c.markRoundFailed(accountID, authErr)
+		return nil
+	}
+	code, err := codeFromQuery(query)
+	if err != nil {
+		c.markRoundFailed(accountID, err)
+		return nil
+	}
+	credential, err := c.exchangeAuthorizationCode(ctx, accountID, code)
+	if err != nil {
+		c.markRoundFailed(accountID, err)
+		return err
+	}
+	if err := c.storeLoginCredential(ctx, accountID, credential); err != nil {
+		c.markRoundFailed(accountID, err)
+		return err
+	}
+	return nil
+}
+
+// parseCallbackCode validates a pasted callback URL and extracts the code, after
 // checking that the state is the one this process minted.
+//
+// Two shapes are accepted: the loopback http URL this gateway asks for, and the
+// legacy desktop custom scheme (so a link produced by the desktop client still
+// imports). Each is matched field by field rather than by prefix.
 func parseCallbackCode(rawURL, expectedState string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil {
 		return "", fmt.Errorf("回调地址无法解析，请粘贴完整的链接")
-	}
-	// The custom scheme goes through the opaque-host path, which does not fold
-	// case the way http(s) does, so the host is compared case-insensitively.
-	host := strings.ToLower(strings.TrimSpace(parsed.Host))
-	matches := strings.EqualFold(parsed.Scheme, callbackScheme) &&
-		host == callbackHost &&
-		parsed.Path == callbackPath
-	if !matches {
-		return "", fmt.Errorf("回调地址不是 office-raccoon://auth/callback 形态，请粘贴授权后地址栏里的完整链接")
 	}
 	query := parsed.Query()
 	if failure := strings.TrimSpace(query.Get("error")); failure != "" {
@@ -207,12 +309,12 @@ func parseCallbackCode(rawURL, expectedState string) (string, error) {
 		}
 		return "", fmt.Errorf("小浣熊拒绝了这次授权：%s", description)
 	}
-	code := strings.TrimSpace(query.Get("code"))
-	if code == "" {
-		return "", fmt.Errorf("回调链接里没有授权码，请重新发起网页登录")
+	if !isLoopbackCallback(parsed) && !isDesktopCallback(parsed) {
+		return "", fmt.Errorf("回调地址不是 http://127.0.0.1:<端口>/raccoon-callback 形态（也不像桌面端的 office-raccoon://auth/callback），请粘贴授权后弹出的那个窗口地址栏里的完整链接")
 	}
-	if len(code) > maxCodeLength {
-		return "", fmt.Errorf("授权码过长")
+	code, err := codeFromQuery(query)
+	if err != nil {
+		return "", err
 	}
 	state := strings.TrimSpace(query.Get("state"))
 	if state == "" {
@@ -225,6 +327,53 @@ func parseCallbackCode(rawURL, expectedState string) (string, error) {
 		return "", fmt.Errorf("回调里的 state 与本次登录不匹配，请重新发起网页登录")
 	}
 	return code, nil
+}
+
+// codeFromQuery reads the authorization code under either upstream spelling.
+func codeFromQuery(query url.Values) (string, error) {
+	// Non-desktop (loopback) callbacks use authorization_code; the desktop
+	// custom-scheme one uses code. Accept both, preferring the loopback name.
+	code := strings.TrimSpace(query.Get("authorization_code"))
+	if code == "" {
+		code = strings.TrimSpace(query.Get("code"))
+	}
+	if code == "" {
+		return "", fmt.Errorf("回调链接里没有授权码，请重新发起网页登录")
+	}
+	if len(code) > maxCodeLength {
+		return "", fmt.Errorf("授权码过长")
+	}
+	return code, nil
+}
+
+// isLoopbackCallback reports whether the URL is the http loopback callback this
+// gateway asks the page to use. The port must be present: the page rejects a
+// loopback redirect without one, so a URL missing it cannot be a real callback.
+func isLoopbackCallback(parsed *url.URL) bool {
+	if !strings.EqualFold(parsed.Scheme, "http") {
+		return false
+	}
+	if parsed.Path != callbackPath {
+		return false
+	}
+	if parsed.Port() == "" {
+		return false
+	}
+	// The page allows exactly these three hostnames.
+	switch strings.ToLower(parsed.Hostname()) {
+	case "127.0.0.1", "localhost", "::1":
+		return true
+	}
+	return false
+}
+
+// isDesktopCallback reports whether the URL is the legacy desktop custom-scheme
+// callback. The custom scheme goes through the opaque-host path, which does not
+// fold case the way http(s) does, so the host is compared case-insensitively.
+func isDesktopCallback(parsed *url.URL) bool {
+	return strings.EqualFold(parsed.Scheme, desktopScheme) &&
+		strings.EqualFold(strings.TrimSpace(parsed.Host), desktopHost) &&
+		parsed.Path == desktopPath
 }
 
 // exchangeAuthorizationCode spends the code for a token pair. A code that has
@@ -325,6 +474,22 @@ func (c *Client) loginRoundFor(accountID string) *loginRound {
 	return c.rounds[accountID]
 }
 
+// roundByState finds the round whose state matches, so the loopback callback can
+// resolve which account it belongs to.
+func (c *Client) roundByState(state string) (string, *loginRound) {
+	if state == "" {
+		return "", nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for accountID, round := range c.rounds {
+		if round.state == state {
+			return accountID, round
+		}
+	}
+	return "", nil
+}
+
 // clearLoginRound forgets the account's round.
 func (c *Client) clearLoginRound(accountID string) {
 	c.mu.Lock()
@@ -339,5 +504,14 @@ func (c *Client) markRoundDone(accountID string) {
 	if round := c.rounds[accountID]; round != nil {
 		round.done = true
 		round.message = "登录完成"
+	}
+}
+
+// markRoundFailed records a failed round (the poll reports it).
+func (c *Client) markRoundFailed(accountID string, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if round := c.rounds[accountID]; round != nil {
+		round.err = err
 	}
 }

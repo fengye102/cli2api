@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -53,6 +54,9 @@ type Client struct {
 
 	// rounds holds the in-flight browser-login round per account (login.go).
 	rounds map[string]*loginRound
+	// listener is the loopback callback listener, bound once and kept for the
+	// process lifetime so the redirect_uri stays stable (login.go).
+	listener net.Listener
 }
 
 func NewClient(store Store) *Client {

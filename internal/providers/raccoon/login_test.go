@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -24,9 +25,12 @@ func loginTestClient(t *testing.T, authHandler http.HandlerFunc) (*Client, *memS
 	return client, store
 }
 
-// TestStartLoginBuildsDesktopAuthorizeURL pins the authorize shape: the state
-// must be echoed and the appname (Chinese) must survive percent-encoding.
-func TestStartLoginBuildsDesktopAuthorizeURL(t *testing.T) {
+// TestStartLoginBuildsLoopbackAuthorizeURL pins the authorize shape: the state
+// must be echoed, the redirect must be a loopback URL *with a port* (the page
+// rejects one without), and login_source must be absent (any non-desktop value
+// is rejected by the page, and "desktop" would route the callback to the custom
+// scheme this gateway cannot receive).
+func TestStartLoginBuildsLoopbackAuthorizeURL(t *testing.T) {
 	client, _ := loginTestClient(t, func(http.ResponseWriter, *http.Request) {})
 	session, err := client.StartLogin(context.Background(), "acc-1")
 	if err != nil {
@@ -35,11 +39,24 @@ func TestStartLoginBuildsDesktopAuthorizeURL(t *testing.T) {
 	if !strings.Contains(session.AuthURL, authorizePath) {
 		t.Fatalf("authorize url missing path: %s", session.AuthURL)
 	}
-	if !strings.Contains(session.AuthURL, "login_source=desktop") {
-		t.Fatalf("authorize url missing login_source: %s", session.AuthURL)
-	}
 	if !strings.Contains(session.AuthURL, "state="+session.State) {
 		t.Fatalf("authorize url missing state: %s", session.AuthURL)
+	}
+	if strings.Contains(session.AuthURL, "login_source") {
+		t.Fatalf("login_source must be omitted: %s", session.AuthURL)
+	}
+	// The redirect must be percent-encoded (so its own & / ? do not break the
+	// outer query) and must carry an explicit loopback port.
+	if !strings.Contains(session.AuthURL, "redirect=http%3A%2F%2F127.0.0.1%3A") {
+		t.Fatalf("redirect must be an encoded loopback url with a port: %s", session.AuthURL)
+	}
+	parsed, err := url.Parse(session.AuthURL)
+	if err != nil {
+		t.Fatalf("authorize url unparsable: %v", err)
+	}
+	redirect := parsed.Query().Get("redirect")
+	if !isLoopbackCallback(mustParse(t, redirect)) {
+		t.Fatalf("redirect is not a loopback callback: %q", redirect)
 	}
 	// The Chinese app name must be encoded, never pasted raw.
 	if strings.Contains(session.AuthURL, appName) {
@@ -48,6 +65,15 @@ func TestStartLoginBuildsDesktopAuthorizeURL(t *testing.T) {
 	if session.State == "" {
 		t.Fatal("state must be minted")
 	}
+}
+
+func mustParse(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	return parsed
 }
 
 // TestPollBeforeCompletionReportsPending covers the "waiting" branch.
@@ -63,8 +89,8 @@ func TestPollBeforeCompletionReportsPending(t *testing.T) {
 	if done {
 		t.Fatal("round must not report done before the callback arrives")
 	}
-	if !strings.Contains(message, "office-raccoon") {
-		t.Fatalf("pending message should explain the custom-scheme callback: %q", message)
+	if !strings.Contains(message, "raccoon-callback") {
+		t.Fatalf("pending message should explain the loopback callback the operator must paste: %q", message)
 	}
 }
 
@@ -87,7 +113,7 @@ func TestCompleteLoginRejectsForgedState(t *testing.T) {
 	if _, err := client.StartLogin(context.Background(), "acc-1"); err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
-	forged := "office-raccoon://auth/callback?code=stolen&state=forged"
+	forged := "http://127.0.0.1:1455" + callbackPath + "?authorization_code=stolen&state=forged"
 	if err := client.CompleteLogin(context.Background(), "acc-1", forged); err == nil {
 		t.Fatal("a forged state must be rejected")
 	}
@@ -105,9 +131,18 @@ func TestCompleteLoginRejectsWrongScheme(t *testing.T) {
 		t.Fatalf("StartLogin: %v", err)
 	}
 	for _, bad := range []string{
+		// The page only ever redirects to a loopback host, and a public https
+		// callback is rejected outright, so neither may be accepted.
+		"https://cli.orangeai.cfd" + callbackPath + "?authorization_code=x&state=" + session.State,
+		// A loopback URL without a port is rejected by the page, so it cannot
+		// be a genuine callback either.
+		"http://127.0.0.1" + callbackPath + "?authorization_code=x&state=" + session.State,
+		// A path that is not the registered callback path.
+		"http://127.0.0.1:1455/other?authorization_code=x&state=" + session.State,
+		// Desktop custom scheme with a lookalike host/path (prefix matching
+		// would wrongly accept these).
 		"office-raccoon://auth/callback@evil.example?code=x&state=" + session.State,
 		"office-raccoon://auth/callback.evil?code=x&state=" + session.State,
-		"https://xiaohuanxiong.com/code/authorize?code=x&state=" + session.State,
 	} {
 		if err := client.CompleteLogin(context.Background(), "acc-1", bad); err == nil {
 			t.Fatalf("callback shape must be rejected: %s", bad)
@@ -136,7 +171,7 @@ func TestCompleteLoginStoresCredentialAndMarksDone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
-	callback := "office-raccoon://auth/callback?code=code-1&state=" + session.State
+	callback := "http://127.0.0.1:1455" + callbackPath + "?authorization_code=code-1&state=" + session.State
 	if err := client.CompleteLogin(context.Background(), "acc-1", callback); err != nil {
 		t.Fatalf("CompleteLogin: %v", err)
 	}
@@ -177,7 +212,7 @@ func TestCompleteLoginReportsExpiredCode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
-	callback := "office-raccoon://auth/callback?code=old&state=" + session.State
+	callback := "http://127.0.0.1:1455" + callbackPath + "?authorization_code=old&state=" + session.State
 	err = client.CompleteLogin(context.Background(), "acc-1", callback)
 	if err == nil {
 		t.Fatal("an expired code must fail")
@@ -200,7 +235,7 @@ func TestCompleteLoginAcceptsRefreshTokenOnlyExchange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
-	callback := "office-raccoon://auth/callback?code=c&state=" + session.State
+	callback := "http://127.0.0.1:1455" + callbackPath + "?authorization_code=c&state=" + session.State
 	if err := client.CompleteLogin(context.Background(), "acc-1", callback); err != nil {
 		t.Fatalf("a refresh-token-only exchange is usable: %v", err)
 	}
@@ -222,7 +257,7 @@ func TestCompleteLoginRejectsEmptyExchange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
-	callback := "office-raccoon://auth/callback?code=c&state=" + session.State
+	callback := "http://127.0.0.1:1455" + callbackPath + "?authorization_code=c&state=" + session.State
 	if err := client.CompleteLogin(context.Background(), "acc-1", callback); err == nil {
 		t.Fatal("an exchange with no tokens must fail")
 	}
@@ -235,7 +270,7 @@ func TestCompleteLoginRejectsEmptyExchange(t *testing.T) {
 // starting a login.
 func TestCompleteLoginWithoutRoundIsAnError(t *testing.T) {
 	client, _ := loginTestClient(t, func(http.ResponseWriter, *http.Request) {})
-	callback := "office-raccoon://auth/callback?code=c&state=whatever"
+	callback := "http://127.0.0.1:1455" + callbackPath + "?authorization_code=c&state=whatever"
 	if err := client.CompleteLogin(context.Background(), "acc-1", callback); err == nil {
 		t.Fatal("a callback with no round must be rejected")
 	}
@@ -296,5 +331,138 @@ func TestAdapterExposesBrowserLogin(t *testing.T) {
 	}
 	if adapter.ImportExport == nil {
 		t.Fatal("raccoon must expose import/export")
+	}
+}
+
+// TestParseCallbackAcceptsDesktopLegacyShape pins backward compatibility: a
+// link produced by the desktop client (which registers office-raccoon://) still
+// imports, even though this gateway no longer starts rounds in desktop mode.
+func TestParseCallbackAcceptsDesktopLegacyShape(t *testing.T) {
+	client, _ := loginTestClient(t, func(http.ResponseWriter, *http.Request) {})
+	session, err := client.StartLogin(context.Background(), "acc-1")
+	if err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	// The desktop shape spells the code parameter "code", not
+	// "authorization_code"; both must be understood.
+	desktop := "office-raccoon://auth/callback?code=desktop-code&state=" + session.State
+	code, err := parseCallbackCode(desktop, session.State)
+	if err != nil {
+		t.Fatalf("desktop legacy callback must parse: %v", err)
+	}
+	if code != "desktop-code" {
+		t.Fatalf("code = %q", code)
+	}
+}
+
+// TestParseCallbackPrefersLoopbackCodeParameter covers the two spellings
+// upstream uses: the loopback callback carries authorization_code, the desktop
+// one carries code. A link with both must not pick the wrong one.
+func TestParseCallbackPrefersLoopbackCodeParameter(t *testing.T) {
+	loopback := "http://127.0.0.1:1455" + callbackPath + "?authorization_code=loop-code&code=other&state=st"
+	code, err := parseCallbackCode(loopback, "st")
+	if err != nil {
+		t.Fatalf("parseCallbackCode: %v", err)
+	}
+	if code != "loop-code" {
+		t.Fatalf("code = %q, want the loopback authorization_code", code)
+	}
+}
+
+// TestLoopbackListenerReceivesCallback covers the self-completing path: when the
+// browser can reach the listener, the round finishes without any pasting.
+func TestLoopbackListenerReceivesCallback(t *testing.T) {
+	client, store := loginTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, exchangePath) {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"a-1","refresh_token":"r-1","user_id":"u-1"}}`))
+	})
+	session, err := client.StartLogin(context.Background(), "acc-1")
+	if err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	redirect, err := client.redirectURI()
+	if err != nil {
+		t.Fatalf("redirectURI: %v", err)
+	}
+	// Hit the listener exactly as the browser would.
+	callback := redirect + "?authorization_code=cb-code&state=" + session.State
+	resp, err := http.Get(callback)
+	if err != nil {
+		t.Fatalf("GET callback: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("callback status = %d", resp.StatusCode)
+	}
+	// The round must now be done, and the credential stored.
+	done, _, err := client.PollLogin(context.Background(), "acc-1")
+	if err != nil || !done {
+		t.Fatalf("poll after loopback callback: done=%v err=%v", done, err)
+	}
+	cred, err := DecodeCredential(store.items["acc-1"])
+	if err != nil {
+		t.Fatalf("decode stored credential: %v", err)
+	}
+	if cred.AccessToken != "a-1" || cred.RefreshToken != "r-1" {
+		t.Fatalf("credential = %+v", cred)
+	}
+}
+
+// TestLoopbackListenerRejectsUnknownState guards the listener: a callback whose
+// state belongs to no round must not spend its code.
+func TestLoopbackListenerRejectsUnknownState(t *testing.T) {
+	called := false
+	client, _ := loginTestClient(t, func(http.ResponseWriter, *http.Request) {
+		called = true
+	})
+	if _, err := client.StartLogin(context.Background(), "acc-1"); err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	redirect, err := client.redirectURI()
+	if err != nil {
+		t.Fatalf("redirectURI: %v", err)
+	}
+	resp, err := http.Get(redirect + "?authorization_code=x&state=unknown")
+	if err != nil {
+		t.Fatalf("GET callback: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatal("an unknown state must be refused")
+	}
+	if called {
+		t.Fatal("the exchange must not be attempted for an unknown state")
+	}
+}
+
+// TestRedirectURIHasPortAndStablePath pins the two constraints the authorize
+// page enforces: an explicit loopback port, and a stable path.
+func TestRedirectURIHasPortAndStablePath(t *testing.T) {
+	client, _ := loginTestClient(t, func(http.ResponseWriter, *http.Request) {})
+	first, err := client.redirectURI()
+	if err != nil {
+		t.Fatalf("redirectURI: %v", err)
+	}
+	parsed := mustParse(t, first)
+	if parsed.Port() == "" {
+		t.Fatalf("redirect must carry an explicit port: %s", first)
+	}
+	if parsed.Path != callbackPath {
+		t.Fatalf("redirect path = %q, want %q", parsed.Path, callbackPath)
+	}
+	if parsed.Hostname() != "127.0.0.1" {
+		t.Fatalf("redirect host = %q", parsed.Hostname())
+	}
+	// The listener is bound once and kept, so the redirect must not change
+	// between rounds (a stale popup must still reach this process).
+	second, err := client.redirectURI()
+	if err != nil {
+		t.Fatalf("redirectURI (second): %v", err)
+	}
+	if first != second {
+		t.Fatalf("redirect changed between calls: %q -> %q", first, second)
 	}
 }
