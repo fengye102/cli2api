@@ -323,3 +323,163 @@ func mustJSON(t *testing.T, value any) []byte {
 	}
 	return raw
 }
+
+// regionBlockedBody is Google's region-restriction rejection as Cloud Code
+// Assist returns it: HTTP 400 with FAILED_PRECONDITION.
+const regionBlockedBody = `{"error":{"code":400,"message":"User location is not supported for the API use.","status":"FAILED_PRECONDITION"}}`
+
+// TestClassifyRegionBlocked pins the classification of Google's region
+// restriction. It arrives as a 400, which the generic arm would blame on the
+// request; it must instead surface as an unavailable/infrastructure error with
+// an explanation naming the egress region as the cause.
+func TestClassifyRegionBlocked(t *testing.T) {
+	classified := Classify(400, regionBlockedBody)
+	if classified.Kind != accounts.KindUnavailable {
+		t.Fatalf("kind = %q, want %q", classified.Kind, accounts.KindUnavailable)
+	}
+	if classified.Status != 503 {
+		t.Fatalf("status = %d, want 503", classified.Status)
+	}
+	if classified.Message != locationBlockedMessage {
+		t.Fatalf("message = %q, want the region explanation", classified.Message)
+	}
+	// A region block is not a credential problem: refreshing must not be implied.
+	if strings.Contains(strings.ToLower(classified.Message), "api key") {
+		t.Fatalf("message must not blame the credential: %q", classified.Message)
+	}
+}
+
+// TestClassifyRegionBlockedStillReportsQuotaAndRateLimit guards the ordering:
+// the region arm must not swallow genuine quota/rate-limit rejections.
+func TestClassifyRegionBlockedStillReportsQuotaAndRateLimit(t *testing.T) {
+	if got := Classify(429, `{"error":{"code":429,"message":"Resource has been exhausted (e.g. check quota)."}}`); got.Kind != accounts.KindRateLimit {
+		t.Fatalf("429 kind = %q, want %q", got.Kind, accounts.KindRateLimit)
+	}
+	if got := Classify(402, `{"error":{"code":402,"message":"insufficient balance"}}`); got.Kind != accounts.KindQuota {
+		t.Fatalf("402 balance kind = %q, want %q", got.Kind, accounts.KindQuota)
+	}
+}
+
+// secretStore is a memoryStore that also serves app secrets, so the
+// region-egress lookup can be exercised.
+type secretStore struct {
+	memoryStore
+	secrets map[string]string
+}
+
+func (s *secretStore) GetSecret(_ context.Context, name string) (string, bool, error) {
+	value, ok := s.secrets[name]
+	return value, ok, nil
+}
+
+// TestRegionEgressPrefersDedicatedSecret checks the resolution order: the
+// Antigravity-scoped secret wins, and the global proxy_url is only a fallback.
+func TestRegionEgressPrefersDedicatedSecret(t *testing.T) {
+	client := NewClient(&secretStore{secrets: map[string]string{
+		regionEgressSecret: "socks5://127.0.0.1:17890",
+		"proxy_url":        "http://global:8080",
+	}})
+	if got := client.regionEgress(context.Background()); got != "socks5://127.0.0.1:17890" {
+		t.Fatalf("egress = %q, want the dedicated secret", got)
+	}
+
+	fallback := NewClient(&secretStore{secrets: map[string]string{"proxy_url": "http://global:8080"}})
+	if got := fallback.regionEgress(context.Background()); got != "http://global:8080" {
+		t.Fatalf("egress = %q, want the global proxy fallback", got)
+	}
+
+	// No store implementing SecretReader → no alternative egress, and the
+	// caller surfaces the explicit error rather than retrying blindly.
+	if got := NewClient(&memoryStore{}).regionEgress(context.Background()); got != "" {
+		t.Fatalf("egress = %q, want empty without a secret reader", got)
+	}
+}
+
+// TestDoOAuthChatRetriesThroughRegionEgress is the regression test for the
+// production failure: the gateway's own egress region is rejected, and the
+// configured region egress serves the request successfully.
+func TestDoOAuthChatRetriesThroughRegionEgress(t *testing.T) {
+	var directHits, egressHits int
+	// Direct egress: Google rejects the region.
+	blocked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		directHits++
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, regionBlockedBody)
+	}))
+	defer blocked.Close()
+	// Region egress: serves the request, answering with a Gemini SSE frame.
+	allowed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		egressHits++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"正常"}]}}]}`+"\n\n")
+	}))
+	defer allowed.Close()
+
+	client := NewClient(&secretStore{secrets: map[string]string{regionEgressSecret: allowed.URL}})
+	client.http = blocked.Client()
+
+	// Point the v1internal bases at the two test servers. Only the first base
+	// is used: a 4xx stops the environment walk, which is what triggers the
+	// region retry.
+	restore := swapV1Bases([]string{blocked.URL + "/v1internal"})
+	defer restore()
+
+	resp, _, err := client.doOAuthChat(context.Background(), "acc1", Credential{
+		Format: CredentialFormatOAuth, AuthMode: AuthModeOAuth,
+		RefreshToken: "1//refresh", AccessToken: "ya29.token", ProjectID: "proj-1",
+	}, translate.ChatRequest{Model: "gemini-2.5-flash", Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}}})
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	defer resp.Body.Close()
+	if directHits == 0 {
+		t.Fatal("the direct egress was never tried")
+	}
+	if egressHits == 0 {
+		t.Fatal("the region egress was never tried")
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "正常") {
+		t.Fatalf("relayed body = %q", body)
+	}
+}
+
+// TestDoOAuthChatRegionBlockedWithoutEgress surfaces the explicit explanation
+// instead of a bare 400 when no alternative egress is configured.
+func TestDoOAuthChatRegionBlockedWithoutEgress(t *testing.T) {
+	blocked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, regionBlockedBody)
+	}))
+	defer blocked.Close()
+
+	client := NewClient(&memoryStore{})
+	client.http = blocked.Client()
+	restore := swapV1Bases([]string{blocked.URL + "/v1internal"})
+	defer restore()
+
+	_, _, err := client.doOAuthChat(context.Background(), "acc1", Credential{
+		Format: CredentialFormatOAuth, AuthMode: AuthModeOAuth,
+		RefreshToken: "1//refresh", AccessToken: "ya29.token", ProjectID: "proj-1",
+	}, translate.ChatRequest{Model: "gemini-2.5-flash", Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}}})
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	providerErr, ok := err.(*providers.Error)
+	if !ok {
+		t.Fatalf("err type = %T", err)
+	}
+	if providerErr.Message != locationBlockedMessage {
+		t.Fatalf("message = %q, want the region explanation", providerErr.Message)
+	}
+	if providerErr.Kind != accounts.KindUnavailable {
+		t.Fatalf("kind = %q, want %q", providerErr.Kind, accounts.KindUnavailable)
+	}
+}
+
+// swapV1Bases replaces the v1internal candidate list for one test.
+func swapV1Bases(bases []string) func() {
+	original := v1BaseURLs
+	v1BaseURLs = bases
+	return func() { v1BaseURLs = original }
+}

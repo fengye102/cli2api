@@ -6,10 +6,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/caigee-cmd/cli2api/internal/accounts"
+	"github.com/caigee-cmd/cli2api/internal/providers"
 	"github.com/caigee-cmd/cli2api/internal/translate"
 )
 
@@ -242,6 +245,148 @@ func TestModelsFallbackWithoutCredential(t *testing.T) {
 	}
 	if len(models) != 5 {
 		t.Fatalf("fallback models = %d, want 5", len(models))
+	}
+}
+
+// TestModelsRemoteCatalogCategories pins the live /model_catalog shape: `data`
+// is an object carrying categories[].models[], not a flat array. Parsing the
+// array form only is what broke the account probe in production.
+func TestModelsRemoteCatalogCategories(t *testing.T) {
+	llmHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/model_catalog" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"code":0,"data":{"categories":[
+			{"type":"chat","default_model":"raccoon-x","models":[
+				{"name":"raccoon-x","displayName":"Raccoon X","description":"Raccoon-Work",
+				 "tags":["vision"],"context_window":500000,"max_tokens":90000,
+				 "billing_multiplier":1,"billing_effective_multiplier":0.5}
+			]},
+			{"type":"chat","models":[
+				{"name":"sn-flash","display_name":"SenseNova Flash","params":{"context_window":256000,"max_tokens":63999}}
+			]}
+		]}}`)
+	}
+	c, _ := newTestClient(t, llmHandler, nil)
+	models, err := c.Models(context.Background(), "acc1")
+	if err != nil {
+		t.Fatalf("models: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("models = %d (%+v), want 2", len(models), models)
+	}
+	if models[0].NativeModel != "raccoon-x" || models[0].DisplayName != "Raccoon X" {
+		t.Fatalf("models[0] = %+v", models[0])
+	}
+	// snake_case fields nested under `params` must still resolve.
+	if models[1].NativeModel != "sn-flash" || models[1].DisplayName != "SenseNova Flash" {
+		t.Fatalf("models[1] = %+v", models[1])
+	}
+	if models[1].Capabilities.ContextWindow != 256000 || models[1].Capabilities.MaxOutput != 63999 {
+		t.Fatalf("params caps = %+v", models[1].Capabilities)
+	}
+	// Vision is inferred from tags when there is no explicit boolean.
+	if !models[0].Capabilities.Images || models[1].Capabilities.Images {
+		t.Fatalf("images = %+v", []bool{models[0].Capabilities.Images, models[1].Capabilities.Images})
+	}
+	// Effective (post-promotion) multiplier wins over the list price.
+	if models[0].Credits != "x0.5 credits" {
+		t.Fatalf("credits = %q, want x0.5 credits", models[0].Credits)
+	}
+	if models[1].Credits != "" {
+		t.Fatalf("credits = %q, want empty when the catalog gives none", models[1].Credits)
+	}
+}
+
+// TestModelsRemoteCatalogDeduplicatesCategories covers repeated ids across
+// categories: the first occurrence wins, matching the upstream client.
+func TestModelsRemoteCatalogDeduplicatesCategories(t *testing.T) {
+	llmHandler := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":{"categories":[
+			{"models":[{"name":"dup","displayName":"First"}]},
+			{"models":[{"name":"dup","displayName":"Second"},{"name":"","displayName":"nameless"}]}
+		]}}`)
+	}
+	c, _ := newTestClient(t, llmHandler, nil)
+	models, err := c.Models(context.Background(), "acc1")
+	if err != nil {
+		t.Fatalf("models: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("models = %+v, want 1 (dedup + drop nameless)", models)
+	}
+	if models[0].DisplayName != "First" {
+		t.Fatalf("display = %q, want First", models[0].DisplayName)
+	}
+}
+
+// TestModelsLiveCatalogFixture parses a captured production /model_catalog
+// response. This is the exact shape that broke the account probe: `data` is an
+// object, models live under categories[].models[], and the numeric fields are
+// snake_case inside `params`. The fixture is real upstream output, so a future
+// change to the parser cannot silently regress against it.
+func TestModelsLiveCatalogFixture(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "model_catalog_live.json"))
+	if err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	llmHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/model_catalog" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(raw)
+	}
+	c, _ := newTestClient(t, llmHandler, nil)
+	models, err := c.Models(context.Background(), "acc1")
+	if err != nil {
+		t.Fatalf("models: %v", err)
+	}
+	if len(models) != 9 {
+		t.Fatalf("models = %d, want 9", len(models))
+	}
+	byID := map[string]providers.ModelInfo{}
+	for _, m := range models {
+		byID[m.NativeModel] = m
+	}
+
+	work, ok := byID["raccoon-8c4485"]
+	if !ok {
+		t.Fatal("raccoon-8c4485 missing")
+	}
+	if work.DisplayName != "Raccoon-Work" {
+		t.Fatalf("display = %q", work.DisplayName)
+	}
+	// Numeric fields come from params.context_window / params.max_tokens.
+	if work.Capabilities.ContextWindow != 1000000 || work.Capabilities.MaxOutput != 100000 {
+		t.Fatalf("caps = %+v", work.Capabilities)
+	}
+	// Vision is inferred from the tags array.
+	if !work.Capabilities.Images {
+		t.Fatal("raccoon-8c4485 should report image support via tags")
+	}
+
+	// A limited-free model carries an explicit zero effective multiplier.
+	if lite, ok := byID["sn-sensenova-6-8-flash"]; ok {
+		if !lite.Free {
+			t.Fatalf("sn-sensenova-6-8-flash should be free: %+v", lite)
+		}
+		if lite.Credits != "" {
+			t.Fatalf("free model credits = %q, want empty", lite.Credits)
+		}
+	} else {
+		t.Fatal("sn-sensenova-6-8-flash missing")
+	}
+
+	// A discounted model reports its effective multiplier.
+	if glm, ok := byID["sn-glm-5-3"]; ok {
+		if glm.Credits != "x0.75 credits" {
+			t.Fatalf("credits = %q, want x0.75 credits", glm.Credits)
+		}
+	} else {
+		t.Fatal("sn-glm-5-3 missing")
 	}
 }
 

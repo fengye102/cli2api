@@ -106,9 +106,31 @@ func (c *Client) doOAuthChat(ctx context.Context, accountID string, credential C
 	if err != nil {
 		return nil, providers.ResolvedChat{}, err
 	}
+	resp, resolved, err := c.sendOAuthChat(ctx, client, credential, payload, model)
+	if err == nil {
+		return resp, resolved, nil
+	}
+	// Region restriction: Google will not serve this egress IP's country. The
+	// request and the account are both fine, so retry once through a
+	// supported-region egress when one is configured. Without it the caller gets
+	// the explicit explanation from Classify rather than a misleading 400.
+	if locationBlockedError(err) {
+		if egress := c.regionEgress(ctx); egress != "" {
+			if altClient, altErr := c.httpClientWithProxy(egress); altErr == nil {
+				if altResp, altResolved, altErr2 := c.sendOAuthChat(ctx, altClient, credential, payload, model); altErr2 == nil {
+					return altResp, altResolved, nil
+				}
+			}
+		}
+	}
+	return nil, providers.ResolvedChat{}, err
+}
+
+// sendOAuthChat runs one pass over the v1internal environments with the given
+// client. The three environments are tried in order: 429/5xx/transport failures
+// move to the next one, a 4xx is this request's own problem and does not.
+func (c *Client) sendOAuthChat(ctx context.Context, client *http.Client, credential Credential, payload []byte, model string) (*http.Response, providers.ResolvedChat, error) {
 	var lastErr error
-	// The three environments are tried in order: 429/5xx/transport failures move
-	// to the next one, a 4xx is this request's own problem and does not.
 	for _, base := range v1BaseURLs {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, streamGenerateURL(base), bytes.NewReader(payload))
 		if err != nil {
@@ -139,6 +161,18 @@ func (c *Client) doOAuthChat(ctx context.Context, accountID string, credential C
 		lastErr = &providers.Error{Kind: "unavailable", Status: 502, Message: "Antigravity 的所有环境均不可用"}
 	}
 	return nil, providers.ResolvedChat{}, lastErr
+}
+
+// locationBlockedError reports whether an error came from Google's region
+// restriction, so the caller can retry through a supported-region egress.
+func locationBlockedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if providerErr, ok := err.(*providers.Error); ok {
+		return providerErr.Message == locationBlockedMessage
+	}
+	return false
 }
 
 // rewriteGeminiStream wraps the upstream body so callers see chat SSE.

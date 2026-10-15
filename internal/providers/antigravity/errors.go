@@ -10,6 +10,26 @@ import (
 
 var bearerPattern = regexp.MustCompile(`(?i)bearer\s+\S+`)
 
+// locationBlockedText reports whether an upstream body is Google's
+// region-restriction rejection. Cloud Code Assist refuses requests from
+// unsupported countries with "User location is not supported for the API use."
+// and FAILED_PRECONDITION. It is not a credential or quota problem: the request
+// is well formed and the account is healthy, but the gateway's egress region is
+// one Google will not serve. Retrying, refreshing tokens, or rotating accounts
+// all change nothing — only a supported-region egress does.
+func locationBlockedText(text string) bool {
+	return strings.Contains(text, "user location is not supported") ||
+		strings.Contains(text, "location is not supported")
+}
+
+// locationBlockedMessage is the operator-facing explanation. It names the cause
+// and the fix, because the raw upstream text ("location is not supported") reads
+// like a client bug rather than an infrastructure one.
+const locationBlockedMessage = "Antigravity 拒绝当前出口地区（User location is not supported）：" +
+	"Google 不对该出口 IP 所在地区提供服务。请给该账号配置受支持地区的代理" +
+	"（账号级 proxy_url，http/socks5 均可），或把网关出口换到受支持地区后重试。" +
+	"这不是账号或额度问题，换账号、刷新令牌都不会生效。"
+
 func redactSecrets(text string) string {
 	if text == "" {
 		return text
@@ -24,6 +44,16 @@ func redactSecrets(text string) string {
 func Classify(status int, body string) providers.ClassifiedError {
 	safe := redactSecrets(strings.TrimSpace(body))
 	text := strings.ToLower(safe)
+	// Region restriction is checked before the generic 400 arm: Google returns
+	// it as FAILED_PRECONDITION/400, which would otherwise be classified as a
+	// bad request and blame the caller for an infrastructure problem.
+	if locationBlockedText(text) {
+		return providers.ClassifiedError{
+			Kind:    accounts.KindUnavailable,
+			Status:  503,
+			Message: locationBlockedMessage,
+		}
+	}
 	switch {
 	case status == 401 || status == 403 ||
 		strings.Contains(text, "invalid api key") ||

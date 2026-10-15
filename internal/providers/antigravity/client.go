@@ -23,6 +23,12 @@ type Store interface {
 	Observe(ctx context.Context, id, remoteUID, status, lastError, lastKind string) error
 }
 
+// regionEgressSecret is the app secret naming a proxy to use when Google
+// rejects the gateway's own egress region. It is separate from `proxy_url` so
+// the region workaround can be scoped to Antigravity without rerouting every
+// other provider.
+const regionEgressSecret = "antigravity_region_egress"
+
 // SecretReader is optional. Missing it means no global proxy.
 type SecretReader interface {
 	GetSecret(context.Context, string) (string, bool, error)
@@ -107,6 +113,13 @@ func (c *Client) httpClient(ctx context.Context, accountID string) (*http.Client
 	if err != nil {
 		return nil, err
 	}
+	return c.httpClientWithProxy(rawProxy)
+}
+
+// httpClientWithProxy builds a client for an explicit proxy setting ("" keeps
+// the direct transport). Used both by the normal path and by the region-egress
+// retry, so both share one transport cache.
+func (c *Client) httpClientWithProxy(rawProxy string) (*http.Client, error) {
 	client := *c.http
 	transport, err := c.transports.Get(rawProxy)
 	if err != nil {
@@ -116,6 +129,31 @@ func (c *Client) httpClient(ctx context.Context, accountID string) (*http.Client
 		client.Transport = transport
 	}
 	return &client, nil
+}
+
+// regionEgress returns the proxy to retry through when Google rejects the
+// default egress region. It reads the dedicated `antigravity_region_egress`
+// secret first, so an operator can route Antigravity through a supported region
+// without disturbing every other provider's proxy setting; the global
+// `proxy_url` is the fallback.
+//
+// An empty return means "no alternative egress configured" — the caller then
+// surfaces the explicit region-restriction error instead of retrying.
+func (c *Client) regionEgress(ctx context.Context) string {
+	store, ok := c.store.(SecretReader)
+	if !ok {
+		return ""
+	}
+	if value, found, err := store.GetSecret(ctx, regionEgressSecret); err == nil && found {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	value, found, err := store.GetSecret(ctx, "proxy_url")
+	if err != nil || !found {
+		return ""
+	}
+	return strings.TrimSpace(value)
 }
 
 func (c *Client) credential(ctx context.Context, accountID string) (Credential, error) {
