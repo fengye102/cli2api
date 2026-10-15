@@ -296,23 +296,34 @@ var Zhipu = ProviderDescriptor{
 	DefaultRegion: "cn",
 }
 
-// Raccoon descriptor (小浣熊 / SenseTime). In-process OpenAI-compatible
-// gateway; auth is an imported access/refresh token pair. No browser login.
+// Raccoon descriptor (小浣熊 / SenseTime). In-process provider with two ways in,
+// one credential shape:
+//   - browser login: the official desktop-login page redirects to a
+//     custom-scheme callback (office-raccoon://auth/callback), which only a
+//     client that registered that scheme can receive. The console therefore
+//     finishes it from a pasted callback URL (BrowserLogin).
+//   - credential import / pasted token: the access+refresh token pair the web
+//     client already holds, including the desktop client's shared auth.json.
+//
+// There is no personal access token here; the "PAT" tab pastes the web client's
+// access token (or the whole auth.json), which is the same credential shape the
+// browser round produces.
 var Raccoon = ProviderDescriptor{
 	ID:                "raccoon",
 	Label:             "Raccoon",
 	Runtime:           RuntimeInProcess,
-	AuthTypes:         []AuthType{AuthPAT},
+	AuthTypes:         []AuthType{AuthOAuth, AuthPAT},
 	CredentialFormats: []string{"raccoon-credential-v1"},
 	Capabilities: ProviderCapabilities{
 		Chat: true, Stream: true, Tools: true, Images: true, Reasoning: true,
-		ModelCatalog: true, Usage: true, Login: false, BrowserLogin: false,
+		ModelCatalog: true, Usage: true, Login: true, BrowserLogin: true,
 		PATLogin: true, ImportExport: true,
 	},
 	Regions: []RegionDescriptor{
 		{
 			ID: "global", Label: "Global",
 			ChatBase: "https://xiaohuanxiong.com/api/web/llm/v2",
+			AuthBase: "https://xiaohuanxiong.com/api/web/auth/v1",
 		},
 	},
 	DefaultRegion: "global",

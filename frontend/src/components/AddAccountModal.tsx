@@ -198,13 +198,17 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
   // so the wizard opens on the PAT tab instead of the browser tab.
   const hasBrowserLogin = activeOption?.descriptor.capabilities?.browser_login !== false
   const showDropSystem = activeOption?.provider === 'workbuddy'
-  // Providers whose callback redirect uses a custom scheme the server can
-  // never receive (trae / devin / codex / zcode) need the pasted callback URL.
+  // Providers whose callback redirect can never reach this process need the
+  // pasted callback URL: the desktop clients (trae / devin / codex / zcode)
+  // register a custom scheme, and Antigravity's loopback port lives inside the
+  // container, so a browser running on another machine cannot hit it either.
   const showCallbackPaste =
     activeOption?.provider === 'trae' ||
     activeOption?.provider === 'devin' ||
     activeOption?.provider === 'codex' ||
-    activeOption?.provider === 'zcode'
+    activeOption?.provider === 'zcode' ||
+    activeOption?.provider === 'raccoon' ||
+    activeOption?.provider === 'antigravity'
   const busy = phase === 'busy' || phase === 'polling'
   const settingsLocked = Boolean(createdId.current) || busy
   const isDone = phase === 'done'
@@ -447,6 +451,8 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
       else if (activeOption.descriptor.id === 'trae') bundle.format = 'trae-oauth-v1'
       else if (activeOption.descriptor.id === 'devin') bundle.format = 'devin-session-v1'
       else if (activeOption.descriptor.id === 'command') bundle.format = 'command-key-v1'
+      else if (activeOption.descriptor.id === 'raccoon') bundle.format = 'raccoon-credential-v1'
+      else if (activeOption.descriptor.id === 'antigravity') bundle.format = 'antigravity-key-v1'
       else bundle.format = 'qoder-native-v1'
     }
     try {
@@ -508,9 +514,11 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
     : tab === 'pat'
       ? t(activeOption?.provider === 'command'
           ? 'wizardPatLeadCommand'
-          : activeOption?.region === 'cn' && activeOption?.provider === 'qoder'
-            ? 'wizardPatLeadCN'
-            : 'wizardPatLead')
+          : activeOption?.provider === 'raccoon'
+            ? 'wizardPatLeadRaccoon'
+            : activeOption?.region === 'cn' && activeOption?.provider === 'qoder'
+              ? 'wizardPatLeadCN'
+              : 'wizardPatLead')
       : t('wizardImportLead')
 
   return (

@@ -116,6 +116,10 @@ data: [DONE]
 type memStore struct {
 	items map[string][]byte
 	acc   map[string]string // accountID -> proxy
+	// formats/observed record what the login path wrote, so tests can assert on
+	// the stored format and the reported status.
+	formats  map[string]string
+	observed map[string]string
 }
 
 func (s *memStore) Get(ctx context.Context, id string) (accounts.Account, error) {
@@ -127,15 +131,27 @@ func (s *memStore) Get(ctx context.Context, id string) (accounts.Account, error)
 }
 
 func (s *memStore) LoadCredentialPayload(ctx context.Context, accountID string) (string, []byte, error) {
-	return "raccoon-credential-v1", s.items[accountID], nil
+	format := "raccoon-credential-v1"
+	if s.formats != nil && s.formats[accountID] != "" {
+		format = s.formats[accountID]
+	}
+	return format, s.items[accountID], nil
 }
 
 func (s *memStore) SaveCredentialPayload(ctx context.Context, accountID, format string, payload []byte) error {
 	s.items[accountID] = payload
+	if s.formats == nil {
+		s.formats = map[string]string{}
+	}
+	s.formats[accountID] = format
 	return nil
 }
 
 func (s *memStore) Observe(ctx context.Context, id, remoteUID, status, lastError, lastKind string) error {
+	if s.observed == nil {
+		s.observed = map[string]string{}
+	}
+	s.observed[id] = status
 	return nil
 }
 

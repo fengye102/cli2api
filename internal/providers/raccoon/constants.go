@@ -11,6 +11,13 @@ package raccoon
 // Version is not pinned to a client build: the web gateway accepts any
 // request that carries a valid bearer token.
 
+// CredentialFormat is the canonical storage payload name for this provider.
+const CredentialFormat = "raccoon-credential-v1"
+
+// siteBaseURL is the web origin the desktop-login authorize page lives on.
+// The auth gateway and the LLM gateway are both paths under this same origin.
+const siteBaseURL = "https://xiaohuanxiong.com"
+
 // LLM gateway base for chat and catalog.
 const llmBaseURL = "https://xiaohuanxiong.com/api/web/llm/v2"
 

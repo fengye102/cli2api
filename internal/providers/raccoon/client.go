@@ -46,9 +46,13 @@ type Client struct {
 	mu       sync.Mutex
 	catalogs map[string]catalogCache
 
-	// llmBase / authBase overrides for tests.
+	// llmBase / authBase / siteBase overrides for tests.
 	llmBase  string
 	authBase string
+	siteBase string
+
+	// rounds holds the in-flight browser-login round per account (login.go).
+	rounds map[string]*loginRound
 }
 
 func NewClient(store Store) *Client {
@@ -61,8 +65,10 @@ func NewClient(store Store) *Client {
 			},
 		},
 		catalogs: map[string]catalogCache{},
+		rounds:   map[string]*loginRound{},
 		llmBase:  llmBaseURL,
 		authBase: authBaseURL,
+		siteBase: siteBaseURL,
 	}
 }
 
@@ -193,8 +199,9 @@ func (c *Client) Probe(ctx context.Context, accountID string) (providers.Account
 	return providers.AccountHealth{Ready: true, Hot: true, UID: credential.UserID}, nil
 }
 
-// Adapter wires the capability surface. Login is absent: the credential is an
-// imported/refreshable token pair.
+// Adapter wires the capability surface. Login is the browser round
+// (login.go): Raccoon's own web client signs in through a custom-scheme
+// callback, so the console finishes it from a pasted callback URL.
 func (c *Client) Adapter() providers.Adapter {
 	return providers.Adapter{
 		ID:           "raccoon",
@@ -202,6 +209,7 @@ func (c *Client) Adapter() providers.Adapter {
 		Chat:         c,
 		Models:       c,
 		Classifier:   classifier{},
+		Login:        c,
 		ImportExport: importer{},
 		Prober:       c,
 	}
@@ -215,14 +223,4 @@ type classifier struct{}
 
 func (classifier) Classify(status int, body string) providers.ClassifiedError {
 	return Classify(status, body)
-}
-
-type importer struct{}
-
-func (importer) ValidateImport(payload []byte) error {
-	return ValidateCredential(payload)
-}
-
-func (importer) Export(ctx context.Context, accountID string) (map[string]any, error) {
-	return nil, providers.ErrUnsupported
 }
