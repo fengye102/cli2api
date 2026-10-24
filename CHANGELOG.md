@@ -3,6 +3,278 @@
 Published user-facing notes for GitHub Releases and the console update page.
 Write upcoming notes as bilingual files in `changelog/unreleased/`.
 
+## 0.7.9 - 2026-10-24
+
+### English
+
+- Request-log retention is configurable via `CLI2API_LOG_RETENTION_DAYS` (default 7) and `CLI2API_LOG_MAX_ROWS` (default 20000); invalid values fall back so pruning cannot be disabled by typo. Based on external contribution [#336](https://github.com/caigee-cmd/cli2api/pull/336) by [@YunMo-yanyu](https://github.com/YunMo-yanyu).
+- Extend the existing **Usage** console page with a **Cost** tab: quota consumed across providers, DeepSeek list-price equivalent cost (peak / off-peak), stacked cost-over-time chart, per-model breakdown, and the official price table. Stats tab (requests / latency / tokens / credits by model · account · provider) is unchanged. Adds `deepseek-flash` to the pricing catalog. Credits reuse the `#361` `request_usage_details` fallback so numbers match the Stats tab. Based on external contribution [#336](https://github.com/caigee-cmd/cli2api/pull/336) by [@YunMo-yanyu](https://github.com/YunMo-yanyu).
+- WorkBuddy streaming requests now fail over when the first response byte never arrives within `WORKBUDDY_STREAM_TTFB_MS` (aligned with Qoder’s first-byte timeout), without dropping the existing 401 token-refresh path. Based on external contribution [#336](https://github.com/caigee-cmd/cli2api/pull/336) by [@YunMo-yanyu](https://github.com/YunMo-yanyu).
+
+### 中文
+
+- 请求日志保留可通过 `CLI2API_LOG_RETENTION_DAYS`（默认 7 天）与 `CLI2API_LOG_MAX_ROWS`（默认 20000 行）配置；非法值回退默认，避免误配关掉清理。基于外部贡献 [#336](https://github.com/caigee-cmd/cli2api/pull/336)（[@YunMo-yanyu](https://github.com/YunMo-yanyu)）。
+- 在现有「用量」页增加 **费用** 选项卡：跨供应商订阅额度、DeepSeek 官方列表价折合费用（高峰/闲时）、费用趋势图、按模型明细与官方价格表。统计选项卡（按模型·账号·供应商的请求/延迟/token/额度）保持不变。价格目录补上 `deepseek-flash`。额度汇总沿用 #361 的 `request_usage_details` 回退，与统计页数字一致。基于外部贡献 [#336](https://github.com/caigee-cmd/cli2api/pull/336)（[@YunMo-yanyu](https://github.com/YunMo-yanyu)）。
+- WorkBuddy 流式请求在 `WORKBUDDY_STREAM_TTFB_MS` 内收不到首字节时会切换账号（对齐 Qoder 首字节超时），并保留原有 401 刷新 token 路径。基于外部贡献 [#336](https://github.com/caigee-cmd/cli2api/pull/336)（[@YunMo-yanyu](https://github.com/YunMo-yanyu)）。
+
+## 0.7.8 - 2026-10-24
+
+### English
+
+- Access page: rename nav to Access & try / 接入与调试, and split into Chat (single-turn streaming) and Native API (playground + curl) tabs with shared account, model, and Base URL.
+- Providers catalog: keep「自定义」reasoning controls from stretching desktop table columns, and stack label + select on mobile cards.
+- Align Qoder Cosy fingerprint with hub v1.7.3: CLI 1.1.75, desktop Cosy-Version 0.4.8, undici User-Agent, business/scene/clientip headers, lowercase `agree` data-policy; machineos on all COSY requests, hostname SSE-only.
+- Bump Codex outbound cloaking User-Agent to official stable `0.164.0`.
+- Pass through inbound `X-Codex-Turn-Metadata`, `X-Codex-Turn-State`, and `X-Codex-Window-Id` on Codex OAuth (non-SIWC) upstream requests, matching CLIProxyAPI’s narrow EnsureHeader set.
+
+### 中文
+
+- 接入页：侧栏改名为「接入与调试」，拆成「对话」（单轮流式）与「原生 API」（调试台 + curl）两个页签，账号、模型和 Base URL 共用。
+- 模型目录：自定义推理强度控件不再撑宽桌面表格列；移动端卡片改为标签在上、选择器独占一行。
+- Qoder Cosy 指纹对齐 hub v1.7.3：CLI 1.1.75、桌面签到 Cosy-Version 0.4.8、undici User-Agent、business/scene/clientip 头、data-policy 小写 `agree`；machineos 全 COSY 请求携带，hostname 仅 SSE。
+- Codex 出站伪装 User-Agent 升至官方稳定版 `0.164.0`。
+- Codex OAuth（非 SIWC）上游透传入站 `X-Codex-Turn-Metadata` / `X-Codex-Turn-State` / `X-Codex-Window-Id`，范围与 CLIProxyAPI EnsureHeader 一致、不扩大。
+
+## 0.7.7 - 2026-10-24
+
+### English
+
+- Model catalogs now expose the image-input capability each provider already reports (`WorkBuddy.supportsImages`, QwenWork `is_vl`, Devin and Codex modalities) as `supports_images` on `/v1/models` and `/api/models`. The field appears only when the provider declares support; a route merged across regions keeps it only when every region declares it; Qoder mirrors the worker catalog's `is_vl` when present.
+- The documented image boundary now matches the upstream catalogs: WorkBuddy's DeepSeek V4 / V4.1, GLM, Kimi, and other `supportsImages` models accept images through the gateway, while Trae, Command, and Zhipu do not declare image input.
+- Overview and Usage get looser mobile density: stacked label/value pairs, card lists for dense tables on small screens, and stronger horizontal scroll on desktop tables—without heavier borders.
+- When a new release is available, the sidebar update entry keeps its accent styling and adds a light GSAP left-right nudge every few seconds (skipped under prefers-reduced-motion).
+
+### 中文
+
+- 模型目录新增 `supports_images`：把各 Provider 已解析到的图片能力（WorkBuddy `supportsImages`、QwenWork `is_vl`、Devin 与 Codex 的模态声明）透出到 `/v1/models` 与 `/api/models`。只有上游明确声明时才出现；多地域合并的路由要求每个地域都声明；Qoder 在 worker 目录返回 `is_vl` 时同步透出。
+- 文档里的图片能力边界与上游目录对齐：WorkBuddy 的 DeepSeek V4 / V4.1、GLM、Kimi 等 `supportsImages` 模型可以通过网关识图；Trae、Command、Zhipu 未声明图片输入。
+- Overview / Usage 小屏疏密度：标签与数值上下排、密集表格改卡片列表，桌面加强横向滚动；不加粗边框。
+- 有新版本时，侧栏左下角更新入口保留 accent，并用很轻的 GSAP 左右晃一下（每隔几秒；减动效时只留颜色/圆点）。
+
+## 0.7.6 - 2026-10-24
+
+### English
+
+- Codex outer / CLI OAuth now proactively refreshes with a 96-hour lead (aligned with CLIProxyAPI `CodexOuterRefreshLead`), while Sign in with ChatGPT (SIWC) keeps the short 5-minute lead—so the nominal 10-day JWT is renewed before early upstream invalidation without changing SIWC behavior.
+- Codex model catalog adds `gpt-6.1-sol` (GPT-6.1-Sol) from the upstream client model list, with the same slim fields as other `gpt-*` entries.
+- Add QwenWork CN and Global daily check-in: account cards now expose the manual action and the off-by-default automatic switch, with per-account and provider default times shared with the existing scheduler.
+- QwenWork check-in tries the desktop client's `daily-check-in` claim API first, then falls back to today's server-granted free credits: CN reads the daily wallet balance, Global reports the gateway gap (claim route 404) instead of a fake success.
+
+### 中文
+
+- Codex outer / CLI OAuth 主动刷新提前量对齐 CLIProxyAPI 的 `CodexOuterRefreshLead`（96 小时），Sign in with ChatGPT（SIWC）仍保持 5 分钟短 lead，以便在名义 10 天 JWT 被上游提前作废前续期，且不改变 SIWC 行为。
+- Codex 模型目录新增上游客户端列表中的 `gpt-6.1-sol`（GPT-6.1-Sol），字段结构与其它 `gpt-*` 条目一致。
+- 新增 QwenWork 国内版/国际版每日签到：账号卡片提供手动签到和默认关闭的自动签到开关，沿用现有的账号级/供应商级签到时间调度。
+- QwenWork 签到先调用桌面客户端的每日签到领取接口，接口未开放时改为核对当日服务端发放的免费积分：国内版读取钱包日额度，国际版明确记录网关未开放的原因，不伪造成功。
+
+## 0.7.5 - 2026-10-23
+
+### English
+
+- Scheduled check-in and WorkBuddy keepalive now rate-limit across accounts: each 30s maintenance tick handles at most 2 due accounts, with ~2s + small FNV jitter between them, so a large AutoCheckin fleet no longer bursts upstream in one tick after the configured time (or after 22:00 for keepalive).
+
+### 中文
+
+- 定时签到与 WorkBuddy Keepalive 现按跨账号限速：每个 30 秒 maintenance tick 最多处理 2 个到期账号，账号之间约 2 秒并加小幅 FNV jitter，避免大量 AutoCheckin 账号在配置时刻（或 Keepalive 的 22:00）后同一 tick 背靠背打上游。
+
+## 0.7.4 - 2026-10-23
+
+### English
+
+- Non-lite Codex requests that include tools now preserve an explicit `parallel_tool_calls: false` from the caller instead of forcing `true` (aligned with CLIProxyAPI). Absent values still default to `true`.
+- Codex credentials that enable `use_siwc` now keep both the outer ChatGPT OAuth and SIWC partitions. Requests whose User-Agent identifies an official Codex client (`codex-desktop`, `Codex Desktop`, `codex-rs`, `codex_cli_rs`, `codex-tui`, `codex_exec`) ignore `use_siwc`, use the outer token, and fail closed with 401 when the outer `access_token` is missing; refresh on that path only updates the outer partition.
+- Overview now shows a credit-expiry distribution: credits grouped by the calendar day they lapse, one colour per account, plus a soonest-expiry table (numeric columns centred) with the daily burn rate needed to spend each batch before it expires (FEFO). Already-expired packages that still hold remain appear in a dedicated bucket.
+- Overview adds a usage breakdown table with token split (prompt / completion / total), prefix-cache hit rate, error count and latency, switchable between account / model / realm dimensions and sortable by total tokens, requests, errors or latency, following the selected window (1h / 24h / 7d / 30d / custom). The 30s / visibility refresh quietly reloads this panel with the traffic chart.
+- Overview adds a credit deduction history that sums upstream `usage.credit` per account and per model, with KPI tiles for credits deducted, matched tokens, average credits per 1M tokens, valid samples and cache hit rate; requests without a credit reading are excluded and nothing is back-filled, model rates come from the regional price catalog. Credit SQL shares one nullable expression with the #361 zero-coalesced form.
+- Overview time switcher gains a **Today** option (calendar day since local midnight → now), placed before 1h.
+- Overview now defaults to the Today window on load (was 24h).
+- WorkBuddy payload sanitization now rewrites DeepSeek Harness identity sentences and the DSH Web GUI paragraph (and reduces the `DeepSeek Harness` brand prose) on system / developer / assistant messages, matching upstream 11-128 channel-fingerprint fixes. User and tool messages stay untouched.
+- WorkBuddy chat no longer treats every post-401 token refresh failure as `login_required`: only real session-dead / auth refresh failures keep that path; transport and 5xx refresh errors stay `unavailable` with a short pool cooldown and a diagnostic Observe entry.
+
+### 中文
+
+- 非 lite 且带 tools 的 Codex 请求会保留调用方显式传入的 `parallel_tool_calls: false`，不再强制改成 `true`（与 CLIProxyAPI 对齐）；未传时仍默认 `true`。
+- 启用 `use_siwc` 的 Codex 凭据会同时保留 outer ChatGPT OAuth 与 SIWC 分区。入站 User-Agent 识别为官方 Codex 客户端（`codex-desktop` / `Codex Desktop` / `codex-rs` / `codex_cli_rs` / `codex-tui` / `codex_exec`）时忽略 `use_siwc`、改用 outer token；缺少 outer `access_token` 则直接 401，且该路径下的刷新只更新 outer。
+- 概览新增「积分到期分布」：按自然日聚合各账号即将失效的积分，颜色区分账号；并附最近到期提醒表（数字列居中），给出该日到期积分与到期前需要的日均消耗（FEFO）。过期但仍有余额的包单独成桶。
+- 概览新增「用量明细」：按维度展示 token 构成（Prompt / Completion / 合计）、前缀缓存命中率、失败数与延迟，可在账号 / 模型 / 域之间切换，并支持按合计 Token、请求数、失败数、平均延迟排序，跟随上方所选时间窗口（1 小时 / 24 小时 / 7 天 / 30 天 / 自定义）。30 秒 / 切回可见时与流量图一并 quiet 刷新。
+- 概览新增「积分扣除历史」：按账号与模型汇总上游 `usage.credit`，顶部 KPI 展示扣除积分、匹配 Token、平均积分 / 1M Token、有效样本与缓存命中率；未观测到积分的请求不计入、不做任何回填，模型倍率取自区域价格目录。积分 SQL 与 #361 收敛为可空 / 补零两种包装。
+- 概览页顶部时间切换新增「今天」选项（按本地零点到当前的日历日统计），排在「1小时」之前。
+- 概览页默认时间窗口改为「今天」（原为 24 小时）。
+- WorkBuddy 出站清洗对齐上游 11-128 渠道指纹修复：对 system / developer / assistant 改写 DeepSeek Harness 自我介绍句与 DSH Web GUI 描述段，并将散文中的 `DeepSeek Harness` 缩为 `DeepSeek`；user / tool 消息保持原样。
+- WorkBuddy 聊天在 401 后刷新 token 失败时不再一律标成 `login_required`：仅真实 session-dead / auth 刷新失败保留该路径；运输错误与 5xx 刷新失败保持 `unavailable`，走池短冷却，并用现有 Observe 记下可诊断原因。
+
+## 0.7.3 - 2026-10-23
+
+### English
+
+- Current concurrency now tracks live proxy requests (Acquire/Release on the executor). `/api/live` and the sidebar update within a few seconds; health probes no longer overwrite in-flight counts.
+
+### 中文
+
+- 「当前并发」改为按代理正在处理的请求实时加减；`/api/live` 与侧边栏几秒内跟上，健康探活不再覆盖进行中的并发数。
+
+## 0.7.2 - 2026-10-22
+
+### English
+
+- **New** · Overview stats: request outcome mix (ok / incomplete / error / canceled), cache hit rate, streaming share and canceled requests; the account pool lists cooling accounts with reason, countdown and backoff level, plus the session-affinity hit rate.
+- **New** · Overview drill-down: click a model, account, provider or error kind, or drag a range on the traffic chart, to open the matching logs. Time windows add 30d and custom; stats auto-refresh every 30s and can be paused.
+- **New** · Usage page with sortable tables by model, account and provider (requests, success rate, p95, tokens, cache, credits). The traffic chart switches between requests, tokens and latency.
+- **New** · Live concurrency: an overview strip (in-flight vs. capacity, last 60s), per-account in-flight bars and a sidebar indicator.
+- **Console** · Roomier sidebar; denser overview without decorative icons; the Accounts page header is one toolbar (status, provider, search, actions).
+- **Console** · Calmer styling: one small-text size, smaller radii and shadows, neutral status boxes; pages show content without skeleton fades or entrance animations.
+- **Console** · Edit-account modal is wider; the model picker adds search, select all / clear, and flags saved models that left the catalog.
+- **API** · New `GET /api/live` for live concurrency. `/api/logs/stats` accepts `dim=model,account,provider` and `limit`, with p95, token, cache and credit totals; `/api/logs/requests` accepts `provider`. Existing calls behave as before.
+
+### 中文
+
+- **新功能** · 概览统计：请求结果构成（成功 / 未完成 / 失败 / 取消）、缓存命中率、流式占比与取消数；账号池列出冷却账号的原因、倒计时与退避等级，并显示会话亲和命中率。
+- **新功能** · 概览下钻：点击模型、账号、供应商或错误类型，或在流量图上拖选时间段，直接打开对应日志。时间窗口新增 30 天与自定义；统计每 30 秒自动刷新，可暂停。
+- **新功能** · 新增「用量」页，按模型、账号、供应商展示可排序表格（请求数、成功率、p95、Tokens、缓存、积分）；流量图可切换请求 / Tokens / 延迟。
+- **新功能** · 实时并发：概览顶部并发条（当前并发 / 总容量、近 60 秒）、每个账号的并发细条，以及侧边栏并发指示。
+- **界面** · 侧边栏更宽松；概览更紧凑，去掉装饰图标；账号页顶部合并为一行工具栏（状态、供应商、搜索、操作）。
+- **界面** · 样式更克制：小字统一字号，圆角与阴影收小，状态提示改用中性底色；页面加载后直接显示内容，不再有骨架屏淡入和入场动画。
+- **界面** · 编辑账号弹窗加宽；模型选择支持搜索、全选 / 清空，并标出已下线的模型。
+- **API** · 新增 `GET /api/live` 实时并发接口；`/api/logs/stats` 支持 `dim=model,account,provider` 与 `limit`，返回 p95、Token、缓存与积分合计；`/api/logs/requests` 支持 `provider` 筛选。原有调用行为不变。
+
+## 0.7.1 - 2026-10-22
+
+### English
+
+- **New** · Qoder: optional per-account traffic guard, off by default (`QODER_TRAFFIC_GUARD=on`; `QODER_TRAFFIC_GUARD_CONCURRENCY`, `QODER_TRAFFIC_GUARD_INTERVAL_MS`).
+- **New** · WorkBuddy: `X-Private-Data` is configurable via `WORKBUDDY_PRIVATE_DATA=auto|true|false` (default `auto`).
+- **New** · Qoder requests resolve the model name / display name to the account's catalog key; unknown models return `model_not_found`.
+- **Fix** · `/v1/messages` accepts in-band `role: "system"` messages; Claude Code 2.1.293+ no longer gets 400. (#328)
+- **Fix** · Codex Responses-Lite models (e.g. GPT-5.6) send `reasoning.context: "all_turns"`, fixing upstream 400. (#341)
+- **Fix** · WorkBuddy keeps `max` reasoning effort when the catalog advertises it, instead of downgrading to `xhigh`. (#343)
+- **Fix** · Qoder streams: unique completion `id` per request, finish on `[DONE]`, release the upstream on early close, and fail over heartbeat-only upstreams (`upstream_empty`). (#339, #342, #345)
+- **Fix** · Qoder tool calls: non-streaming keeps the full call; an empty `tool_calls` array is ignored. (#338)
+- **Fix** · Qoder keeps earlier assistant `reasoning_content`; model key mappings refresh with each catalog refresh. (#340, #346)
+- **Fix** · Legacy Qoder accounts (pre-v0.7.0 CLI login, no PAT) fall back to the worker again; no more "account not found". (#337)
+- **Fix** · Qoder check-in shows why nothing was claimable; token renewal no longer clears held tokens. (#327)
+- **Fix** · A Qoder worker that crashes right after an automatic restart is now restarted again instead of staying dead.
+- **Console** · Cleaner look: fewer nested borders, one type scale with the system UI font, larger sidebar text; API key prefix on its own line. (#347, #350)
+- **Console** · Settings split into tabs (General, Routing, Security & data, Updates); the sidebar version entry opens release notes and update actions. (#347)
+- **Upstream** · Qoder: one client version (1.1.32) across headers, signature and User-Agent (`QoderWork/…` CN, `Qoder/…` intl); streams add `cosy-machineos` / `cosy-machinehostname`. (#349)
+- **Upstream** · WorkBuddy client versions: CLI 2.161.0, desktop 5.8.4 / 5.8.3 (CN), IDE 2.168.2, three-part desktop User-Agent. (#349)
+- **Upstream** · WorkBuddy: chat 401 refreshes the token once and retries; TLS verification errors are no longer retried or failed over. (#348)
+- **Upstream** · Qoder: 10605 queue errors return 429 + `Retry-After` without cooling the account; HTTP 430 shows "client version too low". (#348)
+- **Upstream** · Devin: daily vs. weekly quota told apart; cooldown follows the window reset and lifts early once usage recovers. (#348)
+
+### 中文
+
+- **新功能** · Qoder：新增可选的单账号流量守卫，默认关闭（`QODER_TRAFFIC_GUARD=on`；可调 `QODER_TRAFFIC_GUARD_CONCURRENCY`、`QODER_TRAFFIC_GUARD_INTERVAL_MS`）。
+- **新功能** · WorkBuddy：`X-Private-Data` 可通过 `WORKBUDDY_PRIVATE_DATA=auto|true|false` 配置（默认 `auto`）。
+- **新功能** · Qoder 按模型目录把模型名/显示名解析为账号网关 key，未知模型返回 `model_not_found`。
+- **修复** · `/v1/messages` 支持 `messages` 内的 `role: "system"`，Claude Code 2.1.293+ 不再报 400。（#328）
+- **修复** · Codex Responses-Lite 模型（如 GPT-5.6）发送 `reasoning.context: "all_turns"`，修复上游 400。（#341）
+- **修复** · WorkBuddy 在目录支持 `max` 时不再把推理档位降级为 `xhigh`。（#343）
+- **修复** · Qoder 流式：每请求唯一 completion `id`、收到 `[DONE]` 即结束、提前关闭时释放上游、仅心跳的上游以 `upstream_empty` 切换。（#339、#342、#345）
+- **修复** · Qoder 工具调用：非流式保留完整调用；空 `tool_calls` 数组不再视为工具调用。（#338）
+- **修复** · Qoder 保留历史 assistant 的 `reasoning_content`；模型 key 映射随目录刷新替换。（#340、#346）
+- **修复** · v0.7.0 前 CLI 登录、无 PAT 的老 Qoder 账号重新回退 worker，不再报 "account not found"。（#337）
+- **修复** · Qoder 签到无可领活动时显示原因；token 续期缺字段时保留原值。（#327）
+- **修复** · Qoder worker 在自动重启后立即再次崩溃时会继续重启，不再一直处于 dead 状态。
+- **界面** · 控制台更简洁：去掉嵌套线框、统一字号与系统字体、侧边栏加大；API 密钥前缀单独一行。（#347、#350）
+- **界面** · 系统设置分为常规 / 路由调度 / 安全与数据 / 版本更新标签页；侧边栏版本入口可查看更新日志并下载/更新。（#347）
+- **上游对齐** · Qoder：请求头、签名、User-Agent 统一客户端版本 1.1.32（国内 `QoderWork/…`、国际 `Qoder/…`）；流式补 `cosy-machineos` / `cosy-machinehostname`。（#349）
+- **上游对齐** · WorkBuddy 客户端版本：CLI 2.161.0、桌面 5.8.4 / 5.8.3（国内）、IDE 2.168.2，桌面 UA 改为三段式。（#349）
+- **上游对齐** · WorkBuddy：对话 401 先刷新 token 再重试同账号；TLS 证书错误不再重试或换号。（#348）
+- **上游对齐** · Qoder：10605 排队返回 429 + `Retry-After`，不冷却账号；HTTP 430 提示“客户端版本过低”。（#348）
+- **上游对齐** · Devin：区分日/周额度，按窗口重置时间冷却，额度恢复后提前解除。（#348）
+
+## 0.7.0 - 2026-10-19
+
+### English
+
+- Report prompt-cache token usage for Trae, Qoder, and WorkBuddy, streaming and non-streaming. Thanks [@longlixiao-ong](https://github.com/longlixiao-ong) (#293).
+- Streams that end with a `finish_reason` but no `[DONE]` no longer return a 502.
+- Qoder PAT accounts now run fully in-process (no per-account Node worker), including token refresh, model catalog, quota, and check-in. (#313)
+- Quota headline sums plan + add-on + org packs; reasoning streams again for in-process chat.
+- Upgrade: existing Qoder accounts keep the worker path until you re-login them with a PAT.
+- New QwenWork provider (`qwenwork/` prefix): browser login, chat on all three APIs with tools, live model list, and quota.
+- CN region (千问办公) is not yet verified with a real account; Global is verified.
+- Pin a region with `workbuddy-cn/…` or `workbuddy-gl/…` (also Qoder); `-auto/` picks the region automatically.
+- Bare `qoder/…`, `workbuddy/…`, and unprefixed models behave as before.
+- Accounts marked out of quota are re-checked automatically, with backoff from 5 minutes up to 24 hours.
+- When every eligible account is out of quota, requests return `429 insufficient_quota` instead of "no accounts available".
+- Point README community discussion at the Telegram group instead of LINUX DO, and add a personal WeChat QR for contact in China.
+- Trae browser login now completes on its own, even for slow SMS logins; pasting the callback URL still works as a fallback.
+- WorkBuddy strips client fingerprint phrases (e.g. from Claude Code) before sending, avoiding upstream error `11128`.
+- Qoder streams with no first byte in 30s now fail over to the next account instead of hanging (`QODER_STREAM_TTFB_MS`).
+- Worker aborts a stream only after 300s with no new chunk (`QODER_STREAM_TOTAL_MS`); long active streams are not cut.
+- Unresponsive Qoder workers are detected and restarted automatically.
+
+### 中文
+
+- Trae、Qoder、WorkBuddy 流式与非流式均返回 Prompt 缓存 token 用量。感谢 [@longlixiao-ong](https://github.com/longlixiao-ong)（#293）。
+- 上游带 `finish_reason` 结束但未发 `[DONE]` 的流不再报 502。
+- Qoder PAT 账号改为完全进程内运行（不再每账号起 Node worker），token 刷新、模型目录、额度、签到均在进程内完成。(#313)
+- 额度总览合计套餐 + 资源包 + 组织资源包；进程内对话恢复思考流输出。
+- 升级提示：老 Qoder 账号需用 PAT 重新登录才会切到进程内模式，否则继续走 worker。
+- 新增 QwenWork（千问办公）供应商（`qwenwork/` 前缀）：浏览器登录，三种 API 均可对话并支持工具调用，模型列表与额度实时获取。
+- 国内版尚未用真实账号验证；国际版已验证。
+- 可用 `workbuddy-cn/…`、`workbuddy-gl/…` 指定区域（Qoder 同理）；`-auto/` 由池自动选区域。
+- 裸前缀 `qoder/…`、`workbuddy/…` 及无前缀模型行为不变。
+- 额度耗尽的账号会自动复查，间隔从 5 分钟逐步退避到 24 小时。
+- 所有可用账号都耗尽额度时，返回 `429 insufficient_quota`，而非「无可用账户」。
+- README 的社区讨论入口改为 Telegram 群，不再指向 LINUX DO，并增加国内联系用的个人微信二维码。
+- Trae 浏览器登录现在可自动完成，短信登录较慢也不会失败；粘贴回调 URL 仍可兜底。
+- WorkBuddy 发送前自动改写客户端特征语句（如 Claude Code 注入的内容），避免上游报 `11128`。
+- Qoder 流式请求 30 秒内无首字节会切换到下一个账号，不再挂起（`QODER_STREAM_TTFB_MS`）。
+- worker 仅在连续 300 秒无新数据时中止流（`QODER_STREAM_TOTAL_MS`），持续输出的长流不会被截断。
+- 无响应的 Qoder worker 会被自动发现并重启。
+
+## 0.6.23 - 2026-10-18
+
+### English
+
+- Codex accounts can Sign in with ChatGPT separately from Codex CLI OAuth, so website logins refresh and chat on the matching endpoints.
+- Codex SSE now joins a `data:` field split across lines, so a split `response.completed` still reports usage.
+- Codex tool schemas drop `minimum` / `maximum` bounds outside signed 64-bit integers, avoiding upstream HTTP 500s from MCP tools.
+- Devin accounts leave quota cooldown early once daily and weekly usage windows show remaining quota again.
+- Clear WorkBuddy account and model cooldowns after a successful or already-completed check-in.
+
+### 中文
+
+- Codex 账号可与 CLI OAuth 分开使用 Sign in with ChatGPT，网页登录的凭证会走对应的刷新和聊天端点。
+- Codex SSE 会把拆成多行的 `data:` 拼回去，拆开的 `response.completed` 仍能带上用量。
+- Codex 工具 schema 会去掉超出有符号 64 位整数的 `minimum` / `maximum`，避免 MCP 工具触发上游 HTTP 500。
+- Devin 账号在日/周额度窗口恢复有余量后，会提前结束额度冷却。
+- WorkBuddy 签到成功或确认今日已签到后，清除账号级和模型级冷却。
+
+## 0.6.22 - 2026-10-16
+
+### English
+
+- Each account can map a client-facing model name to its own real model, and can limit which catalog models it serves.
+- Keep quota-exhausted accounts routable for free models. Qoder prices some catalog models at zero (`limited_time_free` tag or a zero `price_factor`), and requests for them spend no credits, but the routing pool filtered every quota-exceeded account unconditionally — leaving those accounts' free models with no account at all. The pool now records which catalog entries the provider prices at zero alongside the cached model list, and the quota filter exempts a request whose model is on that list. Pricing-unknown models are not assumed free, and the exemption is scoped per model, so exhausted accounts stay out of paid routes.
+- Send the catalog's gateway model key on Qoder chat. The model catalog publishes a friendly public ID (`qwen3.8-flash`) alongside a distinct gateway key (`qfmodel`). The worker resolved the public ID through the per-account catalog before sending, but the in-process COSY client filled `model_config.key` with whatever the caller asked for. On an account whose gateway routes only the mapped key, that request was never answered — the gateway held it open and the client waited out its own timeout with no error and no bytes in return. The pool now records the public-ID-to-gateway-key mapping from the catalog, and the chat request carries the mapped key. An account whose catalog reports no distinct key keeps its public spelling.
+- Fix Qoder chat rejecting multi-turn tool use with `400 InvalidParameter: messages with role "tool" must be a response to a preceeding message with "tool_calls"`. The upstream gateway only pairs a `role:"tool"` message with the assistant turn ahead of it when that assistant message's `content` is a string; OpenAI clients send `"content": null` for a pure tool-call turn, which left the call unregistered. The in-process client now rewrites a nil content on a tool-call turn to an empty string, which the gateway accepts. Call ids, tool results, and all other content shapes pass through untouched.
+- Clear a WorkBuddy account's cooldown immediately after a successful daily check-in so newly restored credits can be routed.
+
+### 中文
+
+- 每个账号可以把自己的真实模型映射成对外名字，也可以限制自己只接选中的目录模型。
+- 额度耗尽的账号现在仍可路由到免费模型。Qoder 目录中部分模型单价为零（`limited_time_free` 标签或 `price_factor` 为零），请求不消耗积分，但路由池原先无条件排除所有额度耗尽的账号，导致这些账号的免费模型无账号可用。路由池现在在缓存模型列表的同时记录上游报价为零的模型，额度过滤对命中该名单的请求予以豁免。未报价的模型不视为免费；豁免按请求模型限定，额度耗尽的账号依旧不会出现在付费模型的路由上。
+- Qoder 聊天请求现在发送目录里的网关模型键。模型目录同时给出一个易读的公网 ID（`qwen3.8-flash`）和一个不同的网关键（`qfmodel`）。Worker 发送前会用账号目录把公网 ID 解析一遍，但进程内 COSY 客户端此前直接把调用方传入的名字填进 `model_config.key`。在只按映射键路由的账号上，这个请求不会得到任何响应——网关把它挂着，客户端一直等到自己的超时，既没有错误也没有数据。路由池现在记录目录给出的「公网 ID → 网关键」映射，聊天请求携带映射后的键。目录未给出不同键的账号保持公网 ID 原样。
+- 修复 Qoder 多轮工具调用被上游以 `400 InvalidParameter: messages with role "tool" must be a response to a preceeding message with "tool_calls"` 拒绝的问题。上游网关只在前一条 assistant 消息的 `content` 为字符串时，才把它携带的 `tool_calls` 登记为可配对；OpenAI 客户端对纯工具调用轮次发送的正是 `"content": null`，导致调用未登记、后续 `role:"tool"` 消息被拒。进程内直连客户端现在会把工具调用轮次的 null content 改写为空字符串（网关接受该形状）；工具调用 id、工具结果与其他内容形状均原样保留。
+- WorkBuddy 每日签到成功后立即清除对应账号的冷却，让恢复的积分可以马上参与调度。
+
+## 0.6.21 - 2026-10-13
+
+### English
+
+- Browser login no longer opens the authorization page by itself. The URL is shown first, with buttons to open or copy it.
+- Top-align the account card check-in row so the status and the scheduled time stay on the same line when the row wraps.
+- Honor Devin rate-limit reset times from the response body, and cool an exhausted usage quota for the whole account instead of until local midnight.
+
+### 中文
+
+- 浏览器登录不再自动打开授权页。地址先展示出来，可再选择打开或复制。
+- 账号卡片的签到行改为顶部对齐，换行时状态和计划时间不再错位。
+- 采用 Devin 响应正文里的限流重置时间，并把用尽的用量配额冷却到整个账号，而不是冷却到本地午夜。
+
 ## 0.6.20 - 2026-10-09
 
 ### English

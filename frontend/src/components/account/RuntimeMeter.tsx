@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef } from 'react'
-import gsap from 'gsap'
+import { duration, ease, gsap } from '@/lib/motion'
 import { runtimeSegments, runtimeTone, type AccountState } from '@/lib/account'
 
 type Props = {
@@ -33,12 +33,12 @@ export function RuntimeMeter({ state, stateCopy, t }: Props) {
 
       media.add('(prefers-reduced-motion: no-preference)', () => {
         gsap.set(segments, { transformOrigin: 'center bottom' })
-        gsap.to(empty, { scaleY: 0.32, autoAlpha: 0.45, duration: 0.18, ease: 'power2.out', overwrite: true })
+        gsap.to(empty, { scaleY: 0.32, autoAlpha: 0.45, duration: duration.fast, ease: ease.out, overwrite: true })
         gsap.to(filled, {
           scaleY: 1,
           autoAlpha: 1,
-          duration: 0.22,
-          ease: 'power2.out',
+          duration: duration.base,
+          ease: ease.out,
           stagger: { amount: 0.08, from: 'start' },
           overwrite: true,
         })
@@ -50,7 +50,7 @@ export function RuntimeMeter({ state, stateCopy, t }: Props) {
 
   return (
     <div ref={rootRef} className="flex items-center gap-2">
-      <div className="flex items-center gap-1.5 text-[11px] font-medium text-foreground/75">
+      <div className="flex items-center gap-1.5 text-caption font-medium text-foreground/75">
         <span className="status-dot" data-state={tone === 'muted' ? undefined : tone === 'warn' ? 'warn' : tone} />
         <span>{t('runtimeState')}</span>
       </div>
@@ -73,7 +73,7 @@ export function RuntimeMeter({ state, stateCopy, t }: Props) {
           />
         ))}
       </div>
-      <span className="mono shrink-0 text-[10px] text-foreground/65">{stateCopy}</span>
+      <span className="mono shrink-0 text-caption text-foreground/65">{stateCopy}</span>
     </div>
   )
 }

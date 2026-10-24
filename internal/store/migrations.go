@@ -234,6 +234,18 @@ UPDATE accounts SET auto_checkin = workbuddy_auto_checkin, checkin_time = workbu
 	{filename: "022_request_log_reasoning.sql", sql: `
 ALTER TABLE request_logs ADD COLUMN requested_reasoning TEXT NOT NULL DEFAULT '';
 ALTER TABLE request_logs ADD COLUMN resolved_reasoning TEXT NOT NULL DEFAULT '';`},
+	{filename: "023_account_model_routing.sql", sql: `
+CREATE TABLE IF NOT EXISTS account_model_aliases (
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  alias TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  PRIMARY KEY (account_id, alias)
+);
+CREATE TABLE IF NOT EXISTS account_enabled_models (
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  model_id TEXT NOT NULL,
+  PRIMARY KEY (account_id, model_id)
+	);`},
 }
 
 const schemaMigrationsDDL = `

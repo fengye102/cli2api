@@ -41,6 +41,26 @@ func TestDecodeChatResultPreservesPromptCacheUsage(t *testing.T) {
 	}
 }
 
+func TestDecodeChatResultFallsBackToPromptCacheHitTokens(t *testing.T) {
+	result, err := decodeChatResult(translate.ChatRequest{Model: "deepseek-v4.1"}, []byte(`{
+			"model":"deepseek-v4.1",
+			"choices":[{"message":{"content":"OK"},"finish_reason":"stop"}],
+			"usage":{
+				"prompt_tokens":100,
+				"completion_tokens":20,
+				"prompt_cache_hit_tokens":80,
+				"source":"upstream"
+			}
+		}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CacheReadTokens == nil || *result.CacheReadTokens != 80 ||
+		result.CachedTokens == nil || *result.CachedTokens != 80 {
+		t.Fatalf("cache usage = read:%v cached:%v", result.CacheReadTokens, result.CachedTokens)
+	}
+}
+
 func TestChatNonStreamFailoversRateLimit(t *testing.T) {
 	var hitsA atomic.Int32
 	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -320,8 +340,11 @@ func TestChatNonStreamAllSaturatedReturnsRateLimit(t *testing.T) {
 	pool := NewPool([]string{"http://127.0.0.1:1", "http://127.0.0.1:2"}, []string{"a", "b"})
 	pool.Upsert(Item{ID: "a", URL: "http://127.0.0.1:1", MaxInFlight: 1})
 	pool.Upsert(Item{ID: "b", URL: "http://127.0.0.1:2", MaxInFlight: 1})
-	pool.MergeHealth("a", true, false, 1, 0, "")
-	pool.MergeHealth("b", true, false, 1, 0, "")
+	pool.MergeHealth("a", true, false, 0, 0, "")
+	pool.MergeHealth("b", true, false, 0, 0, "")
+	if !pool.Acquire("a") || !pool.Acquire("b") {
+		t.Fatal("acquire a/b")
+	}
 	ex := NewChatExecutor(pool, "")
 	_, err := ex.ChatNonStream(context.Background(), translate.ChatRequest{
 		Model: "glm-5.3", Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}},

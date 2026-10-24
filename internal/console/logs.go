@@ -26,6 +26,8 @@ func (h *Handler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 		h.handleRuntimeLogs(w, r)
 	case path == "stats" && r.Method == http.MethodGet:
 		h.handleRequestStats(w, r)
+	case path == "usage" && r.Method == http.MethodGet:
+		h.handleRequestUsage(w, r)
 	default:
 		writeErr(w, http.StatusNotFound, "not_found", "unknown logs endpoint")
 	}
@@ -42,10 +44,18 @@ func (h *Handler) handleRequestStats(w http.ResponseWriter, r *http.Request) {
 			hours = n
 		}
 	}
+	limit := 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			limit = n
+		}
+	}
 	stats, err := h.Recorder.Stats(r.Context(), applogs.StatsQuery{
 		Hours: hours,
 		From:  ParseQueryTime(r.URL.Query().Get("from"), false),
 		To:    ParseQueryTime(r.URL.Query().Get("to"), true),
+		Dims:  ParseStatsDims(r.URL.Query().Get("dim")),
+		Limit: limit,
 	})
 	if err != nil {
 		if err.Error() == "request logs unavailable" {
@@ -58,6 +68,33 @@ func (h *Handler) handleRequestStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, stats)
 }
 
+func (h *Handler) handleRequestUsage(w http.ResponseWriter, r *http.Request) {
+	if h.Recorder == nil {
+		writeErr(w, http.StatusServiceUnavailable, "logs_unavailable", "request logs unavailable")
+		return
+	}
+	hours := 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("hours")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil {
+			hours = n
+		}
+	}
+	usage, err := h.Recorder.Usage(r.Context(), applogs.StatsQuery{
+		Hours: hours,
+		From:  ParseQueryTime(r.URL.Query().Get("from"), false),
+		To:    ParseQueryTime(r.URL.Query().Get("to"), true),
+	})
+	if err != nil {
+		if err.Error() == "request logs unavailable" {
+			writeErr(w, http.StatusServiceUnavailable, "logs_unavailable", err.Error())
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "usage_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, usage)
+}
+
 func (h *Handler) handleListRequestLogs(w http.ResponseWriter, r *http.Request) {
 	if h.Recorder == nil || h.Recorder.Store() == nil {
 		writeErr(w, http.StatusServiceUnavailable, "logs_unavailable", "request logs unavailable")
@@ -68,6 +105,7 @@ func (h *Handler) handleListRequestLogs(w http.ResponseWriter, r *http.Request) 
 		Status:    r.URL.Query().Get("status"),
 		ErrorKind: r.URL.Query().Get("error_kind"),
 		Model:     r.URL.Query().Get("model"),
+		Provider:  r.URL.Query().Get("provider"),
 		ID:        r.URL.Query().Get("id"),
 		Query:     r.URL.Query().Get("q"),
 		From:      ParseQueryTime(r.URL.Query().Get("from"), false),
@@ -170,6 +208,24 @@ func clampRuntimeOffset(offset int) int {
 		return 0
 	}
 	return offset
+}
+
+// ParseStatsDims reads ?dim=model,account,provider. Unknown names are
+// dropped; an empty result means "all dimensions" (the overview default).
+func ParseStatsDims(raw string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, part := range strings.Split(raw, ",") {
+		dim := strings.ToLower(strings.TrimSpace(part))
+		switch dim {
+		case accounts.RequestStatsDimModel, accounts.RequestStatsDimAccount, accounts.RequestStatsDimProvider:
+			if !seen[dim] {
+				seen[dim] = true
+				out = append(out, dim)
+			}
+		}
+	}
+	return out
 }
 
 func ParseQueryTime(raw string, endOfDay bool) *time.Time {

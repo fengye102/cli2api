@@ -37,6 +37,51 @@ func TestPickRouteRespectsProviderFamilyAndCooldown(t *testing.T) {
 	}
 }
 
+func TestAccountAliasRoutesToItsOwnModel(t *testing.T) {
+	p := NewPool(nil, nil)
+	p.Upsert(Item{
+		ID: "q1", Provider: "qoder", Models: []string{"kimi-k2.6"},
+		ModelAliases: map[string]string{"kimi-k3": "kimi-k2.6"},
+	})
+	p.Upsert(Item{
+		ID: "w1", Provider: "workbuddy", Models: []string{"kimi-k2.5"},
+		ModelAliases: map[string]string{"kimi-k3": "kimi-k2.5"},
+	})
+	p.Upsert(Item{ID: "plain", Provider: "qoder", Models: []string{"glm-5.2"}})
+
+	first, ok := p.PickRoute(RouteQuery{PublicModel: "kimi-k3"})
+	if !ok || (first.ID != "q1" && first.ID != "w1") {
+		t.Fatalf("alias pick = %+v ok=%v", first, ok)
+	}
+	if got := AccountModelID(first, "kimi-k3"); got == "kimi-k3" || got == "" {
+		t.Fatalf("rewrite = %q", got)
+	}
+	if NativeModelID(first, AccountModelID(first, "kimi-k3")) == "kimi-k3" {
+		t.Fatal("native id stayed on the alias")
+	}
+	if _, ok := p.PickRoute(RouteQuery{PublicModel: "kimi-k3", Excluded: map[string]struct{}{first.ID: {}}}); !ok {
+		t.Fatal("second account with the same alias was not a candidate")
+	}
+	if _, ok := p.PickRoute(RouteQuery{PublicModel: "kimi-k3", PreferAccount: "plain"}); ok {
+		t.Fatal("account without the alias was selected")
+	}
+}
+
+func TestRestrictedAccountOnlyServesEnabledModels(t *testing.T) {
+	p := NewPool(nil, nil)
+	p.Upsert(Item{
+		ID: "limited", Provider: "qoder", Models: []string{"glm-5.2", "kimi-k2.6"},
+		EnabledModels: []string{"glm-5.2"}, ModelsRestricted: true,
+	})
+	if _, ok := p.PickRoute(RouteQuery{PublicModel: "kimi-k2.6"}); ok {
+		t.Fatal("disabled model was routed")
+	}
+	got, ok := p.PickRoute(RouteQuery{PublicModel: "glm-5.2"})
+	if !ok || got.ID != "limited" {
+		t.Fatalf("enabled model = %+v ok=%v", got, ok)
+	}
+}
+
 func TestNormalizeProviderRegionAndAllowlist(t *testing.T) {
 	if got := NormalizeProviderFamily(""); got != "qoder" {
 		t.Fatalf("empty provider = %q", got)
@@ -126,6 +171,25 @@ func TestPickRouteCandidateCountShrinksAfterRegionPin(t *testing.T) {
 	retry, ok := p.PickRoute(pinned)
 	if !ok || retry.ID != "g2" {
 		t.Fatalf("retry pick = %+v ok=%v", retry, ok)
+	}
+}
+
+func TestPickRouteBarePrefixMatchesGlobalOnlyPool(t *testing.T) {
+	// A bare "qoder/model" request carries no region pin, so a pool with only
+	// international (global) accounts must still route; only an explicit -cn/
+	// pin may exclude them.
+	p := NewPool(nil, nil)
+	p.Upsert(Item{ID: "g1", URL: "http://g1", Provider: "qoder", Region: "global", Runtime: "child_process"})
+
+	got, ok := p.PickRoute(RouteQuery{ProviderFilter: "qoder"})
+	if !ok || got.ID != "g1" {
+		t.Fatalf("bare qoder prefix must route to the global-only account, got %+v ok=%v", got, ok)
+	}
+	if n := p.LenRoute(RouteQuery{ProviderFilter: "qoder"}); n != 1 {
+		t.Fatalf("unpinned qoder candidates = %d, want 1", n)
+	}
+	if _, ok := p.PickRoute(RouteQuery{ProviderFilter: "qoder", RegionFilter: "cn"}); ok {
+		t.Fatal("an explicit -cn/ pin must not match a global-only pool")
 	}
 }
 

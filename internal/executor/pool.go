@@ -38,6 +38,18 @@ type Item struct {
 	// spelling so Trae config_name case is preserved.
 	Models   []string
 	ModelsAt time.Time
+	// NativeModels maps a canonical public model ID onto the provider-native
+	// key its own catalog uses for that model. Qoder's catalog carries a
+	// distinct mapped_key ("qfmodel") behind a friendly public ID, and its
+	// gateway only routes the mapped key; sending the public ID leaves the
+	// gateway waiting without answering. A public ID absent from this map
+	// keeps its own spelling.
+	NativeModels map[string]string
+	// FreeModels are the public IDs in Models the provider prices at zero.
+	// A zero-price model spends no credits, so an account whose quota is
+	// exhausted can still serve it and must not be filtered out on quota
+	// alone. Nil means the provider reported no pricing.
+	FreeModels []string
 	// ProvenModels are public IDs this account has actually served. A
 	// later catalog refresh must not drop a model that just succeeded:
 	// WorkBuddy CLI snapshots can omit a live ID and would otherwise
@@ -65,6 +77,13 @@ type Item struct {
 	// DropSystemPrompt mirrors the stored account flag so the executor can
 	// sanitize requests per account without a store lookup per chat.
 	DropSystemPrompt bool
+	// ModelAliases maps a client-facing name to this account's real catalog
+	// model. The public request stays unchanged until this account is picked.
+	ModelAliases map[string]string
+	// EnabledModels is the catalog models this account may serve when
+	// ModelsRestricted is set. An empty restricted list serves nothing.
+	EnabledModels    []string
+	ModelsRestricted bool
 	// StateVersion is a process-local monotonic stamp assigned under p.mu
 	// whenever a persistable mutation lands. The persistence observer runs
 	// after p.mu is released, so concurrent observers can enqueue snapshots
@@ -166,10 +185,46 @@ func itemCouldServeModel(item Item, publicModel string) bool {
 	if want == "" {
 		return true
 	}
+	if !itemModelAllowed(item, want) {
+		return false
+	}
+	if target := item.ModelAliases[want]; target != "" {
+		want = routeModel(target)
+	}
 	if itemHasCatalogModel(item, want) || itemHasProvenModel(item, want) {
 		return true
 	}
 	return item.Models == nil
+}
+
+// itemModelAllowed reports whether the requested public name is one this
+// account is permitted to serve. A restricted account matches either the
+// real model or an alias whose target is enabled.
+func itemModelAllowed(item Item, want string) bool {
+	if !item.ModelsRestricted {
+		return true
+	}
+	if target := item.ModelAliases[want]; target != "" {
+		want = routeModel(target)
+	}
+	for _, model := range item.EnabledModels {
+		if CanonicalModelID(model) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// AccountModelID rewrites a client model to this account's real catalog
+// model when the account defines that alias. Other accounts keep the name
+// the client sent.
+func AccountModelID(item Item, publicModel string) string {
+	want := routeModel(publicModel)
+	target := strings.TrimSpace(item.ModelAliases[want])
+	if target == "" {
+		return strings.TrimSpace(publicModel)
+	}
+	return target
 }
 
 // ItemHasModel reports whether this account can serve publicModel on a live
@@ -191,6 +246,12 @@ func itemHasModel(item Item, publicModel string) bool {
 	if want == "" {
 		return true
 	}
+	if !itemModelAllowed(item, want) {
+		return false
+	}
+	if target := item.ModelAliases[want]; target != "" {
+		want = routeModel(target)
+	}
 	if itemHasCatalogModel(item, want) || itemHasProvenModel(item, want) {
 		return true
 	}
@@ -206,10 +267,16 @@ func itemHasModel(item Item, publicModel string) bool {
 // NativeModelID returns the provider-native catalog spelling for a public
 // model. Trae config_name is case-sensitive; routing matches on the
 // canonical form, but the upstream request must keep the original ID.
+// Qoder's catalog reports a mapped_key that differs from the public ID, and
+// its gateway routes only the mapped key, so a recorded mapping wins over the
+// catalog's own spelling.
 func NativeModelID(item Item, publicModel string) string {
 	want := routeModel(publicModel)
 	if want == "" {
 		return strings.TrimSpace(publicModel)
+	}
+	if native := strings.TrimSpace(item.NativeModels[want]); native != "" {
+		return native
 	}
 	for _, model := range item.Models {
 		if CanonicalModelID(model) == want {
@@ -238,10 +305,36 @@ func itemReady(item Item) bool {
 	return item.Ready == nil || *item.Ready
 }
 
-func routeBaseMatches(item Item, q RouteQuery) bool {
-	if item.Quota != nil && item.Quota.Exceeded {
+// itemServesFreeModel reports whether publicModel is one this account prices at
+// zero. A zero-price model spends no credits, so an exhausted account can still
+// serve it; filtering it out on quota alone would drop the account from routes
+// that would in fact work. Models the catalog has not priced are not assumed
+// free — the price is unknown, and the account stays filtered out.
+func itemServesFreeModel(item Item, publicModel string) bool {
+	want := routeModel(publicModel)
+	if want == "" || len(item.FreeModels) == 0 {
 		return false
 	}
+	for _, model := range item.FreeModels {
+		if CanonicalModelID(model) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func routeBaseMatches(item Item, q RouteQuery) bool {
+	if item.Quota != nil && item.Quota.Exceeded && !itemServesFreeModel(item, q.PublicModel) {
+		return false
+	}
+	return routeReadyAndScoped(item, q)
+}
+
+// routeReadyAndScoped is routeBaseMatches without the quota gate, so callers
+// can pair it with the quota check to tell "blocked only by quota" from
+// "blocked by provider/region/readiness/exclusion" without duplicating the
+// scoping conditions.
+func routeReadyAndScoped(item Item, q RouteQuery) bool {
 	if !itemReady(item) {
 		return false
 	}
@@ -261,6 +354,16 @@ func routeBaseMatches(item Item, q RouteQuery) bool {
 		return false
 	}
 	return true
+}
+
+// routeBlockedByQuota reports whether an item would match the route except
+// that its quota is exceeded. Free-model accounts are never quota-blocked:
+// they spend no credits, so an exhausted account can still serve them.
+func routeBlockedByQuota(item Item, q RouteQuery) bool {
+	if item.Quota == nil || !item.Quota.Exceeded || itemServesFreeModel(item, q.PublicModel) {
+		return false
+	}
+	return routeReadyAndScoped(item, q) && itemCouldServeModel(item, q.PublicModel)
 }
 
 func routeMatches(item Item, q RouteQuery) bool {
@@ -393,6 +496,24 @@ func (p *Pool) LenRoute(q RouteQuery) int {
 		}
 	}
 	return count
+}
+
+// QuotaBlockedForModel reports whether at least one account could serve the
+// model but is kept out of routing solely because its quota is exceeded. The
+// caller uses this to surface a quota error instead of a generic "no accounts
+// available" when every model-serving account is out of credits.
+func (p *Pool) QuotaBlockedForModel(q RouteQuery) (Item, bool) {
+	if p == nil {
+		return Item{}, false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, item := range p.items {
+		if routeBlockedByQuota(item, q) {
+			return item, true
+		}
+	}
+	return Item{}, false
 }
 
 func (p *Pool) First() (Item, bool) {
@@ -700,8 +821,8 @@ func inRegion(items []Item, region string) []Item {
 }
 
 // itemSaturated reports whether the account already serves its configured
-// concurrency limit. max_inflight was stored but never enforced, so a single
-// account could absorb every concurrent request during a burst.
+// concurrency limit. InFlight is owned by Acquire/Release on the request
+// path; PickRoute uses this to skip accounts already at capacity.
 func itemSaturated(item Item) bool {
 	if item.MaxInFlight <= 0 {
 		return false
@@ -712,7 +833,7 @@ func itemSaturated(item Item) bool {
 // itemModelDown applies the per-model cooldown: one model hitting a limit
 // must not take the whole account offline for other models.
 func itemModelDown(item Item, q RouteQuery, now time.Time) bool {
-	model := routeModel(q.PublicModel)
+	model := cooldownModel(item, q.PublicModel)
 	if model == "" {
 		return false
 	}
@@ -720,11 +841,15 @@ func itemModelDown(item Item, q RouteQuery, now time.Time) bool {
 	return ok && now.Before(until)
 }
 
+func cooldownModel(item Item, publicModel string) string {
+	return routeModel(AccountModelID(item, publicModel))
+}
+
 // resumeAt is the moment an item becomes usable again for this route,
 // considering both account-level and model-level cooldowns.
 func resumeAt(item Item, q RouteQuery) time.Time {
 	next := item.DownUntil
-	model := routeModel(q.PublicModel)
+	model := cooldownModel(item, q.PublicModel)
 	if model != "" {
 		if until, ok := item.ModelDownUntil[model]; ok && (next.IsZero() || until.After(next)) {
 			next = until
@@ -875,6 +1000,44 @@ func (p *Pool) MarkClassified(id string, c Classified) {
 	}
 }
 
+// ClearAccountQuotaCooldown drops an account-wide quota cooldown without
+// touching model-scoped capacity 429s. Used when a later quota probe shows
+// remaining usage, so the account can route again before DownUntil expires.
+func (p *Pool) ClearAccountQuotaCooldown(id string) {
+	if p == nil || id == "" {
+		return
+	}
+	var changed *Item
+	p.mu.Lock()
+	for i := range p.items {
+		if p.items[i].ID != id {
+			continue
+		}
+		if p.items[i].DownUntil.IsZero() {
+			p.mu.Unlock()
+			return
+		}
+		if p.items[i].LastKind != "" && p.items[i].LastKind != KindQuota {
+			p.mu.Unlock()
+			return
+		}
+		p.items[i].DownUntil = time.Time{}
+		p.items[i].LastError = ""
+		p.items[i].LastKind = ""
+		p.items[i].BackoffLevel = 0
+		p.stateCounter++
+		p.items[i].StateVersion = p.stateCounter
+		snapshot := p.items[i].clone()
+		changed = &snapshot
+		break
+	}
+	observer := p.observer
+	p.mu.Unlock()
+	if changed != nil && observer != nil {
+		observer(*changed)
+	}
+}
+
 // MarkOK records a success. When model is non-empty, only that model's
 // cooldown and backoff ladder are cleared: a success on model-B must not
 // un-cool a still-rate-limited model-A, and a streaming 200 (headers only)
@@ -954,6 +1117,31 @@ func (p *Pool) MarkOK(id, model string) {
 // SetDropSystemPrompt updates only the request-sanitization flag on a live
 // item. Routing and runtime state stay untouched so the change applies to the
 // next request without disturbing cooldowns or health.
+func (p *Pool) SetModelRouting(id string, aliases map[string]string, enabled []string, restricted bool) {
+	if p == nil || id == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := range p.items {
+		if p.items[i].ID != id {
+			continue
+		}
+		if len(aliases) == 0 {
+			p.items[i].ModelAliases = nil
+		} else {
+			p.items[i].ModelAliases = aliases
+		}
+		if len(enabled) == 0 {
+			p.items[i].EnabledModels = nil
+		} else {
+			p.items[i].EnabledModels = append([]string(nil), enabled...)
+		}
+		p.items[i].ModelsRestricted = restricted
+		return
+	}
+}
+
 func (p *Pool) SetDropSystemPrompt(id string, drop bool) {
 	if p == nil || id == "" {
 		return
@@ -968,7 +1156,13 @@ func (p *Pool) SetDropSystemPrompt(id string, drop bool) {
 	}
 }
 
+// MergeHealth updates readiness/hotness/restarts/lastError/runtime_state from
+// a probe. It does not touch InFlight: probe snapshots are stale within
+// seconds and race Acquire/Release on the request path. The executor is the
+// source of truth for in-flight concurrency. inFlight is accepted for call
+// compatibility and ignored.
 func (p *Pool) MergeHealth(id string, ready, hot bool, inFlight, restarts int, lastError string) {
+	_ = inFlight
 	if p == nil || id == "" {
 		return
 	}
@@ -990,7 +1184,6 @@ func (p *Pool) MergeHealth(id string, ready, hot bool, inFlight, restarts int, l
 		r, h := ready, hot
 		p.items[i].Ready = &r
 		p.items[i].Hot = &h
-		p.items[i].InFlight = inFlight
 		p.items[i].Restarts = restarts
 		p.items[i].LastError = lastError
 		p.items[i].NextRestartAt = time.Time{}
@@ -1004,6 +1197,46 @@ func (p *Pool) MergeHealth(id string, ready, hot bool, inFlight, restarts int, l
 		}
 		if lastError == "" {
 			p.items[i].LastKind = ""
+		}
+		return
+	}
+}
+
+// Acquire reserves one in-flight slot for the account. Returns false when the
+// id is unknown or MaxInFlight > 0 and the account is already at capacity.
+func (p *Pool) Acquire(id string) bool {
+	if p == nil || id == "" {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := range p.items {
+		if p.items[i].ID != id {
+			continue
+		}
+		if p.items[i].MaxInFlight > 0 && p.items[i].InFlight >= p.items[i].MaxInFlight {
+			return false
+		}
+		p.items[i].InFlight++
+		return true
+	}
+	return false
+}
+
+// Release frees one in-flight slot. Unknown ids are a no-op; the counter
+// never goes below zero.
+func (p *Pool) Release(id string) {
+	if p == nil || id == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := range p.items {
+		if p.items[i].ID != id {
+			continue
+		}
+		if p.items[i].InFlight > 0 {
+			p.items[i].InFlight--
 		}
 		return
 	}
@@ -1041,6 +1274,46 @@ func (p *Pool) SetRuntimeState(id, state string, nextRestartAt time.Time, backof
 }
 
 func (p *Pool) MergeModels(id string, models []string) {
+	p.MergeModelsWithPricing(id, models, nil)
+}
+
+// MergeNativeModels replaces the account's provider-native key map with the
+// mapping from a successful catalog refresh. Qoder reuses gateway keys across
+// releases (qmodel_preview -> qmodel_38max), so entries absent from the fresh
+// catalog are dropped rather than kept. A nil/empty map clears the mapping
+// ("every model keeps its public spelling"). Callers must only pass the
+// result of a successful refresh.
+func (p *Pool) MergeNativeModels(id string, nativeModels map[string]string) {
+	if p == nil || id == "" {
+		return
+	}
+	copied := make(map[string]string, len(nativeModels))
+	for public, native := range nativeModels {
+		key := CanonicalModelID(public)
+		value := strings.TrimSpace(native)
+		if key == "" || key == "auto" || value == "" || key == CanonicalModelID(value) {
+			continue
+		}
+		copied[key] = value
+	}
+	if len(copied) == 0 {
+		copied = nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := range p.items {
+		if p.items[i].ID == id {
+			p.items[i].NativeModels = copied
+			return
+		}
+	}
+}
+
+// MergeModelsWithPricing replaces an account's cached catalog and records which
+// of those models the provider prices at zero. A nil free list means the
+// provider reported no pricing, which is treated as "nothing known is free"
+// rather than "everything is free".
+func (p *Pool) MergeModelsWithPricing(id string, models, freeModels []string) {
 	if p == nil || id == "" {
 		return
 	}
@@ -1058,11 +1331,26 @@ func (p *Pool) MergeModels(id string, models []string) {
 		seen[canonical] = struct{}{}
 		copied = append(copied, native)
 	}
+	free := make([]string, 0, len(freeModels))
+	freeSeen := map[string]struct{}{}
+	for _, model := range freeModels {
+		native := strings.TrimSpace(model)
+		canonical := CanonicalModelID(native)
+		if canonical == "" || canonical == "auto" || native == "" {
+			continue
+		}
+		if _, ok := freeSeen[canonical]; ok {
+			continue
+		}
+		freeSeen[canonical] = struct{}{}
+		free = append(free, native)
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for i := range p.items {
 		if p.items[i].ID == id {
 			p.items[i].Models = copied
+			p.items[i].FreeModels = free
 			p.items[i].ModelsAt = time.Now()
 			return
 		}
@@ -1090,6 +1378,18 @@ func (p *Pool) RemoveModel(id, model string) {
 				}
 			}
 			p.items[i].Models = next
+		}
+		if p.items[i].FreeModels != nil {
+			nextFree := make([]string, 0, len(p.items[i].FreeModels))
+			for _, existing := range p.items[i].FreeModels {
+				if CanonicalModelID(existing) != want {
+					nextFree = append(nextFree, existing)
+				}
+			}
+			p.items[i].FreeModels = nextFree
+		}
+		if p.items[i].NativeModels != nil {
+			delete(p.items[i].NativeModels, want)
 		}
 		dropProvenModel(&p.items[i], want)
 		// Force the manager to refresh this account's catalog on the next
@@ -1280,6 +1580,10 @@ func (p *Pool) Upsert(item Item) {
 			if item.Hot == nil {
 				item.Hot = p.items[i].Hot
 			}
+			// InFlight is owned by Acquire/Release on the request path.
+			// Runtime Upserts never carry a live counter, so always keep the
+			// existing value instead of wiping concurrent requests to zero.
+			item.InFlight = p.items[i].InFlight
 			if item.Quota == nil {
 				item.Quota = p.items[i].Quota
 			}
@@ -1287,8 +1591,30 @@ func (p *Pool) Upsert(item Item) {
 				item.Models = p.items[i].Models
 				item.ModelsAt = p.items[i].ModelsAt
 			}
+			// FreeModels is pricing metadata read from the catalog, not request
+			// state. A runtime Upsert — process registration, refresh, restart —
+			// carries no pricing, so without this carry-forward the free list is
+			// wiped and the account drops off free-model routes until the next
+			// catalog refresh repopulates it. A refresh that does carry a free
+			// list still overrides the carried-forward one.
+			if item.FreeModels == nil {
+				item.FreeModels = p.items[i].FreeModels
+			}
+			// Same reasoning for the gateway-key mapping: a runtime Upsert does
+			// not re-read the catalog, so losing it would send the public model
+			// ID upstream again.
+			if item.NativeModels == nil {
+				item.NativeModels = p.items[i].NativeModels
+			}
 			if item.ProvenModels == nil {
 				item.ProvenModels = p.items[i].ProvenModels
+			}
+			if item.ModelAliases == nil {
+				item.ModelAliases = p.items[i].ModelAliases
+			}
+			if item.EnabledModels == nil && !item.ModelsRestricted {
+				item.EnabledModels = p.items[i].EnabledModels
+				item.ModelsRestricted = p.items[i].ModelsRestricted
 			}
 			p.items[i] = item
 			return

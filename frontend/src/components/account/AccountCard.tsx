@@ -1,3 +1,4 @@
+import { CopyIcon } from '@/components/motion/CopyIcon'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Button, Card, Chip, Dropdown, Input, Label, TextArea, TextField, Tooltip } from '@heroui/react'
 import {
@@ -26,6 +27,7 @@ import {
   type AccountRow,
 } from '@/lib/account'
 import { accountProviderLabel } from '@/lib/provider'
+import { copyText } from '@/lib/clipboard'
 
 export type AccountBusyKind = 'create' | 'import' | 'device' | 'pat' | 'callback' | 'rewarm' | 'refresh' | 'toggle' | 'delete' | 'export' | 'settings' | 'checkin'
 
@@ -40,7 +42,7 @@ type Props = {
   pat: string
   t: Translate
   onPatChange: (value: string) => void
-  onDeviceLogin: () => void
+  onDeviceLogin: (loginMethod?: string) => void
   onPatLogin: () => void
   callbackUrl?: string
   onCallbackChange?: (value: string) => void
@@ -100,6 +102,7 @@ export function AccountCard({
 }: Props) {
   const chipRef = useRef<HTMLSpanElement>(null)
   const authRef = useRef<HTMLElement>(null)
+  const [authCopied, setAuthCopied] = useState(false)
   const lastStateRef = useRef<string | null>(null)
   const [, refreshCooldowns] = useState(0)
   const state = accountState(account)
@@ -183,17 +186,17 @@ export function AccountCard({
       data-state={state}
       className="account-card overflow-hidden p-0"
     >
-      <Card.Header className="flex-row items-start justify-between gap-2.5 px-3 pt-2.5 pb-1.5">
+      <Card.Header className="flex-row items-start justify-between gap-2.5 px-4 pt-3.5 pb-2">
         <div className="flex min-w-0 items-center gap-2.5">
-          <div className="flex size-8 shrink-0 items-center justify-center rounded-xl border border-border bg-surface-secondary">
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-surface-tertiary">
             <ProviderMark provider={account.provider} size={20} />
           </div>
           <div className="min-w-0">
             <div className="flex min-w-0 items-center gap-2">
-              <Card.Title className="truncate text-[13px] leading-5 tracking-[-0.01em]">{account.name || account.id}</Card.Title>
-              <span className="shrink-0 rounded-md bg-surface-secondary px-1.5 py-0.5 text-[10px] text-foreground/65">{provider}</span>
+              <Card.Title className="truncate text-body leading-5">{account.name || account.id}</Card.Title>
+              <span className="shrink-0 rounded-full bg-surface-secondary px-1.5 py-px text-caption text-muted">{provider}</span>
             </div>
-            <Card.Description className="mono truncate text-[10px] leading-4 text-foreground/60" title={`${account.id}${account.remote_uid ? ` · UID ${account.remote_uid}` : ''}`}>
+            <Card.Description className="mono truncate text-caption leading-4 text-foreground/60" title={`${account.id}${account.remote_uid ? ` · UID ${account.remote_uid}` : ''}`}>
               {account.remote_uid ? `UID ${account.remote_uid}` : account.id}
             </Card.Description>
           </div>
@@ -209,7 +212,7 @@ export function AccountCard({
                   <div className="space-y-1.5">
                     <div className="font-medium">{t('partialCooling')}</div>
                     {modelCooldowns.map(([model, until]) => (
-                      <div key={model} className="flex items-center justify-between gap-4 text-xs">
+                      <div key={model} className="flex items-center justify-between gap-4 text-caption">
                         <span>{model}</span>
                         <span className="mono text-foreground/65">{cooldownLabel(until)}</span>
                       </div>
@@ -230,7 +233,7 @@ export function AccountCard({
                 <div className="space-y-1.5">
                   <div className="font-medium">{t('partialCooling')}</div>
                   {modelCooldowns.map(([model, until]) => (
-                    <div key={model} className="flex items-center justify-between gap-4 text-xs">
+                    <div key={model} className="flex items-center justify-between gap-4 text-caption">
                       <span>{model}</span>
                       <span className="mono text-foreground/65">{cooldownLabel(until)}</span>
                     </div>
@@ -242,7 +245,7 @@ export function AccountCard({
         </div>
       </Card.Header>
 
-      <Card.Content className="gap-1.5 px-3 pb-2">
+      <Card.Content className="gap-1.5 px-4 pb-3">
         <RuntimeMeter state={state} stateCopy={stateCopy} t={t} />
 
         {account.quota ? (
@@ -257,22 +260,22 @@ export function AccountCard({
             exceededLabel={t('quotaExceeded')}
             provider={account.provider}
           />
-        ) : <span className="text-[11px] text-foreground/65">{state === 'hot' || state === 'ready' || state === 'loading' || state === 'starting' ? t('quotaLoading') : t('quotaUnavailable')}</span>}
+        ) : <span className="text-caption text-foreground/65">{state === 'hot' || state === 'ready' || state === 'loading' || state === 'starting' ? t('quotaLoading') : t('quotaUnavailable')}</span>}
 
         {lastError ? (
           <Tooltip>
             <Tooltip.Trigger>
-              <div className="flex w-full cursor-help gap-2 rounded-2xl border border-danger/25 bg-danger/5 p-2 text-left text-xs leading-5 text-danger">
-                <WarningCircle size={14} className="mt-0.5 shrink-0" />
+              <div className="flex w-full cursor-help gap-2 rounded-lg bg-surface-secondary p-2 text-left text-caption leading-5 text-foreground">
+                <WarningCircle size={14} className="mt-0.5 shrink-0 text-danger" />
                 <div className="min-w-0 flex-1">
-                  {errorKind ? <div className="mono mb-0.5 truncate text-[10px] opacity-75">{errorKind}</div> : null}
+                  {errorKind ? <div className="mono mb-0.5 truncate text-caption opacity-75">{errorKind}</div> : null}
                   <p className="break-words line-clamp-3">{lastError}</p>
                 </div>
               </div>
             </Tooltip.Trigger>
             <Tooltip.Content>
               <div className="max-w-md whitespace-pre-wrap break-words">
-                {errorKind ? <div className="mono mb-1 text-[10px] opacity-75">{errorKind}</div> : null}
+                {errorKind ? <div className="mono mb-1 text-caption opacity-75">{errorKind}</div> : null}
                 {lastError}
               </div>
             </Tooltip.Content>
@@ -281,19 +284,25 @@ export function AccountCard({
       </Card.Content>
 
       {authPanelOpen && account.enabled ? (
-        <section ref={authRef} className="grid gap-3 border-t border-separator bg-surface-secondary/55 px-3 py-3">
+        <section ref={authRef} className="grid gap-3 bg-surface-secondary/55 px-3 py-3">
           <div>
-            <div className="text-xs font-medium text-muted">{t('oauthDeviceFlow')}</div>
-            <p className="mt-1.5 text-xs leading-5 text-muted">{t('qoderLoginHint')}</p>
+            <div className="text-caption font-medium text-muted">{t('oauthDeviceFlow')}</div>
+            <p className="mt-1.5 text-caption leading-5 text-muted">{account.provider === 'codex' ? t('wizardCodexBrowserLead') : t('qoderLoginHint')}</p>
             <div className="mt-2.5 flex flex-wrap gap-2">
-              <Button size="sm" isPending={busyKind === 'device'} onPress={onDeviceLogin}><ShieldCheck size={14} />{t('startBrowserLogin')}</Button>
-              {authUrl ? <Button size="sm" variant="ghost" onPress={() => window.open(authUrl, '_blank', 'noopener,noreferrer')}><ArrowSquareOut size={14} />{t('open')}</Button> : null}
+              {account.provider === 'codex' ? (
+                <>
+                  <Button size="sm" isPending={busyKind === 'device'} onPress={() => onDeviceLogin('cli')}><ShieldCheck size={14} />{t('startCodexCliLogin')}</Button>
+                  <Button size="sm" variant="secondary" isPending={busyKind === 'device'} onPress={() => onDeviceLogin('chatgpt')}><ShieldCheck size={14} />{t('startCodexChatGPTLogin')}</Button>
+                </>
+              ) : (
+                <Button size="sm" isPending={busyKind === 'device'} onPress={() => onDeviceLogin()}><ShieldCheck size={14} />{t('startBrowserLogin')}</Button>
+              )}
             </div>
-            {account.provider === 'trae' && onSubmitCallback && onCallbackChange ? (
+            {(account.provider === 'trae' || account.provider === 'codex' || account.provider === 'devin') && onSubmitCallback && onCallbackChange ? (
               <div className="mt-3 space-y-2">
-                <p className="text-[11px] leading-4 text-muted">{t('wizardCallbackLead')}</p>
+                <p className="text-caption leading-4 text-muted">{t('wizardCallbackLead')}</p>
                 <TextArea
-                  className="h-24 w-full resize-none font-mono text-xs leading-5"
+                  className="h-24 w-full resize-none font-mono text-caption leading-5"
                   value={callbackUrl || ''}
                   onChange={(event) => onCallbackChange(event.target.value)}
                   placeholder={t('wizardCallbackPh')}
@@ -306,7 +315,7 @@ export function AccountCard({
             ) : null}
           </div>
           <div>
-            <div className="text-xs font-medium text-muted">{t('patFallback')}</div>
+            <div className="text-caption font-medium text-muted">{t('patFallback')}</div>
             <div className="mt-2.5 flex flex-col gap-2 sm:flex-row">
               <TextField className="flex-1" type="password" value={pat} onChange={onPatChange}>
                 <Label className="sr-only">{t('pat')}</Label>
@@ -316,8 +325,32 @@ export function AccountCard({
             </div>
           </div>
           {authUrl || note ? (
-            <div className="text-xs">
-              {authUrl ? <code className="mono block break-all text-muted">{authUrl}</code> : null}
+            <div className="text-caption">
+              {authUrl ? (
+                <div>
+                  <div className="mb-1 text-caption font-medium text-muted">{t('authUrl')}</div>
+                  <code className="mono block break-all text-foreground">{authUrl}</code>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <Button size="sm" variant="secondary" onPress={() => window.open(authUrl, '_blank', 'noopener,noreferrer')}>
+                      <ArrowSquareOut size={14} />{t('openAuthUrl')}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onPress={() => {
+                        void copyText(authUrl).then((ok) => {
+                          if (!ok) return
+                          setAuthCopied(true)
+                          window.setTimeout(() => setAuthCopied(false), 1100)
+                        })
+                      }}
+                    >
+                      <CopyIcon copied={authCopied} />
+                      {authCopied ? t('copied') : t('copy')}
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
               {note ? <p className="mt-1 text-muted">{note}</p> : null}
             </div>
           ) : null}
@@ -325,7 +358,7 @@ export function AccountCard({
       ) : null}
 
       {onCheckin ? (
-        <div className="flex items-start justify-between gap-3 border-t border-separator px-3 py-1.5 text-[11px] text-muted">
+        <div className="flex items-start justify-between gap-3 border-t border-separator px-4 py-2 text-caption text-muted">
           <Tooltip>
             <Tooltip.Trigger>
               <span className="flex cursor-help items-center gap-2">
@@ -339,7 +372,7 @@ export function AccountCard({
             <Tooltip.Trigger>
               <span className="flex cursor-help items-center gap-1.5">
                 <span className="font-medium">{t('autoCheckin')}</span>
-                <span className="mono text-[10px] text-foreground/55">{account.checkin_time || checkinDefaultTime}</span>
+                <span className="mono text-caption text-foreground/55">{account.checkin_time || checkinDefaultTime}</span>
                 <CompactSwitch isSelected={Boolean(account.auto_checkin)} isDisabled={Boolean(busyKind)} ariaLabel={t('autoCheckin')} onChange={(selected) => onToggleAutoCheckin?.(selected)} />
               </span>
             </Tooltip.Trigger>
@@ -348,7 +381,7 @@ export function AccountCard({
         </div>
       ) : null}
 
-      <Card.Footer className="flex flex-wrap items-center gap-1.5 border-t border-separator px-3 py-2">
+      <Card.Footer className="flex flex-wrap items-center gap-1.5 bg-surface-secondary px-4 py-2">
         {onRefresh ? (
           <Tooltip>
             <Tooltip.Trigger>

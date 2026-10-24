@@ -73,10 +73,10 @@ function HintLabel({ label, hint }: { label: string; hint: string }) {
   return (
     <Tooltip>
       <Tooltip.Trigger>
-        <span className="cursor-help text-[11px] text-muted">{label}</span>
+        <span className="cursor-help text-caption text-muted">{label}</span>
       </Tooltip.Trigger>
       <Tooltip.Content>
-        <p className="max-w-xs text-xs leading-5">{hint}</p>
+        <p className="max-w-xs text-caption leading-5">{hint}</p>
       </Tooltip.Content>
     </Tooltip>
   )
@@ -86,46 +86,63 @@ function ModelContextControls({
   model,
   saving,
   t,
+  variant = 'table',
   onToggleTraeMax,
   onReasoningChange,
 }: {
   model: ModelInfo
   saving: boolean
   t: Translate
+  /** table: stacked inside a stable-width cell; card: mobile label-above + full-width select */
+  variant?: 'table' | 'card'
   onToggleTraeMax: (model: ModelInfo, selected: boolean) => void
   onReasoningChange: (model: ModelInfo, next: string) => void
 }) {
   const provider = modelProvider(model)
+  const isCard = variant === 'card'
+  const reasoningSelectClass = isCard ? 'w-full min-w-0' : 'w-full max-w-[7.5rem] min-w-0'
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-3">
-      <span className="mono text-xs text-muted">
-        {formatTokens(model.catalog_context_length || model.context_length)}
-        {model.catalog_context_length_max && model.catalog_context_length_max !== (model.catalog_context_length || model.context_length)
-          ? ` → ${formatTokens(model.catalog_context_length_max)}`
-          : ''}
-      </span>
-      {provider === 'workbuddy' && model.catalog_context_length_max && model.catalog_context_length_max !== (model.catalog_context_length || model.context_length) ? (
-        <HintLabel label={t('catalogWindow')} hint={t('workbuddyContextHint')} />
-      ) : null}
+    <div className={isCard ? 'flex min-w-0 flex-col gap-3' : 'flex min-w-0 flex-col gap-1.5'}>
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <span className="mono text-caption text-muted">
+          {formatTokens(model.catalog_context_length || model.context_length)}
+          {model.catalog_context_length_max && model.catalog_context_length_max !== (model.catalog_context_length || model.context_length)
+            ? ` → ${formatTokens(model.catalog_context_length_max)}`
+            : ''}
+        </span>
+        {provider === 'workbuddy' && model.catalog_context_length_max && model.catalog_context_length_max !== (model.catalog_context_length || model.context_length) ? (
+          <HintLabel label={t('catalogWindow')} hint={t('workbuddyContextHint')} />
+        ) : null}
+      </div>
       {(provider === 'trae' || provider === 'qoder') && model.supports_max_mode ? (
-        <div className="flex items-center gap-2">
-          <CompactSwitch
-            isSelected={Boolean(model.max_mode)}
-            isDisabled={saving}
-            ariaLabel={`${model.id} ${t('maxMode')}`}
-            onChange={(selected) => onToggleTraeMax(model, selected)}
-          />
-          <HintLabel
-            label={`${t('maxMode')}${model.catalog_context_length_max ? ` ${formatTokens(model.catalog_context_length_max)}` : ''}`}
-            hint={provider === 'qoder' ? t('qoderMaxModeHint') : t('maxModeHint')}
-          />
+        <div className={isCard ? 'flex flex-col gap-1.5' : 'flex items-center gap-2'}>
+          {isCard ? (
+            <HintLabel
+              label={`${t('maxMode')}${model.catalog_context_length_max ? ` ${formatTokens(model.catalog_context_length_max)}` : ''}`}
+              hint={provider === 'qoder' ? t('qoderMaxModeHint') : t('maxModeHint')}
+            />
+          ) : null}
+          <div className="flex items-center gap-2">
+            <CompactSwitch
+              isSelected={Boolean(model.max_mode)}
+              isDisabled={saving}
+              ariaLabel={`${model.id} ${t('maxMode')}`}
+              onChange={(selected) => onToggleTraeMax(model, selected)}
+            />
+            {isCard ? null : (
+              <HintLabel
+                label={`${t('maxMode')}${model.catalog_context_length_max ? ` ${formatTokens(model.catalog_context_length_max)}` : ''}`}
+                hint={provider === 'qoder' ? t('qoderMaxModeHint') : t('maxModeHint')}
+              />
+            )}
+          </div>
         </div>
       ) : null}
       {(model.reasoning_options || []).length > 1 ? (
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 flex-col gap-1.5">
           <HintLabel label={t('reasoningLevels')} hint={t('reasoningHint')} />
           <FilterSelect
-            className="min-w-28"
+            className={reasoningSelectClass}
             ariaLabel={`${model.id} ${t('reasoningLevels')}`}
             value={model.reasoning_effort || model.reasoning_default || model.reasoning_options?.[0] || ''}
             onChange={(next) => { if (next) onReasoningChange(model, next) }}
@@ -135,7 +152,7 @@ function ModelContextControls({
       ) : (model.reasoning_options || []).length === 1 ? (
         <HintLabel label={`${t('reasoningLevels')} ${reasoningLabel(t, model.reasoning_options![0])}`} hint={t('reasoningHint')} />
       ) : model.reasoning_type ? (
-        <span className="text-[11px] text-muted">{t('reasoningFixed', { type: model.reasoning_type })}</span>
+        <span className="text-caption text-muted">{t('reasoningFixed', { type: model.reasoning_type })}</span>
       ) : provider === 'trae' && !model.supports_max_mode ? (
         <HintLabel label={t('catalogWindow')} hint={t('catalogWindowHint')} />
       ) : null}
@@ -325,10 +342,10 @@ export function ProvidersPage() {
 
   return (
     <div className="space-y-6">
-      <section className="grid gap-5 border-b border-separator pb-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+      <section className="grid gap-5 pb-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
         <div data-gsap-reveal>
-          <h2 className="text-2xl font-semibold tracking-[-0.035em]">{t('availableModels')}</h2>
-          <p className="mt-1 text-sm text-muted">
+          <h2 className="text-title font-semibold">{t('availableModels')}</h2>
+          <p className="mt-1 text-body text-muted">
             {models.length ? shownLabel : t('noModelsYet')}
           </p>
         </div>
@@ -362,8 +379,8 @@ export function ProvidersPage() {
           <div className="flex min-w-0 items-center gap-3">
             <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-surface-secondary text-muted"><Cube size={16} /></div>
             <div className="min-w-0">
-              <div className="text-sm font-semibold">{t('providerCatalog')}</div>
-              <div className="mt-0.5 text-xs leading-5 text-muted">{t('contextConfigHint')}</div>
+              <div className="text-body font-semibold">{t('providerCatalog')}</div>
+              <div className="mt-0.5 text-caption leading-5 text-muted">{t('contextConfigHint')}</div>
             </div>
           </div>
           <Chip size="sm" variant="soft" className="shrink-0">{filtered.length}</Chip>
@@ -397,17 +414,17 @@ export function ProvidersPage() {
                           <div className="flex flex-wrap items-center gap-2">
                             <div className="truncate font-medium">{model.display_name || model.id}</div>
                             {free ? <Chip size="sm" variant="soft" color="success">{t('modelFree')}</Chip> : null}
-                            {credits ? <span className="mono text-[11px] text-muted">{credits}</span> : null}
+                            {credits ? <span className="mono text-caption text-muted">{credits}</span> : null}
                           </div>
-                          <div className="mono mt-0.5 truncate text-[11px] text-muted">{model.id}</div>
-                          {routedModelName(model) ? <div className="mt-0.5 text-[10px] text-muted">{t('routedTo', { model: routedModelName(model) })}</div> : null}
+                          <div className="mono mt-0.5 truncate text-caption text-muted">{model.id}</div>
+                          {routedModelName(model) ? <div className="mt-0.5 text-caption text-muted">{t('routedTo', { model: routedModelName(model) })}</div> : null}
                         </div>
                       </div>
                       <Chip size="sm" variant="soft" color={model.context_custom ? 'warning' : model.stale ? 'warning' : 'success'}>
                         {model.context_custom ? t('custom') : t('defaultValue')}
                       </Chip>
                     </div>
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-caption">
                       <span className="inline-flex items-center gap-1.5">
                         <ProviderMark provider={provider} size={14} />
                         <span className="font-medium">{providerLabel}</span>
@@ -418,6 +435,7 @@ export function ProvidersPage() {
                       model={model}
                       saving={saving}
                       t={t}
+                      variant="card"
                       onToggleTraeMax={(item, selected) => void onToggleTraeMax(item, selected)}
                       onReasoningChange={(item, next) => void onReasoningChange(item, next)}
                     />
@@ -460,25 +478,26 @@ export function ProvidersPage() {
                                 <div className="flex flex-wrap items-center gap-2">
                                   <div className="font-medium">{model.display_name || model.id}</div>
                                   {free ? <Chip size="sm" variant="soft" color="success">{t('modelFree')}</Chip> : null}
-                                  {credits ? <span className="mono text-[11px] text-muted">{credits}</span> : null}
+                                  {credits ? <span className="mono text-caption text-muted">{credits}</span> : null}
                                 </div>
-                                {routedModelName(model) ? <div className="mt-0.5 text-[10px] text-muted">{t('routedTo', { model: routedModelName(model) })}</div> : null}
+                                {routedModelName(model) ? <div className="mt-0.5 text-caption text-muted">{t('routedTo', { model: routedModelName(model) })}</div> : null}
                               </div>
                             </div>
                           </Table.Cell>
-                          <Table.Cell><span className="mono text-xs font-medium">{model.id}</span></Table.Cell>
+                          <Table.Cell><span className="mono text-caption font-medium">{model.id}</span></Table.Cell>
                           <Table.Cell>
                             <div className="flex items-center gap-2">
                               <ProviderMark provider={provider} size={14} />
-                              <span className="text-xs font-medium">{providerLabel}</span>
+                              <span className="text-caption font-medium">{providerLabel}</span>
                             </div>
                           </Table.Cell>
-                          <Table.Cell><span className="mono text-xs text-muted">{model.mapped_key || model.native_model || model.id}</span></Table.Cell>
+                          <Table.Cell><span className="mono text-caption text-muted">{model.mapped_key || model.native_model || model.id}</span></Table.Cell>
                           <Table.Cell>
                             <ModelContextControls
                               model={model}
                               saving={saving}
                               t={t}
+                              variant="table"
                               onToggleTraeMax={(item, selected) => void onToggleTraeMax(item, selected)}
                               onReasoningChange={(item, next) => void onReasoningChange(item, next)}
                             />

@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"time"
 
@@ -88,10 +89,30 @@ func ClassifyError(err error) Classified {
 	if errors.As(err, &execErr) && execErr != nil {
 		return execErr.Classified
 	}
+	// A streaming first-byte timeout is an upstream hang, not a client cancel:
+	// the parent request is still alive, the upstream just never answered. Cool
+	// the account briefly and fail over so the next eligible account serves the
+	// turn instead of hanging until the client gives up.
+	if errors.Is(err, providers.ErrFirstByteTimeout) {
+		return Classified{
+			Kind: accounts.KindUnavailable, Status: http.StatusBadGateway,
+			Failover: true, Cooldown: 10 * time.Second, RetryAfter: 10 * time.Second,
+			Code: "first_byte_timeout", Message: err.Error(),
+		}
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return Classified{
 			Kind: accounts.KindCanceled, Status: 499, Failover: false,
 			Code: "request_canceled", Message: err.Error(),
+		}
+	}
+	if providers.IsTLSVerifyError(err) {
+		// Certificate verification is deterministic and shared by every
+		// account: no failover, no cooldown, surface the hint as-is.
+		return Classified{
+			Kind: accounts.KindUnavailable, Status: http.StatusBadGateway,
+			Failover: false, Code: providers.CodeTLSVerifyFailed,
+			Type: "api_error", Message: err.Error(),
 		}
 	}
 	var providerErr *providers.Error
@@ -111,6 +132,23 @@ func ClassifyError(err error) Classified {
 	}
 	if providerErr.Message != "" {
 		classified.Message = providerErr.Message
+	}
+	switch providerErr.Code {
+	case providers.CodeUpstreamQueued:
+		// Model-level queue: the account is fine and another account would
+		// queue the same way (and break session affinity). No cooldown, no
+		// failover; pass the upstream retryAfterSeconds through.
+		classified.Kind = accounts.KindRateLimit
+		classified.Status = http.StatusTooManyRequests
+		classified.Failover = false
+		classified.Cooldown = 0
+		classified.RetryAfter = providerErr.RetryAfter
+		return classified
+	case providers.CodeClientVersionTooLow:
+		classified.Failover = false
+		classified.Cooldown = 0
+		classified.RetryAfter = 0
+		return classified
 	}
 	if providerErr.Code == "upstream_empty" {
 		// A heartbeat-only upstream stream says nothing about the account's

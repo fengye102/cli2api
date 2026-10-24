@@ -1086,6 +1086,44 @@ func TestPrepareBodyForcesStreamAndStringToolChoice(t *testing.T) {
 	}
 }
 
+// Image parts must reach upstream unchanged. The catalog advertises
+// supports_images from the upstream product config, so the request body has to
+// keep the caller's image_url blocks on both user turns and tool results; any
+// normalization here would make the advertisement a lie.
+func TestPrepareBodyKeepsImageParts(t *testing.T) {
+	raw := `{"model":"m","messages":[` +
+		`{"role":"user","content":[{"type":"text","text":"look"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]},` +
+		`{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_image","arguments":"{}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_1","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,BBBB"}}]}]}`
+	out := PrepareBody([]byte(raw))
+	var body map[string]any
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatal(err)
+	}
+	messages, _ := body["messages"].([]any)
+	images := map[string]string{}
+	for _, item := range messages {
+		message, _ := item.(map[string]any)
+		role, _ := message["role"].(string)
+		parts, _ := message["content"].([]any)
+		for _, rawPart := range parts {
+			part, _ := rawPart.(map[string]any)
+			if part["type"] != "image_url" {
+				continue
+			}
+			nested, _ := part["image_url"].(map[string]any)
+			url, _ := nested["url"].(string)
+			images[role] = url
+		}
+	}
+	if images["user"] != "data:image/png;base64,AAAA" {
+		t.Fatalf("user image dropped: %v", messages)
+	}
+	if images["tool"] != "data:image/png;base64,BBBB" {
+		t.Fatalf("tool-result image dropped: %v", messages)
+	}
+}
+
 func TestPrepareBodyInsertsNonEmptyLeadingSystem(t *testing.T) {
 	out := PrepareBody([]byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`))
 	var body map[string]any
@@ -1303,6 +1341,84 @@ func TestPrepareBodyKeepsEncodedCustomFunctionTools(t *testing.T) {
 	}
 }
 
+func TestPrepareBodySanitizesWAFFingerprints(t *testing.T) {
+	input := []byte(`{
+			"model": "glm-5.2",
+			"messages": [
+				{
+					"role": "system",
+					"content": "Environment:\nMain branch (you will usually use this for PRs): main\nOther context."
+				},
+				{
+					"role": "user",
+					"content": "Check git: Main branch (you will usually use this for PRs)"
+				},
+				{
+					"role": "assistant",
+					"content": [
+						{"type": "text", "text": "Result from Main branch (you will usually use this for PRs): test"}
+					],
+					"reasoning_content": "Thinking about Main branch (you will usually use this for PRs): main"
+				},
+				{
+					"role": "user",
+					"content": "Hello world untouched"
+				}
+			]
+		}`)
+	out := PrepareBody(input)
+	var body map[string]any
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatal(err)
+	}
+	messages, _ := body["messages"].([]any)
+	if len(messages) != 4 {
+		t.Fatalf("expected 4 messages, got %d", len(messages))
+	}
+
+	msg0, _ := messages[0].(map[string]any)
+	content0, _ := msg0["content"].(string)
+	if strings.Contains(content0, "Main branch (you will usually use this for PRs)") {
+		t.Fatalf("system message still contains fingerprint: %q", content0)
+	}
+	if !strings.Contains(content0, "Main branch (target for pull requests): main") {
+		t.Fatalf("system message missing sanitized text: %q", content0)
+	}
+
+	msg1, _ := messages[1].(map[string]any)
+	content1, _ := msg1["content"].(string)
+	if strings.Contains(content1, "Main branch (you will usually use this for PRs)") {
+		t.Fatalf("user message still contains fingerprint: %q", content1)
+	}
+	if !strings.Contains(content1, "Main branch (target for pull requests)") {
+		t.Fatalf("user message missing sanitized text: %q", content1)
+	}
+
+	msg2, _ := messages[2].(map[string]any)
+	parts, _ := msg2["content"].([]any)
+	part0, _ := parts[0].(map[string]any)
+	partText, _ := part0["text"].(string)
+	if strings.Contains(partText, "Main branch (you will usually use this for PRs)") {
+		t.Fatalf("part text still contains fingerprint: %q", partText)
+	}
+	if !strings.Contains(partText, "Main branch (target for pull requests): test") {
+		t.Fatalf("part text missing sanitized text: %q", partText)
+	}
+	reasoning, _ := msg2["reasoning_content"].(string)
+	if strings.Contains(reasoning, "Main branch (you will usually use this for PRs)") {
+		t.Fatalf("reasoning still contains fingerprint: %q", reasoning)
+	}
+	if !strings.Contains(reasoning, "Main branch (target for pull requests): main") {
+		t.Fatalf("reasoning missing sanitized text: %q", reasoning)
+	}
+
+	msg3, _ := messages[3].(map[string]any)
+	content3, _ := msg3["content"].(string)
+	if content3 != "Hello world untouched" {
+		t.Fatalf("untouched message changed: %q", content3)
+	}
+}
+
 func TestCatalogHeadersUseDesktopUAOnlyForGlobal(t *testing.T) {
 	global := http.Header{}
 	SetCatalogHeaders(global, Credential{AccessToken: "at", UID: "u1", Domain: "www.workbuddy.ai"})
@@ -1332,7 +1448,7 @@ func TestChatHeadersStayRegionSpecificAndIncludeCLIChannel(t *testing.T) {
 	if cn.Get("Origin") != "https://www.codebuddy.cn" || cn.Get("Referer") != "https://www.codebuddy.cn/" {
 		t.Fatalf("CN origin/referer mixed: %+v", cn)
 	}
-	if got := cn.Get("User-Agent"); got != UserAgent || !strings.Contains(got, "2.139.0") {
+	if got := cn.Get("User-Agent"); got != UserAgent || !strings.Contains(got, "2.161.0") {
 		t.Fatalf("CN UA=%q", got)
 	}
 	if cn.Get("X-Product") != "SaaS" || cn.Get("X-IDE-Type") != "CLI" || cn.Get("X-Agent-Intent") != "craft" ||
@@ -1872,6 +1988,7 @@ func TestOutcomeFromAggregatePreservesCacheUsage(t *testing.T) {
 	}{
 		{name: "top-level cache fields", usage: `"cache_read_tokens":12,"cache_write_tokens":3`, read: 12, write: 3},
 		{name: "cached tokens detail fallback", usage: `"prompt_tokens_details":{"cached_tokens":7},"cache_write_tokens":0`, read: 7, write: 0},
+		{name: "prompt cache hit tokens", usage: `"prompt_cache_hit_tokens":80,"cache_write_tokens":0`, read: 80, write: 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			aggregate, err := Aggregate(strings.NewReader(strings.Join([]string{

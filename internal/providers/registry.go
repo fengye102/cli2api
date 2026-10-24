@@ -96,7 +96,7 @@ var Qoder = ProviderDescriptor{
 	Label:             "Qoder",
 	Runtime:           RuntimeChildProcess,
 	AuthTypes:         []AuthType{AuthNone, AuthOAuth, AuthPAT, AuthNative},
-	CredentialFormats: []string{"qoder-native-v1"},
+	CredentialFormats: []string{"qoder-pat-v1", "qoder-native-v1"},
 	Capabilities: ProviderCapabilities{
 		Chat: true, Stream: true, Tools: true, Images: true, Reasoning: true,
 		ModelCatalog: true, Usage: true, Login: true, BrowserLogin: true,
@@ -246,6 +246,64 @@ var Codex = ProviderDescriptor{
 	DefaultRegion: "global",
 }
 
+// Zhipu descriptor. Protocol constants stay in internal/providers/zhipu.
+// CN-only in-process adapter. Auth is a pasted API key; pay-as-you-go and
+// Coding Plan differ by base URL, not by a second provider family.
+var Zhipu = ProviderDescriptor{
+	ID:                "zhipu",
+	Label:             "Zhipu GLM",
+	Runtime:           RuntimeInProcess,
+	AuthTypes:         []AuthType{AuthPAT},
+	CredentialFormats: []string{"zhipu-key-v1"},
+	Capabilities: ProviderCapabilities{
+		Chat: true, Stream: true, Tools: true, Images: false, Reasoning: true,
+		ModelCatalog: true, Usage: true, Login: false, BrowserLogin: false,
+		PATLogin: true, ImportExport: true,
+	},
+	Regions: []RegionDescriptor{
+		{
+			ID: "cn", Label: "CN", ChatBase: "https://open.bigmodel.cn",
+			BillingBase: "https://open.bigmodel.cn", AuthBase: "https://open.bigmodel.cn",
+			DefaultDomain: "bigmodel.cn",
+		},
+	},
+	DefaultRegion: "cn",
+}
+
+// QwenWork descriptor. Protocol constants stay in internal/providers/qwenwork;
+// the registry only carries control-plane metadata. QwenWork is the rebranded
+// QoderWork desktop product: global is qwenwork.ai, cn is 千问办公 qwenwork.cn.
+// Daily free credits are granted by the server at 00:00 Asia/Shanghai (CN
+// wallet copy: "每日 0 点刷新"; global pricing lists the same "daily login
+// bonus"), so both regions use that day boundary.
+var QwenWork = ProviderDescriptor{
+	ID:                "qwenwork",
+	Label:             "QwenWork",
+	Runtime:           RuntimeInProcess,
+	AuthTypes:         []AuthType{AuthOAuth},
+	CredentialFormats: []string{"qwenwork-oauth-v1"},
+	Capabilities: ProviderCapabilities{
+		Chat: true, Stream: true, Tools: true, Images: true, Reasoning: true,
+		ModelCatalog: true, Usage: true, Login: true, BrowserLogin: true,
+		PATLogin: false, ImportExport: true,
+	},
+	Regions: []RegionDescriptor{
+		{
+			ID: "global", Label: "International", ChatBase: "https://gateway.qwenwork.ai",
+			BillingBase: "https://gateway.qwenwork.ai", AuthBase: "https://gateway.qwenwork.ai",
+			DefaultDomain: "qwenwork.ai",
+			Checkin:       &CheckinPolicy{Timezone: "Asia/Shanghai"},
+		},
+		{
+			ID: "cn", Label: "CN", ChatBase: "https://gateway.qwenwork.cn",
+			BillingBase: "https://gateway.qwenwork.cn", AuthBase: "https://gateway.qwenwork.cn",
+			DefaultDomain: "qwenwork.cn",
+			Checkin:       &CheckinPolicy{Timezone: "Asia/Shanghai"},
+		},
+	},
+	DefaultRegion: "global",
+}
+
 // ZCode descriptor. Accounts sign in to the service the desktop client uses by
 // default: Z.ai (chat.z.ai, redirect zcode://zai-auth/callback), whose
 // authorize host, callback scheme and API base live in the region below.
@@ -270,30 +328,6 @@ var ZCode = ProviderDescriptor{
 		},
 	},
 	DefaultRegion: "zai",
-}
-
-// Zhipu descriptor. Protocol constants stay in internal/providers/zhipu.
-// CN-only in-process adapter. Auth is a pasted API key; pay-as-you-go and
-// Coding Plan differ by base URL, not by a second provider family.
-var Zhipu = ProviderDescriptor{
-	ID:                "zhipu",
-	Label:             "Zhipu GLM",
-	Runtime:           RuntimeInProcess,
-	AuthTypes:         []AuthType{AuthPAT},
-	CredentialFormats: []string{"zhipu-key-v1"},
-	Capabilities: ProviderCapabilities{
-		Chat: true, Stream: true, Tools: true, Images: false, Reasoning: true,
-		ModelCatalog: true, Usage: true, Login: false, BrowserLogin: false,
-		PATLogin: true, ImportExport: true,
-	},
-	Regions: []RegionDescriptor{
-		{
-			ID: "cn", Label: "CN", ChatBase: "https://open.bigmodel.cn",
-			BillingBase: "https://open.bigmodel.cn", AuthBase: "https://open.bigmodel.cn",
-			DefaultDomain: "bigmodel.cn",
-		},
-	},
-	DefaultRegion: "cn",
 }
 
 // Raccoon descriptor (小浣熊 / SenseTime). In-process provider with two ways in,
@@ -366,8 +400,9 @@ var registry = map[string]ProviderDescriptor{
 	Devin.ID:       Devin,
 	Command.ID:     Command,
 	Codex.ID:       Codex,
-	ZCode.ID:       ZCode,
 	Zhipu.ID:       Zhipu,
+	QwenWork.ID:    QwenWork,
+	ZCode.ID:       ZCode,
 	Raccoon.ID:     Raccoon,
 	Antigravity.ID: Antigravity,
 }
@@ -378,7 +413,7 @@ func Get(id string) (ProviderDescriptor, bool) {
 }
 
 func List() []ProviderDescriptor {
-	return []ProviderDescriptor{Qoder, WorkBuddy, Trae, Devin, Command, Codex, ZCode, Zhipu, Raccoon, Antigravity}
+	return []ProviderDescriptor{Qoder, WorkBuddy, Trae, Devin, Command, Codex, Zhipu, QwenWork, ZCode, Raccoon, Antigravity}
 }
 
 // Resolve validates a provider/region pair. Empty values fall back to the

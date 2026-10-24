@@ -12,6 +12,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc(endpoint.HealthPath, s.handleHealth)
 	s.mux.HandleFunc("/api/overview", s.withConsoleKey(s.consoleHandler().HandleOverview))
 	s.mux.HandleFunc("/api/overview/summary", s.withConsoleKey(s.consoleHandler().HandleOverviewSummary))
+	s.mux.HandleFunc("/api/live", s.withConsoleKey(s.consoleHandler().HandleLive))
 	s.mux.HandleFunc("/api/system/update", s.withConsoleKey(s.consoleHandler().HandleSystemUpdate))
 	s.mux.HandleFunc("/api/system/update/prepare", s.withConsoleKey(s.consoleHandler().HandleSystemUpdatePrepare))
 	s.mux.HandleFunc("/api/system/update/apply", s.withConsoleKey(s.consoleHandler().HandleSystemUpdateConfirm))
@@ -30,6 +31,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/accounts/", s.withConsoleKey(s.consoleHandler().HandleAccountByID))
 	s.mux.HandleFunc("/api/logs", s.withConsoleKey(s.consoleHandler().HandleLogs))
 	s.mux.HandleFunc("/api/logs/", s.withConsoleKey(s.consoleHandler().HandleLogs))
+	s.mux.HandleFunc("/api/usage", s.withConsoleKey(s.consoleHandler().HandleUsage))
+	s.mux.HandleFunc("/api/usage/", s.withConsoleKey(s.consoleHandler().HandleUsage))
 	s.mux.HandleFunc("/api/chat", s.withConsoleKey(s.consoleHandler().HandleChat))
 	s.mux.HandleFunc(endpoint.ModelsPath, s.withAPIKey(s.gatewayHandler().HandleModels))
 	s.mux.HandleFunc(endpoint.ChatCompletionsPath, s.withAPIKey(s.gatewayHandler().HandleChatCompletions))
@@ -52,7 +55,7 @@ func (s *Server) routes() {
 			r.URL.Path != "/og-card.svg" &&
 			r.URL.Path != "/site.webmanifest" {
 			switch r.URL.Path {
-			case "/login", "/auth", "/providers", "/access", "/accounts", "/system", "/logs", "/keys":
+			case "/login", "/auth", "/providers", "/access", "/accounts", "/system", "/logs", "/keys", "/usage":
 			default:
 				http.NotFound(w, r)
 				return

@@ -78,11 +78,14 @@ type Manager struct {
 	restarts       map[string]int
 	restartBackoff map[string]int
 	recovering     map[string]bool
-	recoverDone    sync.WaitGroup
-	nextPort       int
-	httpClient     *http.Client
-	runCtx         context.Context
-	cancel         context.CancelFunc
+	recoverPending map[string]string
+	// recoverUnwindHook runs (tests only) as a recovery goroutine starts unwinding.
+	recoverUnwindHook func(id string)
+	recoverDone       sync.WaitGroup
+	nextPort          int
+	httpClient        *http.Client
+	runCtx            context.Context
+	cancel            context.CancelFunc
 	// The persistence path is one mutex-guarded goroutine. The dirty set
 	// is keyed by account ID and merged on enqueue: a stale snapshot (older
 	// StateVersion) that arrives after a newer one is discarded, so the final
@@ -118,6 +121,23 @@ type Manager struct {
 	resources atomic.Pointer[ResourceSnapshot]
 	resMu     sync.Mutex       // serializes sampleResources
 	cpuPrev   map[int]procTime // pid -> last jiffies sample for CPU% deltas
+
+	// quotaProbeLevels tracks, per account ID, how many consecutive stale-quota
+	// sweeps have re-fetched a snapshot that still reported Exceeded. It drives
+	// the per-account backoff in refreshStaleQuota so a genuinely exhausted
+	// account is probed on a daily-ish cadence instead of every five minutes.
+	// Only mutated by the maintenance loop; guarded by quotaProbeMu because
+	// account removal can race with the sweep.
+	quotaProbeMu     sync.Mutex
+	quotaProbeLevels map[string]int
+
+	// healthFailures counts consecutive liveness probe failures per worker
+	// account. The maintenance loop's workerLiveness watchdog increments it on
+	// each failed /health probe and clears it on success; reaching
+	// workerLivenessThreshold triggers restartStuckWorker, which removes the
+	// process from the table, stops it, then calls beginAccountRecovery to
+	// reboot the stuck worker. Guarded by mu.
+	healthFailures map[string]int
 }
 
 func NewManager(config ManagerConfig, store AccountStore, starter ProcessStarter) *Manager {
@@ -147,6 +167,7 @@ func NewManager(config ManagerConfig, store AccountStore, starter ProcessStarter
 		restarts:          map[string]int{},
 		restartBackoff:    map[string]int{},
 		recovering:        map[string]bool{},
+		recoverPending:    map[string]string{},
 		nextPort:          config.BasePort,
 		httpClient:        &http.Client{Timeout: 2 * time.Second},
 		runCtx:            runCtx,
@@ -155,6 +176,8 @@ func NewManager(config ManagerConfig, store AccountStore, starter ProcessStarter
 		persistedVersions: map[string]uint64{},
 		persistCloseCh:    make(chan struct{}),
 		cpuPrev:           map[int]procTime{},
+		quotaProbeLevels:  map[string]int{},
+		healthFailures:    map[string]int{},
 	}
 	manager.persistCond = sync.NewCond(&manager.persistMu)
 	manager.persistDone.Add(1)
@@ -503,6 +526,22 @@ func (m *Manager) TestRecovering(id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.recovering[id]
+}
+
+// TestSetRecoverUnwindHook installs a hook run when a recovery goroutine
+// starts unwinding, before it clears the recovering guard. Tests only.
+func (m *Manager) TestSetRecoverUnwindHook(hook func(id string)) {
+	m.mu.Lock()
+	m.recoverUnwindHook = hook
+	m.mu.Unlock()
+}
+
+// TestRecoverPending reports whether a failure is queued behind an active recovery.
+func (m *Manager) TestRecoverPending(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.recoverPending[id]
+	return ok
 }
 
 func (m *Manager) TestRestartDelay(level int) time.Duration {

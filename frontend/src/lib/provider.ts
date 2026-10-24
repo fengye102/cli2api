@@ -35,6 +35,10 @@ export function isAntigravityProvider(provider?: string) {
   return String(provider || '').toLowerCase() === 'antigravity'
 }
 
+export function isQwenworkProvider(provider?: string) {
+  return String(provider || '').toLowerCase() === 'qwenwork'
+}
+
 export function accountProviderFamilyLabel(
   provider: string | undefined,
   t: (key: string) => string,
@@ -48,6 +52,7 @@ export function accountProviderFamilyLabel(
   if (isZhipuProvider(providerID)) return 'Zhipu GLM'
   if (isRaccoonProvider(providerID)) return t('accountTypeRaccoon')
   if (isAntigravityProvider(providerID)) return t('accountTypeAntigravity')
+  if (isQwenworkProvider(providerID)) return 'QwenWork'
   if (isQoderProvider(providerID)) return 'Qoder'
   return provider || t('account')
 }
@@ -82,6 +87,9 @@ export function accountProviderLabel(
   }
   if (isAntigravityProvider(providerID)) {
     return t('accountTypeAntigravity')
+  }
+  if (isQwenworkProvider(providerID)) {
+    return regionID === 'cn' ? t('accountTypeQwenworkCN') : t('accountTypeQwenworkGlobal')
   }
   if (isQoderProvider(providerID)) {
     return regionID === 'cn' ? t('accountTypeQoderCN') : t('accountTypeQoderGlobal')

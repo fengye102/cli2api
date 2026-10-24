@@ -1,19 +1,14 @@
+import { toast } from '@/lib/toast'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { getLocalTimeZone, type DateValue } from '@internationalized/date'
+import { useSearchParams } from 'react-router-dom'
 import {
   Button,
   Card,
   Chip,
-  DateField,
-  DateRangePicker,
-  Label,
   Modal,
-  RangeCalendar,
   Tab,
   Table,
   Tabs,
-  TimeField,
-  type TimeValue,
 } from '@heroui/react'
 import {
   ArrowClockwise,
@@ -42,8 +37,9 @@ import { ListPager, type PageSize } from '@/components/ui/ListPager'
 import { PageAlert } from '@/components/ui/PageAlert'
 import { LogsPageSkeleton, LogsRequestListSkeleton, LogsRuntimeListSkeleton, SkeletonBlock } from '@/components/ui/PageSkeletons'
 import { SearchBar } from '@/components/ui/SearchBar'
+import { dateValueToISO, isoToDateValue, TimeRangePicker, type DateRangeValue } from '@/components/ui/TimeRangePicker'
 import { useI18n } from '@/hooks/useI18n'
-import { accountProviderLabel } from '@/lib/provider'
+import { accountProviderFamilyLabel, accountProviderLabel } from '@/lib/provider'
 
 type PageTab = 'requests' | 'runtime'
 type RequestFilter = 'all' | 'ok' | 'incomplete' | 'error' | 'canceled'
@@ -51,8 +47,6 @@ type RuntimeFilter = 'all' | 'info' | 'warn' | 'error'
 type StreamFilter = 'all' | 'stream' | 'sync'
 type TimeRange = 'all' | '1h' | '24h' | '7d' | 'custom'
 type ErrorKindFilter = 'all' | 'quota' | 'rate_limit' | 'auth' | 'not_ready' | 'unavailable' | 'invalid_request' | 'model_not_available'
-
-type DateRangeValue = { start: DateValue; end: DateValue }
 
 function statusColor(status?: string): 'success' | 'warning' | 'danger' | 'default' {
   if (status === 'ok') return 'success'
@@ -119,11 +113,11 @@ function TokenSplit({
       {prompt != null || completion != null ? (
         <>
           <div className="mono text-xs">{prompt ?? 0} / {completion ?? 0}</div>
-          <div className="mt-0.5 text-[10px] text-muted">{inLabel} / {outLabel}</div>
+          <div className="mt-0.5 text-caption text-muted">{inLabel} / {outLabel}</div>
         </>
       ) : null}
       {creditText != null ? (
-        <div className={`mono text-[10px] text-success ${prompt != null || completion != null ? 'mt-0.5' : ''}`}>
+        <div className={`mono text-caption text-success ${prompt != null || completion != null ? 'mt-0.5' : ''}`}>
           {pointsLabel ? pointsLabel(creditText) : creditText}
         </div>
       ) : null}
@@ -166,12 +160,61 @@ function formatCredit(value?: number | null) {
   return String(Math.round(value * 10000) / 10000)
 }
 
-function dateValueToISO(value: DateValue | null | undefined, endOfMinute = false) {
-  if (!value) return undefined
-  const date = value.toDate(getLocalTimeZone())
-  if (!Number.isFinite(date.getTime())) return undefined
-  if (endOfMinute) date.setSeconds(59, 999)
-  return date.toISOString()
+const REQUEST_FILTERS: RequestFilter[] = ['all', 'ok', 'incomplete', 'error', 'canceled']
+const ERROR_KINDS: ErrorKindFilter[] = ['all', 'quota', 'rate_limit', 'auth', 'not_ready', 'unavailable', 'invalid_request', 'model_not_available']
+const TIME_RANGES: TimeRange[] = ['all', '1h', '24h', '7d', 'custom']
+
+type UrlFilters = {
+  requestFilter: RequestFilter
+  requestId: string
+  accountFilter: string
+  modelFilter: string
+  providerFilter: string
+  streamFilter: StreamFilter
+  errorKind: ErrorKindFilter
+  timeRange: TimeRange
+  customRange: DateRangeValue | null
+}
+
+/** Request-log filters from the URL (?status=&account=&model=&error_kind=&stream=&id=&range=&from=&to=). */
+function parseLogsUrl(params: URLSearchParams): UrlFilters {
+  const pick = <T extends string>(value: string | null, allowed: T[], fallback: T) =>
+    (allowed as string[]).includes(value ?? '') ? (value as T) : fallback
+  const start = isoToDateValue(params.get('from'))
+  const end = isoToDateValue(params.get('to'))
+  const custom = start && end ? { start, end } : null
+  const stream = params.get('stream')
+  return {
+    requestFilter: pick(params.get('status'), REQUEST_FILTERS, 'all'),
+    requestId: params.get('id') ?? '',
+    accountFilter: params.get('account') ?? '',
+    modelFilter: params.get('model') ?? '',
+    providerFilter: params.get('provider') ?? '',
+    streamFilter: stream === 'stream' || stream === 'true' ? 'stream' : stream === 'sync' || stream === 'false' ? 'sync' : 'all',
+    errorKind: pick(params.get('error_kind'), ERROR_KINDS, 'all'),
+    timeRange: custom ? 'custom' : pick(params.get('range'), TIME_RANGES, '1h'),
+    customRange: custom,
+  }
+}
+
+function buildLogsUrl(filters: UrlFilters) {
+  const params = new URLSearchParams()
+  if (filters.requestFilter !== 'all') params.set('status', filters.requestFilter)
+  if (filters.requestId) params.set('id', filters.requestId)
+  if (filters.accountFilter) params.set('account', filters.accountFilter)
+  if (filters.modelFilter) params.set('model', filters.modelFilter)
+  if (filters.providerFilter) params.set('provider', filters.providerFilter)
+  if (filters.streamFilter !== 'all') params.set('stream', filters.streamFilter)
+  if (filters.errorKind !== 'all') params.set('error_kind', filters.errorKind)
+  const from = filters.timeRange === 'custom' ? dateValueToISO(filters.customRange?.start) : undefined
+  const to = filters.timeRange === 'custom' ? dateValueToISO(filters.customRange?.end, true) : undefined
+  if (from && to) {
+    params.set('from', from)
+    params.set('to', to)
+  } else if (filters.timeRange !== '1h') {
+    params.set('range', filters.timeRange)
+  }
+  return params.toString()
 }
 
 function rangeFromPreset(preset: TimeRange) {
@@ -186,23 +229,26 @@ function rangeFromPreset(preset: TimeRange) {
 
 export function LogsPage() {
   const { t, lang } = useI18n()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [initialUrl] = useState(() => parseLogsUrl(new URLSearchParams(window.location.search)))
   const [accounts, setAccounts] = useState<NonNullable<Overview['accounts']>>([])
   const [models, setModels] = useState<NonNullable<Overview['models']>>([])
   const [tab, setTab] = useState<PageTab>('requests')
   const [loading, setLoading] = useState(true)
   const [booted, setBooted] = useState(false)
   const [error, setError] = useState('')
-  const [requestFilter, setRequestFilter] = useState<RequestFilter>('all')
+  const [requestFilter, setRequestFilter] = useState<RequestFilter>(initialUrl.requestFilter)
   const [runtimeFilter, setRuntimeFilter] = useState<RuntimeFilter>('all')
-  const [requestId, setRequestId] = useState('')
+  const [requestId, setRequestId] = useState(initialUrl.requestId)
   const [runtimeQuery, setRuntimeQuery] = useState('')
-  const [accountFilter, setAccountFilter] = useState('')
+  const [accountFilter, setAccountFilter] = useState(initialUrl.accountFilter)
   const [runtimeAccount, setRuntimeAccount] = useState('')
-  const [modelFilter, setModelFilter] = useState('')
-  const [streamFilter, setStreamFilter] = useState<StreamFilter>('all')
-  const [errorKind, setErrorKind] = useState<ErrorKindFilter>('all')
-  const [timeRange, setTimeRange] = useState<TimeRange>('1h')
-  const [customRange, setCustomRange] = useState<DateRangeValue | null>(null)
+  const [modelFilter, setModelFilter] = useState(initialUrl.modelFilter)
+  const [providerFilter, setProviderFilter] = useState(initialUrl.providerFilter)
+  const [streamFilter, setStreamFilter] = useState<StreamFilter>(initialUrl.streamFilter)
+  const [errorKind, setErrorKind] = useState<ErrorKindFilter>(initialUrl.errorKind)
+  const [timeRange, setTimeRange] = useState<TimeRange>(initialUrl.timeRange)
+  const [customRange, setCustomRange] = useState<DateRangeValue | null>(initialUrl.customRange)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<PageSize>(50)
   const [runtimePage, setRuntimePage] = useState(1)
@@ -220,6 +266,31 @@ export function LogsPage() {
   const detailRequestRef = useRef(0)
   const [clearOpen, setClearOpen] = useState(false)
   const [busy, setBusy] = useState(false)
+
+  // URL <-> filter controls. External URL changes (back/forward, drill-down
+  // links) are applied to the controls; control changes replace the URL.
+  const searchString = searchParams.toString()
+  const urlString = buildLogsUrl({ requestFilter, requestId, accountFilter, modelFilter, providerFilter, streamFilter, errorKind, timeRange, customRange })
+  const lastUrlRef = useRef(searchString)
+  useEffect(() => {
+    if (searchString === lastUrlRef.current) return
+    lastUrlRef.current = searchString
+    const next = parseLogsUrl(new URLSearchParams(searchString))
+    setRequestFilter(next.requestFilter)
+    setRequestId(next.requestId)
+    setAccountFilter(next.accountFilter)
+    setModelFilter(next.modelFilter)
+    setProviderFilter(next.providerFilter)
+    setStreamFilter(next.streamFilter)
+    setErrorKind(next.errorKind)
+    setTimeRange(next.timeRange)
+    setCustomRange(next.customRange)
+  }, [searchString])
+  useEffect(() => {
+    if (urlString === lastUrlRef.current) return
+    lastUrlRef.current = urlString
+    setSearchParams(urlString, { replace: true })
+  }, [urlString, setSearchParams])
 
   useEffect(() => {
     let cancelled = false
@@ -265,6 +336,15 @@ export function LogsPage() {
     () => (accounts || []).map((account) => ({ id: account.id, label: account.name || account.id })),
     [accounts],
   )
+  const providerOptions = useMemo(() => {
+    const ids = new Set<string>()
+    for (const account of accounts || []) if (account.provider) ids.add(account.provider)
+    if (providerFilter) ids.add(providerFilter)
+    return [
+      { id: '', label: t('logsFilterProviderAll') },
+      ...[...ids].sort().map((id) => ({ id, label: accountProviderFamilyLabel(id, t) })),
+    ]
+  }, [accounts, providerFilter, t])
   const modelOptions = useMemo(() => {
     const seen = new Map<string, { id: string; label: string }>()
     for (const model of models || []) {
@@ -287,6 +367,7 @@ export function LogsPage() {
     || requestFilter !== 'all'
     || accountFilter
     || modelFilter
+    || providerFilter
     || streamFilter !== 'all'
     || errorKind !== 'all'
     || timeRange !== '1h',
@@ -297,6 +378,7 @@ export function LogsPage() {
     requestId,
     accountFilter,
     modelFilter,
+    providerFilter,
     streamFilter,
     errorKind,
     timeRange,
@@ -342,6 +424,7 @@ export function LogsPage() {
         id: requestId || undefined,
         account: accountFilter || undefined,
         model: modelFilter || undefined,
+        provider: providerFilter || undefined,
         stream: streamFilter === 'all' ? undefined : streamFilter === 'stream',
         error_kind: errorKind === 'all' ? undefined : errorKind,
         from: range.from,
@@ -360,7 +443,7 @@ export function LogsPage() {
         setBooted(true)
       }
     }
-  }, [requestFilter, requestId, accountFilter, modelFilter, streamFilter, errorKind, timeRange, customRange, currentPage, pageSize])
+  }, [requestFilter, requestId, accountFilter, modelFilter, providerFilter, streamFilter, errorKind, timeRange, customRange, currentPage, pageSize])
 
   const loadRuntime = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true)
@@ -423,6 +506,7 @@ export function LogsPage() {
     setRequestFilter('all')
     setAccountFilter('')
     setModelFilter('')
+    setProviderFilter('')
     setStreamFilter('all')
     setErrorKind('all')
     setTimeRange('1h')
@@ -455,25 +539,32 @@ export function LogsPage() {
 
   async function onClear() {
     setBusy(true)
+    toast({ id: 'logs-clear', type: 'loading', title: t('toastClearingLogs') })
     try {
       await clearRequestLogs()
       setClearOpen(false)
       await loadRequests(false)
+      toast({ id: 'logs-clear', type: 'success', title: t('toastLogsCleared') })
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
+      toast({ id: 'logs-clear', type: 'error', title: t('toastFailed'), description: err instanceof Error ? err.message : String(err) })
     } finally {
       setBusy(false)
     }
   }
 
+  // Refetches (page, filter, refresh) keep the current rows on screen instead
+  // of swapping back to the skeleton; the skeleton is only for an empty list.
+  // No entrance/fade animation anywhere: skeleton -> content is an instant swap.
+  const listSkeleton = loading && (tab === 'requests' ? requests.length === 0 : runtime.length === 0)
   if (loading && !booted) return <LogsPageSkeleton />
 
   return (
     <div className="space-y-6">
-      <section className="flex flex-wrap items-end justify-between gap-4 border-b border-separator pb-4">
+      <section className="flex flex-wrap items-end justify-between gap-4 pb-4">
         <div>
-          <h2 data-gsap-reveal className="text-2xl font-semibold tracking-[-0.035em]">{t('navLogs')}</h2>
-          <p className="mt-1 max-w-2xl text-sm leading-6 text-muted">{t('logsLead')}</p>
+          <h2 className="text-title font-semibold">{t('navLogs')}</h2>
+          <p className="mt-1 max-w-2xl text-body leading-6 text-muted">{t('logsLead')}</p>
         </div>
         <div className="flex items-center gap-2">
           {tab === 'requests' ? (
@@ -490,19 +581,21 @@ export function LogsPage() {
       {error ? <PageAlert title={t('failedLogs', { msg: error })} /> : null}
 
       <Tabs selectedKey={tab} onSelectionChange={(key) => setTab(String(key) as PageTab)}>
-        <Tabs.ListContainer className="max-w-md">
+        <Tabs.ListContainer className="w-fit">
           <Tabs.List>
             <Tab id="requests" className="gap-1.5">
+              <Tabs.Indicator className="transition-none" />
               <Scroll size={13} />{t('logsRequests')}
             </Tab>
             <Tab id="runtime" className="gap-1.5">
+              <Tabs.Indicator className="transition-none" />
               <TerminalWindow size={13} />{t('logsRuntime')}
             </Tab>
           </Tabs.List>
         </Tabs.ListContainer>
 
-        <Tabs.Panel id="requests" className="space-y-4 pt-5">
-          <div className="flex flex-col gap-3">
+        <Tabs.Panel id="requests" data-tab-panel="requests" className="space-y-4 pt-5">
+          <div className="data-toolbar flex flex-col gap-2">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <FilterToggle
                 value={requestFilter}
@@ -520,7 +613,7 @@ export function LogsPage() {
                 {hasRequestFilters ? (
                   <Button size="sm" variant="ghost" onPress={clearRequestFilters}>{t('clearFilters')}</Button>
                 ) : null}
-                <div className="mono text-[11px] text-muted">{shownLabel}</div>
+                <div className="mono text-caption text-muted">{shownLabel}</div>
               </div>
             </div>
 
@@ -542,6 +635,12 @@ export function LogsPage() {
                 allLabel={t('logsFilterModelAll')}
                 searchPlaceholder={t('logsSearchModel')}
                 emptyLabel={t('logsNoFilterOptions')}
+              />
+              <FilterSelect
+                ariaLabel={t('logsColProvider')}
+                value={providerFilter}
+                onChange={setProviderFilter}
+                options={providerOptions}
               />
               <FilterSearchSelect
                 ariaLabel={t('logsSearchRequestId')}
@@ -596,111 +695,20 @@ export function LogsPage() {
                 ]}
               />
               {timeRange === 'custom' ? (
-                <DateRangePicker
+                <TimeRangePicker
                   className="w-[min(100%,42rem)]"
-                  granularity="minute"
-                  hourCycle={24}
-                  shouldForceLeadingZeros
                   value={customRange}
-                  onChange={(next) => setCustomRange(next)}
-                  aria-label={t('logsTimeRange')}
-                >
-                  {({ state }) => (
-                    <>
-                      <DateField.Group className="w-full min-w-0" variant="secondary">
-                        <DateField.Input className="min-w-0" slot="start" aria-label={t('logsTimeFrom')}>
-                          {(segment) => <DateField.Segment segment={segment} />}
-                        </DateField.Input>
-                        <DateRangePicker.RangeSeparator />
-                        <DateField.Input className="min-w-0" slot="end" aria-label={t('logsTimeTo')}>
-                          {(segment) => <DateField.Segment segment={segment} />}
-                        </DateField.Input>
-                        <DateField.Suffix>
-                          <DateRangePicker.Trigger>
-                            <DateRangePicker.TriggerIndicator />
-                          </DateRangePicker.Trigger>
-                        </DateField.Suffix>
-                      </DateField.Group>
-                      <DateRangePicker.Popover className="flex w-[20.5rem] max-w-[calc(100vw-2rem)] flex-col gap-3 p-3">
-                        <RangeCalendar aria-label={t('logsTimeRange')}>
-                          <RangeCalendar.Header>
-                            <RangeCalendar.YearPickerTrigger>
-                              <RangeCalendar.YearPickerTriggerHeading />
-                              <RangeCalendar.YearPickerTriggerIndicator />
-                            </RangeCalendar.YearPickerTrigger>
-                            <RangeCalendar.NavButton slot="previous" />
-                            <RangeCalendar.NavButton slot="next" />
-                          </RangeCalendar.Header>
-                          <RangeCalendar.Grid>
-                            <RangeCalendar.GridHeader>
-                              {(day) => (
-                                <RangeCalendar.HeaderCell>{day}</RangeCalendar.HeaderCell>
-                              )}
-                            </RangeCalendar.GridHeader>
-                            <RangeCalendar.GridBody>
-                              {(date) => <RangeCalendar.Cell date={date} />}
-                            </RangeCalendar.GridBody>
-                          </RangeCalendar.Grid>
-                          <RangeCalendar.YearPickerGrid>
-                            <RangeCalendar.YearPickerGridBody>
-                              {({ year }) => <RangeCalendar.YearPickerCell year={year} />}
-                            </RangeCalendar.YearPickerGridBody>
-                          </RangeCalendar.YearPickerGrid>
-                        </RangeCalendar>
-                        <div className="flex flex-col gap-3">
-                          <div className="flex items-center justify-between gap-3">
-                            <Label className="text-xs">{t('logsTimeFrom')}</Label>
-                            <TimeField
-                              aria-label={t('logsTimeFrom')}
-                              granularity="minute"
-                              hourCycle={24}
-                              value={state.timeRange?.start ?? null}
-                              onChange={(value) =>
-                                state.setTimeRange({
-                                  start: value as TimeValue,
-                                  end: state.timeRange?.end as TimeValue,
-                                })
-                              }
-                            >
-                              <TimeField.Group className="w-[7.5rem]" variant="secondary">
-                                <TimeField.Input>
-                                  {(segment) => <TimeField.Segment segment={segment} />}
-                                </TimeField.Input>
-                              </TimeField.Group>
-                            </TimeField>
-                          </div>
-                          <div className="flex items-center justify-between gap-3">
-                            <Label className="text-xs">{t('logsTimeTo')}</Label>
-                            <TimeField
-                              aria-label={t('logsTimeTo')}
-                              granularity="minute"
-                              hourCycle={24}
-                              value={state.timeRange?.end ?? null}
-                              onChange={(value) =>
-                                state.setTimeRange({
-                                  start: state.timeRange?.start as TimeValue,
-                                  end: value as TimeValue,
-                                })
-                              }
-                            >
-                              <TimeField.Group className="w-[7.5rem]" variant="secondary">
-                                <TimeField.Input>
-                                  {(segment) => <TimeField.Segment segment={segment} />}
-                                </TimeField.Input>
-                              </TimeField.Group>
-                            </TimeField>
-                          </div>
-                        </div>
-                      </DateRangePicker.Popover>
-                    </>
-                  )}
-                </DateRangePicker>
+                  onChange={setCustomRange}
+                  ariaLabel={t('logsTimeRange')}
+                  fromLabel={t('logsTimeFrom')}
+                  toLabel={t('logsTimeTo')}
+                />
               ) : null}
             </div>
           </div>
 
-          <Card data-gsap-reveal className="overflow-hidden p-0" aria-busy={loading}>
-            {loading ? (
+          <Card className="overflow-hidden p-0" aria-busy={loading}>
+            {listSkeleton ? (
               <LogsRequestListSkeleton />
             ) : requests.length === 0 ? (
               <EmptyPanel
@@ -730,13 +738,13 @@ export function LogsPage() {
                           <Table.Cell>
                             <div className="py-1">
                               <div className="mono text-xs">{formatTime(item.created_at, lang)}</div>
-                              <div className="mono mt-0.5 text-[10px] text-muted">{item.id}</div>
+                              <div className="mono mt-0.5 text-caption text-muted">{item.id}</div>
                             </div>
                           </Table.Cell>
                           <Table.Cell>
-                            <div className="text-sm font-medium">{item.requested_model || '—'}</div>
+                            <div className="text-body font-medium">{item.requested_model || '—'}</div>
                             {item.mapped_model && item.mapped_model !== item.requested_model ? (
-                              <div className="mono mt-0.5 text-[10px] text-muted">{item.mapped_model}</div>
+                              <div className="mono mt-0.5 text-caption text-muted">{item.mapped_model}</div>
                             ) : null}
                           </Table.Cell>
                           <Table.Cell>
@@ -748,12 +756,12 @@ export function LogsPage() {
                           <Table.Cell>
                             <span className="text-xs">{item.account_id ? (accountNameById.get(item.account_id) || item.account_id) : '—'}</span>
                             {item.account_id && accountNameById.get(item.account_id) && accountNameById.get(item.account_id) !== item.account_id ? (
-                              <div className="mono mt-0.5 text-[10px] text-muted">{item.account_id}</div>
+                              <div className="mono mt-0.5 text-caption text-muted">{item.account_id}</div>
                             ) : null}
                           </Table.Cell>
                           <Table.Cell>
                             <Chip size="sm" variant="soft" color={statusColor(item.status)}>{item.status}</Chip>
-                            {item.error_kind ? <div className="mono mt-1 text-[10px] text-muted">{item.error_kind}</div> : null}
+                            {item.error_kind ? <div className="mono mt-1 text-caption text-muted">{item.error_kind}</div> : null}
                           </Table.Cell>
                           <Table.Cell><span className="text-xs text-muted">{item.stream ? t('logsStreamYes') : t('logsStreamNo')}</span></Table.Cell>
                           <Table.Cell><span className="mono text-xs">{formatLatency(item.latency_ms)}</span></Table.Cell>
@@ -790,8 +798,8 @@ export function LogsPage() {
           />
         </Tabs.Panel>
 
-        <Tabs.Panel id="runtime" className="space-y-4 pt-5">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+        <Tabs.Panel id="runtime" data-tab-panel="runtime" className="space-y-4 pt-5">
+          <div className="data-toolbar flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-wrap items-center gap-2">
               <SearchBar
                 className="sm:w-72"
@@ -832,8 +840,8 @@ export function LogsPage() {
             </div>
           </div>
 
-          <Card data-gsap-reveal className="overflow-hidden p-0" aria-busy={loading}>
-            {loading ? (
+          <Card className="overflow-hidden p-0" aria-busy={loading}>
+            {listSkeleton ? (
               <LogsRuntimeListSkeleton />
             ) : runtime.length === 0 ? (
               <EmptyPanel icon={<TerminalWindow size={22} />} title={t('logsEmptyRuntime')} />
@@ -853,13 +861,13 @@ export function LogsPage() {
                       }
                     }}
                   >
-                    <div className="mono text-[11px] text-muted">{formatTime(entry.time, lang)}</div>
+                    <div className="mono text-caption text-muted">{formatTime(entry.time, lang)}</div>
                     <div className="flex items-center gap-2 text-xs">
                       <span className="status-dot" data-state={levelDot(entry.level)} />
                       <span className="font-medium text-muted">{entry.level}</span>
                     </div>
                     <div className="min-w-0">
-                      {entry.account_id ? <div className="mono mb-1 text-[10px] text-muted">{entry.account_id}</div> : null}
+                      {entry.account_id ? <div className="mono mb-1 text-caption text-muted">{entry.account_id}</div> : null}
                       <div className="mono break-all text-xs leading-5 text-foreground">{entry.message}</div>
                     </div>
                   </div>
@@ -893,8 +901,8 @@ export function LogsPage() {
             <Modal.Dialog className="w-full max-w-4xl">
               <Modal.Header className="items-start justify-between gap-4 px-5 pt-5">
                 <div className="min-w-0">
-                  <Modal.Heading className="text-lg font-semibold tracking-[-0.01em]">{t('logsRuntimeDetailTitle')}</Modal.Heading>
-                  <p className="mono mt-1 text-[11px] text-muted">{selectedRuntime ? `#${selectedRuntime.id}` : '—'}</p>
+                  <Modal.Heading className="text-section font-semibold">{t('logsRuntimeDetailTitle')}</Modal.Heading>
+                  <p className="mono mt-1 text-caption text-muted">{selectedRuntime ? `#${selectedRuntime.id}` : '—'}</p>
                 </div>
                 <Modal.CloseTrigger aria-label={t('close')} className="grid size-8 shrink-0 place-items-center rounded-lg text-muted transition-colors hover:bg-surface-secondary hover:text-foreground">
                   <X size={16} />
@@ -909,8 +917,8 @@ export function LogsPage() {
                     [t('logsColAccount'), selectedRuntime?.account_id || '—'],
                   ].map(([label, value]) => (
                     <div key={String(label)}>
-                      <dt className="text-[11px] text-muted">{label}</dt>
-                      <dd className="mt-1 break-all text-sm font-medium">
+                      <dt className="text-caption text-muted">{label}</dt>
+                      <dd className="mt-1 break-all text-body font-medium">
                         {label === t('logsRuntimeLevel') && selectedRuntime ? (
                           <Chip size="sm" variant="soft" color={runtimeLevelColor(selectedRuntime.level)}>
                             {selectedRuntime.level}
@@ -946,8 +954,8 @@ export function LogsPage() {
             <Modal.Dialog className="w-full max-w-4xl">
               <Modal.Header className="items-start justify-between gap-4 px-5 pt-5">
                 <div className="min-w-0">
-                  <Modal.Heading className="text-lg font-semibold tracking-[-0.01em]">{t('logsDetailTitle')}</Modal.Heading>
-                  <p className="mono mt-1 text-[11px] text-muted">{selected?.id}</p>
+                  <Modal.Heading className="text-section font-semibold">{t('logsDetailTitle')}</Modal.Heading>
+                  <p className="mono mt-1 text-caption text-muted">{selected?.id}</p>
                 </div>
                 <Modal.CloseTrigger aria-label={t('close')} className="grid size-8 shrink-0 place-items-center rounded-lg text-muted transition-colors hover:bg-surface-secondary hover:text-foreground">
                   <X size={16} />
@@ -973,12 +981,12 @@ export function LogsPage() {
                     [t('logsRouting'), selected ? routingLabel(selected.routing) : '—'],
                   ].map(([label, value]) => (
                     <div key={String(label)}>
-                      <dt className="text-[11px] text-muted">{label}</dt>
-                      <dd className="mt-1 break-all text-sm font-medium">{value}</dd>
+                      <dt className="text-caption text-muted">{label}</dt>
+                      <dd className="mt-1 break-all text-body font-medium">{value}</dd>
                     </div>
                   ))}
                   <div>
-                    <dt className="text-[11px] text-muted">{t('logsColTokens')}</dt>
+                    <dt className="text-caption text-muted">{t('logsColTokens')}</dt>
                     <dd className="mt-1">
                       {selected ? (
                         <TokenSplit
@@ -995,9 +1003,9 @@ export function LogsPage() {
                   <div className="rounded-lg bg-surface-secondary px-3 py-3 text-xs">
                     <div className="font-medium text-muted">{t('logsMessageShape')}</div>
                     <dl className="mt-2 grid gap-2 sm:grid-cols-2">
-                      <div><dt className="text-[10px] text-muted">{t('logsMessageCount')}</dt><dd className="mono mt-0.5">{selected.message_count}</dd></div>
-                      <div><dt className="text-[10px] text-muted">{t('logsEmptyMessageIndexes')}</dt><dd className="mono mt-0.5 break-all">{selected.empty_message_indexes?.length ? selected.empty_message_indexes.join(', ') : '—'}</dd></div>
-                      <div className="sm:col-span-2"><dt className="text-[10px] text-muted">{t('logsMessageRoles')}</dt><dd className="mono mt-0.5 break-all">{selected.message_roles?.join(' → ') || '—'}</dd></div>
+                      <div><dt className="text-caption text-muted">{t('logsMessageCount')}</dt><dd className="mono mt-0.5">{selected.message_count}</dd></div>
+                      <div><dt className="text-caption text-muted">{t('logsEmptyMessageIndexes')}</dt><dd className="mono mt-0.5 break-all">{selected.empty_message_indexes?.length ? selected.empty_message_indexes.join(', ') : '—'}</dd></div>
+                      <div className="sm:col-span-2"><dt className="text-caption text-muted">{t('logsMessageRoles')}</dt><dd className="mono mt-0.5 break-all">{selected.message_roles?.join(' → ') || '—'}</dd></div>
                     </dl>
                   </div>
                 ) : null}
@@ -1020,7 +1028,7 @@ export function LogsPage() {
                         [t('logsStreamComplete'), selected.stream_diagnostic.saw_done ? 'yes' : 'no'],
                       ].map(([label, value]) => (
                         <div key={String(label)}>
-                          <dt className="text-[10px] text-muted">{label}</dt>
+                          <dt className="text-caption text-muted">{label}</dt>
                           <dd className="mono mt-0.5 break-all">{value}</dd>
                         </div>
                       ))}
@@ -1042,7 +1050,7 @@ export function LogsPage() {
                         [t('logsColProvider'), selected.usage_detail.provider || '—'],
                       ].map(([label, value]) => (
                         <div key={String(label)}>
-                          <dt className="text-[10px] text-muted">{label}</dt>
+                          <dt className="text-caption text-muted">{label}</dt>
                           <dd className="mono mt-0.5 break-all">{value}</dd>
                         </div>
                       ))}

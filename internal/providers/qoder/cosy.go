@@ -16,11 +16,13 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/caigee-cmd/cli2api/internal/providers/qoder/qauth"
 )
 
-// COSYVersion is the CLI protocol version sent on chat. It matches the pinned
-// worker CLI, not a newer desktop SDK constant.
-const COSYVersion = "1.1.32"
+// COSYVersion is the CLI protocol version sent on chat. It is the single
+// qauth.CosyVersion constant so headers, payloads and User-Agent never drift.
+const COSYVersion = qauth.CosyVersion
 
 const cosyServerPubKeyPEM = `-----BEGIN PUBLIC KEY-----
 MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDA8iMH5c02LilrsERw9t6Pv5Nc
@@ -162,21 +164,30 @@ func (s *Session) Sign(body, rawURL string, now time.Time) (headers map[string]s
 	sum := md5.Sum([]byte(raw))
 	bearer := "Bearer COSY." + payload + "." + hex.EncodeToString(sum[:])
 	return map[string]string{
-		"Accept":            "text/event-stream",
-		"Authorization":     bearer,
-		"Cache-Control":     "no-cache",
-		"Content-Type":      "application/json",
-		"Cosy-ClientType":   "5",
-		"Cosy-Data-Policy":  "AGREE",
-		"Cosy-Date":         date,
-		"Cosy-Key":          s.cosyKey,
-		"Cosy-MachineId":    s.MachineID,
-		"Cosy-MachineToken": s.MachineToken,
-		"Cosy-MachineType":  s.MachineType,
-		"Cosy-User":         s.User.uid(),
-		"Cosy-Version":      COSYVersion,
-		"Login-Version":     "v2",
-		"Accept-Encoding":   "identity",
+		"Accept":                 "text/event-stream",
+		"Authorization":          bearer,
+		"Cache-Control":          "no-cache",
+		"Content-Type":           "application/json",
+		"Cosy-ClientType":        "5",
+		"Cosy-Data-Policy":       "agree",
+		"Cosy-Date":              date,
+		"Cosy-Key":               s.cosyKey,
+		"Cosy-MachineId":         s.MachineID,
+		"Cosy-MachineToken":      s.MachineToken,
+		"Cosy-MachineType":       s.MachineType,
+		"Cosy-User":              s.User.uid(),
+		"Cosy-Version":           COSYVersion,
+		"Login-Version":          "v2",
+		"Accept-Encoding":        "identity",
+		"Cosy-Business-Product":  "cli",
+		"Cosy-Business-Type":     "agent",
+		"Cosy-Scene":             "assistant",
+		"Cosy-Clientip":          qauth.CosyClientIP,
+		// Inference SSE: undici UA + machine OS always; hostname SSE-only
+		// (applyClientFingerprint mirrors this on the bearer path).
+		"User-Agent":             qauth.CosyUserAgent,
+		"Cosy-MachineOS":         qauth.CosyMachineOS,
+		"Cosy-MachineHostname":   qauth.MachineHostname(s.User.uid()),
 	}, nil
 }
 

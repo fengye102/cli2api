@@ -143,6 +143,9 @@ console; environment variables cannot replace it.
 | `QODER_MAX_RETRY_ACCOUNTS` | `4` | Maximum accounts attempted for one request (1-64) |
 | `QODER_SSE_DIAGNOSTIC_MODELS` | empty | Comma-separated Qoder model IDs for redacted SSE diagnostics in Runtime Logs; `*` enables all |
 | `QODER_WORKER_BASE_PORT` | `32100` | Internal child-runtime port range |
+| `QODER_STREAM_TTFB_MS` | `30000` | Qoder stream first-byte deadline in ms (response head + first meaningful SSE data line after 200), Go side and worker; min `5000`; timeout fails over to the next account |
+| `QODER_STREAM_TOTAL_MS` | `300000` | Qoder worker mid-stream stall timeout in ms: aborts only after this long with no new chunk (resets per chunk, not a wall-clock cap); never below the TTFB value |
+| `QODER_SIGNATURE_SECRET` | built-in | Override the COSY request-signing secret for in-process Qoder; leave unset unless upstream rotates it |
 | `QODER_PROXY_URL` | empty | Initial global outbound proxy: `http(s)://`, `direct`, or `none`; saved console settings take precedence |
 | `QODERCLI_JS` | image default | Pinned Qoder Global CLI bundle |
 | `QODERCNCLI_JS` | image default | Pinned Qoder CN CLI bundle |
@@ -182,9 +185,12 @@ preflight `OPTIONS` do not require authentication.
 
 Messages / Responses are stateless compatibility APIs, not full official API
 implementations. They do not store server-side conversations or execute
-upstream-specific tools. Qoder supports images where the model allows them;
-experimental Devin accepts base64 data-URL images. WorkBuddy / Trae do not
-support images. File inputs are rejected.
+upstream-specific tools. Image input follows the upstream model catalog:
+WorkBuddy's `supportsImages` models (DeepSeek V4 / V4.1, GLM, Kimi, and
+others), Qoder's vision models, QwenWork `is_vl` models, experimental Devin
+base64 data URLs, and Codex image modalities all pass through, and each
+model's declared capability is exposed as `supports_images` on `/v1/models`
+and `/api/models`. Trae, Command, and Zhipu do not declare image input.
 
 ## 6. Managed updates (optional)
 

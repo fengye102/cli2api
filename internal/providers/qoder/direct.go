@@ -9,21 +9,34 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/caigee-cmd/cli2api/internal/accounts"
 	"github.com/caigee-cmd/cli2api/internal/providers"
+	"github.com/caigee-cmd/cli2api/internal/providers/qoder/qauth"
 	"github.com/caigee-cmd/cli2api/internal/translate"
 )
 
 // Direct talks to the Qoder chat gateway from this process. It does not load
-// the CLI bundle. Login and quota stay on the per-account worker.
+// the CLI bundle. When an in-process Bridge is available (PAT-backed account),
+// it resolves credentials and fresh session tokens from the Bridge; legacy
+// accounts without a PAT fall back to the stored CLI user_blob.
 type Direct struct {
-	store  CredentialStore
-	region func(ctx context.Context, accountID string) (string, error)
-	http   *http.Client
-	now    func() time.Time
+	store    CredentialStore
+	region   func(ctx context.Context, accountID string) (string, error)
+	bridgeOf func(ctx context.Context, accountID string) (*Bridge, error)
+	http     *http.Client
+	now      func() time.Time
+	// ttfb bounds how long ChatStream waits for the upstream response head
+	// and, after a 200, for the first meaningful SSE data line
+	// (ensureMeaningfulUpstream). Zero falls back to defaultFirstByteTimeout.
+	ttfb time.Duration
+	// guard is the optional per-account traffic limiter (default off).
+	guard *trafficGuard
 }
 
 func NewDirect(store CredentialStore, region func(context.Context, string) (string, error)) *Direct {
@@ -32,7 +45,16 @@ func NewDirect(store CredentialStore, region func(context.Context, string) (stri
 		region: region,
 		http:   &http.Client{},
 		now:    time.Now,
+		ttfb:   resolveFirstByteTimeout(),
+		guard:  newTrafficGuard(trafficGuardConfigFromEnv()),
 	}
+}
+
+func (d *Direct) SetBridgeResolver(fn func(ctx context.Context, accountID string) (*Bridge, error)) {
+	if d == nil {
+		return
+	}
+	d.bridgeOf = fn
 }
 
 func (d *Direct) SetHTTP(client *http.Client) {
@@ -49,29 +71,91 @@ type directPrepared struct {
 }
 
 func (d *Direct) prepare(ctx context.Context, accountID string, req translate.ChatRequest) (directPrepared, error) {
-	if d == nil || d.store == nil {
+	if d == nil {
 		return directPrepared{}, fmt.Errorf("qoder direct client is not configured")
 	}
-	credential, err := d.store.LoadCredential(ctx, accountID)
-	if err != nil {
-		return directPrepared{}, err
+	var user CLIUser
+	var session *Session
+	var region string
+	var err error
+	var catalogOf func(context.Context) ([]map[string]any, error)
+
+	// 1. In-process Bridge path: when the account has a stored PAT, the Bridge
+	// manages the session lifecycle (fresh securityOauthToken + refreshToken)
+	// and stable machine identity.
+	if d.bridgeOf != nil {
+		if b, bridgeErr := d.bridgeOf(ctx, accountID); bridgeErr == nil {
+			catalogOf = b.RoutingCatalog
+			if err := b.EnsureFreshSession(ctx); err != nil {
+				return directPrepared{}, fmt.Errorf("qoder ensure fresh session: %w", err)
+			}
+			ident := b.currentIdentity()
+			if ident != nil {
+				user = CLIUser{
+					Name:               ident.Name,
+					UID:                ident.UID,
+					Aid:                ident.Aid,
+					YxUID:              ident.YxUID,
+					OrganizationID:     ident.OrganizationID,
+					OrganizationName:   ident.OrganizationName,
+					UserType:           ident.UserType,
+					SecurityOauthToken: ident.SecurityOauthToken,
+					RefreshToken:       ident.RefreshToken,
+				}
+				session, err = NewSession(user)
+				if err != nil {
+					return directPrepared{}, err
+				}
+				session.MachineID = b.MachineID()
+				session.MachineToken = b.MachineToken()
+				session.MachineType = b.MachineType()
+				if b.Region != nil && b.Region.Name != "" {
+					region = b.Region.Name
+				}
+			}
+		}
 	}
-	user, err := DecryptCLIUser(credential.UserBlob, credential.MachineID)
-	if err != nil {
-		return directPrepared{}, err
+
+	// 2. Legacy fallback: account has no PAT, load encrypted CLI user blob.
+	if session == nil {
+		if d.store == nil {
+			return directPrepared{}, fmt.Errorf("qoder direct client is not configured")
+		}
+		credential, err := d.store.LoadCredential(ctx, accountID)
+		if err != nil {
+			return directPrepared{}, err
+		}
+		user, err = DecryptCLIUser(credential.UserBlob, credential.MachineID)
+		if err != nil {
+			return directPrepared{}, err
+		}
+		session, err = NewSession(user)
+		if err != nil {
+			return directPrepared{}, err
+		}
 	}
-	session, err := NewSession(user)
-	if err != nil {
-		return directPrepared{}, err
+
+	if region == "" {
+		region = "global"
+		if d.region != nil {
+			region, err = d.region(ctx, accountID)
+			if err != nil {
+				return directPrepared{}, err
+			}
+		}
 	}
-	region := "global"
-	if d.region != nil {
-		region, err = d.region(ctx, accountID)
+	var entry map[string]any
+	if catalogOf != nil {
+		req, entry, err = resolveCatalogModel(ctx, catalogOf, req)
 		if err != nil {
 			return directPrepared{}, err
 		}
 	}
 	plain := BuildPlainChatBody(req, d.now())
+	applyCatalogEntry(plain, req, entry)
+	if user.UserType != "" {
+		plain["aliyun_user_type"] = user.UserType
+	}
 	model, _ := plain["model_config"].(map[string]any)
 	modelKey, _ := model["key"].(string)
 	body, err := json.Marshal(plain)
@@ -103,6 +187,11 @@ func (d *Direct) ChatNonStream(ctx context.Context, accountID string, req transl
 	if err != nil {
 		return providers.ChatOutcome{}, err
 	}
+	release, err := d.guard.acquire(ctx, accountID)
+	if err != nil {
+		return providers.ChatOutcome{}, err
+	}
+	defer release()
 	resp, err := d.http.Do(prepared.request)
 	if err != nil {
 		return providers.ChatOutcome{}, err
@@ -128,28 +217,63 @@ func (d *Direct) ChatStream(ctx context.Context, accountID string, req translate
 	if err != nil {
 		return nil, providers.ResolvedChat{}, err
 	}
-	resp, err := d.http.Do(prepared.request)
+	release, err := d.guard.acquire(ctx, accountID)
 	if err != nil {
+		return nil, providers.ResolvedChat{}, err
+	}
+	resp, err := doWithFirstByteTimeout(d.http, prepared.request, d.ttfb)
+	if err != nil {
+		release()
 		return nil, providers.ResolvedChat{}, err
 	}
 	if resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
+		release()
 		return nil, providers.ResolvedChat{}, upstreamStatusError(resp.StatusCode, raw)
 	}
-	guarded, err := ensureMeaningfulUpstream(resp)
+	resp.Body = releaseOnClose{ReadCloser: resp.Body, release: release}
+	guarded, err := ensureMeaningfulUpstream(resp, d.ttfb)
 	if err != nil {
 		// ensureMeaningfulUpstream closes the body on failure; no client bytes
 		// have been written yet, so the executor can still fail over.
+		release()
 		return nil, providers.ResolvedChat{}, err
 	}
 	return rewriteUpstreamSSE(guarded, prepared.model), providers.ResolvedChat{ReasoningLevel: prepared.level}, nil
 }
 
+// defaultQueueRetryAfter is used when a 10605 queue rejection carries no
+// retryAfterSeconds hint.
+const defaultQueueRetryAfter = 5 * time.Second
+
+// clientVersionTooLowMessage explains Qoder's HTTP 430 hard gate.
+const clientVersionTooLowMessage = "client version too low (HTTP 430): Qoder requires a newer client version; upgrade cli2api. This is not an account or network problem."
+
 func upstreamStatusError(status int, body []byte) error {
 	message := strings.TrimSpace(string(body))
 	if message == "" {
 		message = fmt.Sprintf("qoder upstream status %d", status)
+	}
+	// 10605 is model-level queueing, not an account fault (qoder2api-hub
+	// 6b7f65b / 67aa3ce): no cooldown, no dead mark, no failover (which would
+	// rebind the session to another account); surface Retry-After instead.
+	if busy := qauth.ParseBusyEnvelope(status, body); busy != nil {
+		retry := busy.RetryAfter
+		if retry <= 0 {
+			retry = defaultQueueRetryAfter
+		}
+		return &providers.Error{
+			Kind: accounts.KindRateLimit, Status: http.StatusTooManyRequests,
+			Code: providers.CodeUpstreamQueued, RetryAfter: retry,
+			Message: "qoder upstream queued (10605): " + busy.Message,
+		}
+	}
+	if status == qauth.StatusClientVersionTooLow {
+		return &providers.Error{
+			Kind: accounts.KindUnavailable, Status: http.StatusBadGateway,
+			Code: providers.CodeClientVersionTooLow, Message: clientVersionTooLowMessage,
+		}
 	}
 	kind := accounts.KindUnavailable
 	switch status {
@@ -183,7 +307,38 @@ func emptyUpstreamError() error {
 // completion. Peek before the first client byte so the failure can still be
 // classified and retried on another account. On success the buffered bytes
 // are replayed ahead of the remaining body, preserving real-time streaming.
-func ensureMeaningfulUpstream(resp *http.Response) (*http.Response, error) {
+//
+// timeout bounds how long to wait for a meaningful data line after the
+// response head arrives. Zero falls back to defaultFirstByteTimeout so the
+// bound matches QODER_STREAM_TTFB_MS / Direct.ttfb. A stuck heartbeat-only
+// upstream closes the body and returns emptyUpstreamError so the executor
+// can fail over instead of hanging forever (doWithFirstByteTimeout only
+// covers headers).
+func ensureMeaningfulUpstream(resp *http.Response, timeout time.Duration) (*http.Response, error) {
+	if resp == nil || resp.Body == nil {
+		return nil, emptyUpstreamError()
+	}
+	if timeout <= 0 {
+		timeout = defaultFirstByteTimeout
+	}
+
+	// Close at most once: the timeout timer and the read-error path both need
+	// to finish the body, but cancelOnCloseBody.Close is not concurrency-safe.
+	// Success stops the timer before returning the live peeked body; if the
+	// closer already won the race, treat it as emptyUpstreamError rather than
+	// handing the caller a half-closed stream.
+	var closeOnce sync.Once
+	closeBody := func() {
+		closeOnce.Do(func() { _ = resp.Body.Close() })
+	}
+
+	var expired atomic.Bool
+	timer := time.AfterFunc(timeout, func() {
+		expired.Store(true)
+		closeBody()
+	})
+	stopTimer := func() { _ = timer.Stop() }
+
 	br := bufio.NewReader(resp.Body)
 	var pending bytes.Buffer
 	for {
@@ -191,12 +346,21 @@ func ensureMeaningfulUpstream(resp *http.Response) (*http.Response, error) {
 		if line != "" {
 			pending.WriteString(line)
 			if data, ok := strings.CutPrefix(strings.TrimSpace(line), "data:"); ok && meaningfulDataLine(strings.TrimSpace(data)) {
+				stopTimer()
+				if expired.Load() {
+					closeBody()
+					return nil, emptyUpstreamError()
+				}
 				resp.Body = peekedBody{Reader: io.MultiReader(&pending, br), Closer: resp.Body}
 				return resp, nil
 			}
 		}
 		if readErr != nil {
-			resp.Body.Close()
+			stopTimer()
+			closeBody()
+			if expired.Load() {
+				return nil, emptyUpstreamError()
+			}
 			if errors.Is(readErr, io.EOF) {
 				return nil, emptyUpstreamError()
 			}
@@ -262,12 +426,15 @@ func BuildPlainChatBody(req translate.ChatRequest, now time.Time) map[string]any
 			}
 			continue
 		}
-		item := map[string]any{"role": message.Role, "content": message.Content}
+		item := map[string]any{"role": message.Role, "content": normalizeMessageContent(message)}
 		if message.Name != "" {
 			item["name"] = message.Name
 		}
 		if message.ToolCallID != "" {
 			item["tool_call_id"] = message.ToolCallID
+		}
+		if message.ReasoningContent != "" {
+			item["reasoning_content"] = message.ReasoningContent
 		}
 		if len(message.ToolCalls) > 0 {
 			item["tool_calls"] = json.RawMessage(message.ToolCalls)
@@ -313,28 +480,44 @@ func BuildPlainChatBody(req translate.ChatRequest, now time.Time) map[string]any
 	if n, ok := rawNumber(req.MaxInputTokens); ok && n > 0 {
 		maxInput = n
 	}
+	prompt := latestUserPrompt(messages)
 	name := "chat"
-	if text := translate.ContentToString(messages[len(messages)-1]["content"]); strings.TrimSpace(text) != "" {
-		name = strings.TrimSpace(text)
+	if prompt != "" {
+		name = prompt
 	}
 	if len(name) > 40 {
 		name = name[:40]
 	}
 	return map[string]any{
-		"request_id":       newID(),
-		"request_set_id":   newID(),
-		"chat_record_id":   newID(),
-		"session_id":       newID(),
-		"stream":           true,
-		"chat_task":        "FREE_INPUT",
-		"chat_context":     map[string]any{"text": "", "features": map[string]any{}, "extra": map[string]any{}, "chatPrompt": "", "imageUrls": []any{}},
+		"request_id":     newID(),
+		"request_set_id": newID(),
+		"chat_record_id": newID(),
+		"session_id":     newID(),
+		"stream":         true,
+		"chat_task":      "FREE_INPUT",
+		// chat_context mirrors the reference Qoder client (and the working
+		// Qoder-2API-Go): the gateway resolves the thinking channel and the routed
+		// model from chat_context.extra.modelConfig. An empty extra block makes
+		// the gateway answer without a reasoning_content stream even when the
+		// top-level model_config.is_reasoning and parameters.enable_thinking are
+		// set, so both copies must carry the model key and reasoning flag.
+		"chat_context": map[string]any{
+			"text":     map[string]any{"type": "text", "text": prompt},
+			"features": []any{},
+			"extra": map[string]any{
+				"modelConfig":     map[string]any{"key": modelKey, "is_reasoning": reasoning},
+				"originalContent": map[string]any{"type": "text", "text": prompt},
+			},
+			"chatPrompt": "",
+			"imageUrls":  nil,
+		},
 		"is_reply":         false,
 		"is_retry":         false,
-		"source":           "cli",
-		"version":          "1.0",
+		"source":           1,
+		"version":          "3",
 		"agent_id":         "agent_common",
 		"task_id":          "common",
-		"session_type":     "assistant",
+		"session_type":     "qodercli",
 		"aliyun_user_type": "",
 		"model_config": map[string]any{
 			"key": modelKey, "display_name": modelKey, "model": "", "format": "openai",
@@ -351,6 +534,44 @@ func BuildPlainChatBody(req translate.ChatRequest, now time.Time) map[string]any
 			"id": newID(), "name": name, "begin_at": now.UnixMilli(), "stage": "start",
 		},
 	}
+}
+
+// latestUserPrompt returns the most recent user message's text, which the
+// reference client duplicates into chat_context.text and
+// chat_context.extra.originalContent. Empty when no user turn carries text.
+func latestUserPrompt(messages []map[string]any) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		role, _ := messages[i]["role"].(string)
+		if role != "user" {
+			continue
+		}
+		if text := strings.TrimSpace(translate.ContentToString(messages[i]["content"])); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+// normalizeMessageContent replaces a nil content on a message that carries
+// tool_calls with an empty string.
+//
+// The gateway pairs each role:"tool" message with the tool_calls of the
+// assistant turn ahead of it, and it only registers that pairing when the
+// assistant message's `content` is a string. A JSON null — what OpenAI clients
+// send for an assistant turn that is pure tool calls — leaves the call
+// unregistered, and the following role:"tool" message is then rejected with
+//
+//	messages with role "tool" must be a response to a preceeding message
+//	with "tool_calls"
+//
+// An empty string is accepted and pairs correctly. Only messages with
+// tool_calls are rewritten; every other content shape passes through
+// untouched.
+func normalizeMessageContent(message translate.ChatMessage) any {
+	if len(message.ToolCalls) > 0 && message.Content == nil {
+		return ""
+	}
+	return message.Content
 }
 
 func rawNumber(raw json.RawMessage) (int, bool) {
@@ -445,11 +666,15 @@ func applyUsage(out *providers.ChatOutcome, raw json.RawMessage) {
 		return
 	}
 	var usage struct {
-		PromptTokens     int      `json:"prompt_tokens"`
-		CompletionTokens int      `json:"completion_tokens"`
-		CacheReadTokens  *int     `json:"cache_read_tokens"`
-		CacheWriteTokens *int     `json:"cache_write_tokens"`
-		Credits          *float64 `json:"credits"`
+		PromptTokens         int      `json:"prompt_tokens"`
+		CompletionTokens     int      `json:"completion_tokens"`
+		CacheReadTokens      *int     `json:"cache_read_tokens"`
+		CacheWriteTokens     *int     `json:"cache_write_tokens"`
+		PromptCacheHitTokens *int     `json:"prompt_cache_hit_tokens"`
+		Credits              *float64 `json:"credits"`
+		PromptDetails        struct {
+			CachedTokens *int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	}
 	if json.Unmarshal(raw, &usage) != nil {
 		out.UsageSource = "estimate"
@@ -457,7 +682,14 @@ func applyUsage(out *providers.ChatOutcome, raw json.RawMessage) {
 	}
 	out.PromptTokens = usage.PromptTokens
 	out.CompletionTokens = usage.CompletionTokens
-	out.CacheReadTokens = usage.CacheReadTokens
+	cacheRead := usage.CacheReadTokens
+	if cacheRead == nil {
+		cacheRead = usage.PromptDetails.CachedTokens
+	}
+	if cacheRead == nil {
+		cacheRead = usage.PromptCacheHitTokens
+	}
+	out.CacheReadTokens = cacheRead
 	out.CacheWriteTokens = usage.CacheWriteTokens
 	out.Credits = usage.Credits
 }
@@ -465,6 +697,7 @@ func applyUsage(out *providers.ChatOutcome, raw json.RawMessage) {
 func collectUpstream(r io.Reader) (upstreamFrame, error) {
 	var frame upstreamFrame
 	var content, reasoning strings.Builder
+	var acc toolCallAccumulator
 	err := walkUpstream(r, func(body map[string]any) error {
 		if errText, status, kind := upstreamError(body); errText != "" {
 			frame.errText = errText
@@ -501,15 +734,81 @@ func collectUpstream(r io.Reader) (upstreamFrame, error) {
 		if text, _ := part["reasoning_content"].(string); text != "" {
 			reasoning.WriteString(text)
 		}
-		if tools := part["tool_calls"]; tools != nil {
-			raw, _ := json.Marshal(tools)
-			frame.tools = raw
+		if tools, _ := part["tool_calls"].([]any); len(tools) > 0 {
+			acc.add(tools)
 		}
 		return nil
 	})
 	frame.content = content.String()
 	frame.reasoning = reasoning.String()
+	frame.tools = acc.encode()
 	return frame, err
+}
+
+// toolCallAccumulator merges streamed tool_call deltas by index: id, type
+// and function name keep their first non-empty value, arguments concatenate.
+type toolCallAccumulator struct {
+	order []int
+	calls map[int]*accumulatedToolCall
+}
+
+type accumulatedToolCall struct {
+	ID       string `json:"id,omitempty"`
+	Type     string `json:"type,omitempty"`
+	Index    int    `json:"index"`
+	Function struct {
+		Name      string `json:"name,omitempty"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+func (a *toolCallAccumulator) add(tools []any) {
+	if a.calls == nil {
+		a.calls = map[int]*accumulatedToolCall{}
+	}
+	for position, rawTool := range tools {
+		tool, _ := rawTool.(map[string]any)
+		if tool == nil {
+			continue
+		}
+		index := position
+		if n, ok := tool["index"].(float64); ok {
+			index = int(n)
+		}
+		call := a.calls[index]
+		if call == nil {
+			call = &accumulatedToolCall{Index: index}
+			a.calls[index] = call
+			a.order = append(a.order, index)
+		}
+		if id, _ := tool["id"].(string); id != "" && call.ID == "" {
+			call.ID = id
+		}
+		if typ, _ := tool["type"].(string); typ != "" && call.Type == "" {
+			call.Type = typ
+		}
+		if fn, _ := tool["function"].(map[string]any); fn != nil {
+			if name, _ := fn["name"].(string); name != "" && call.Function.Name == "" {
+				call.Function.Name = name
+			}
+			if args, _ := fn["arguments"].(string); args != "" {
+				call.Function.Arguments += args
+			}
+		}
+	}
+}
+
+func (a *toolCallAccumulator) encode() json.RawMessage {
+	if len(a.order) == 0 {
+		return nil
+	}
+	sort.Ints(a.order)
+	out := make([]*accumulatedToolCall, 0, len(a.order))
+	for _, index := range a.order {
+		out = append(out, a.calls[index])
+	}
+	raw, _ := json.Marshal(out)
+	return raw
 }
 
 func upstreamError(body map[string]any) (string, int, string) {
@@ -550,7 +849,11 @@ func walkUpstream(r io.Reader, fn func(map[string]any) error) error {
 			continue
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "" || data == "[DONE]" {
+		if data == "[DONE]" {
+			// Explicit terminator: finish without waiting for transport EOF.
+			return nil
+		}
+		if data == "" {
 			continue
 		}
 		var outer map[string]any
@@ -578,8 +881,11 @@ func walkUpstream(r io.Reader, fn func(map[string]any) error) error {
 
 func rewriteUpstreamSSE(resp *http.Response, model string) *http.Response {
 	pr, pw := io.Pipe()
+	// Both the converter goroutine and the caller may close upstream; Once
+	// keeps non-idempotent wrappers (cancelOnCloseBody) race-free.
+	closeUpstream := sync.OnceValue(resp.Body.Close)
 	go func() {
-		defer resp.Body.Close()
+		defer closeUpstream()
 		err := writeOpenAIChunks(pw, resp.Body, model)
 		_ = pw.CloseWithError(err)
 	}()
@@ -589,13 +895,41 @@ func rewriteUpstreamSSE(resp *http.Response, model string) *http.Response {
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     headers,
-		Body:       io.NopCloser(pr),
+		Body:       &convertedBody{pr: pr, closeUpstream: closeUpstream},
 		Request:    resp.Request,
 	}
 }
 
+// convertedBody closes the pipe reader so a blocked converter goroutine
+// unblocks, and closes the upstream body so the connection is released even
+// when the consumer stops reading early.
+type convertedBody struct {
+	pr            *io.PipeReader
+	closeUpstream func() error
+}
+
+func (b *convertedBody) Read(p []byte) (int, error) { return b.pr.Read(p) }
+
+func (b *convertedBody) Close() error {
+	_ = b.pr.CloseWithError(io.ErrClosedPipe)
+	return b.closeUpstream()
+}
+
+// newCompletionID returns one OpenAI completion id per request. Clients that
+// merge assistant chunks by id must not see two requests share one (#292).
+func newCompletionID() string {
+	id, err := randomUUID()
+	if err != nil {
+		return fmt.Sprintf("chatcmpl-qoder-%d", time.Now().UnixNano())
+	}
+	return "chatcmpl-" + strings.ReplaceAll(id, "-", "")
+}
+
 func writeOpenAIChunks(w io.Writer, src io.Reader, model string) error {
+	completionID := newCompletionID()
 	var sawFinish, sawTools, sawPayload, sawError bool
+	var lastUsage any
+	var lastChunkEmittedHadUsage bool
 	err := walkUpstream(src, func(body map[string]any) error {
 		frame := frameFromBody(body)
 		if frame.finish != "" {
@@ -614,15 +948,25 @@ func writeOpenAIChunks(w io.Writer, src io.Reader, model string) error {
 			return err
 		}
 		chunk := map[string]any{
-			"id": "chatcmpl-qoder", "object": "chat.completion.chunk", "model": model,
+			"id": completionID, "object": "chat.completion.chunk", "model": model,
 			"choices": []any{map[string]any{"index": 0, "delta": deltaOf(frame), "finish_reason": emptyOrNil(frame.finish)}},
 		}
 		if len(frame.usage) > 0 {
-			var usage any
-			if json.Unmarshal(frame.usage, &usage) == nil {
-				chunk["usage"] = usage
+			var rawUsage any
+			if json.Unmarshal(frame.usage, &rawUsage) == nil {
+				if usage, ok := rawUsage.(map[string]any); ok {
+					normalizePromptCacheUsage(usage)
+					chunk["usage"] = usage
+					lastUsage = usage
+				} else {
+					chunk["usage"] = rawUsage
+					lastUsage = rawUsage
+				}
 			}
+		} else if frame.finish != "" && lastUsage != nil {
+			chunk["usage"] = lastUsage
 		}
+		lastChunkEmittedHadUsage = chunk["usage"] != nil
 		payload, err := json.Marshal(chunk)
 		if err != nil {
 			return err
@@ -644,8 +988,11 @@ func writeOpenAIChunks(w io.Writer, src io.Reader, model string) error {
 				finish = "tool_calls"
 			}
 			chunk := map[string]any{
-				"id": "chatcmpl-qoder", "object": "chat.completion.chunk", "model": model,
+				"id": completionID, "object": "chat.completion.chunk", "model": model,
 				"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": finish}},
+			}
+			if lastUsage != nil {
+				chunk["usage"] = lastUsage
 			}
 			payload, err := json.Marshal(chunk)
 			if err != nil {
@@ -664,9 +1011,50 @@ func writeOpenAIChunks(w io.Writer, src io.Reader, model string) error {
 				return err
 			}
 		}
+	} else if !lastChunkEmittedHadUsage && lastUsage != nil {
+		chunk := map[string]any{
+			"id": completionID, "object": "chat.completion.chunk", "model": model,
+			"choices": []any{},
+			"usage":   lastUsage,
+		}
+		payload, err := json.Marshal(chunk)
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
+			return err
+		}
 	}
 	_, err = io.WriteString(w, "data: [DONE]\n\n")
 	return err
+}
+
+func normalizePromptCacheUsage(usage map[string]any) {
+	if usage == nil {
+		return
+	}
+	var cachedTokens any
+	if ptd, ok := usage["prompt_tokens_details"].(map[string]any); ok {
+		cachedTokens = ptd["cached_tokens"]
+	}
+	if cachedTokens == nil {
+		cachedTokens = usage["cache_read_tokens"]
+	}
+	if cachedTokens == nil {
+		cachedTokens = usage["prompt_cache_hit_tokens"]
+	}
+	if cachedTokens == nil {
+		return
+	}
+	if _, ok := usage["cache_read_tokens"]; !ok {
+		usage["cache_read_tokens"] = cachedTokens
+	}
+	if _, ok := usage["prompt_cache_hit_tokens"]; !ok {
+		usage["prompt_cache_hit_tokens"] = cachedTokens
+	}
+	if _, ok := usage["prompt_tokens_details"]; !ok {
+		usage["prompt_tokens_details"] = map[string]any{"cached_tokens": cachedTokens}
+	}
 }
 
 func frameFromBody(body map[string]any) upstreamFrame {
@@ -706,7 +1094,7 @@ func frameFromBody(body map[string]any) upstreamFrame {
 	if text, _ := part["reasoning_content"].(string); text != "" {
 		frame.reasoning = text
 	}
-	if tools := part["tool_calls"]; tools != nil {
+	if tools, _ := part["tool_calls"].([]any); len(tools) > 0 {
 		raw, _ := json.Marshal(tools)
 		frame.tools = raw
 	}

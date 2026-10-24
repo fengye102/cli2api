@@ -111,16 +111,19 @@ func (h *Handler) HandleAccountByID(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, account)
 		case http.MethodPatch:
 			var input struct {
-				Name                 string  `json:"name"`
-				Enabled              *bool   `json:"enabled"`
-				MaxInFlight          *int    `json:"max_inflight"`
-				Priority             *int    `json:"priority"`
-				DropSystemPrompt     *bool   `json:"drop_system_prompt"`
-				WorkBuddyAutoCheckin *bool   `json:"workbuddy_auto_checkin"`
-				WorkBuddyCheckinTime *string `json:"workbuddy_checkin_time"`
-				AutoCheckin          *bool   `json:"auto_checkin"`
-				CheckinTime          *string `json:"checkin_time"`
-				ProxyURL             *string `json:"proxy_url"`
+				Name                 string            `json:"name"`
+				Enabled              *bool             `json:"enabled"`
+				MaxInFlight          *int              `json:"max_inflight"`
+				Priority             *int              `json:"priority"`
+				DropSystemPrompt     *bool             `json:"drop_system_prompt"`
+				WorkBuddyAutoCheckin *bool             `json:"workbuddy_auto_checkin"`
+				WorkBuddyCheckinTime *string           `json:"workbuddy_checkin_time"`
+				AutoCheckin          *bool             `json:"auto_checkin"`
+				CheckinTime          *string           `json:"checkin_time"`
+				ProxyURL             *string           `json:"proxy_url"`
+				ModelAliases         map[string]string `json:"model_aliases"`
+				EnabledModels        []string          `json:"enabled_models"`
+				SetModelRouting      bool              `json:"set_model_routing"`
 			}
 			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxConsoleBodyBytes)).Decode(&input); err != nil {
 				writeErr(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -131,6 +134,7 @@ func (h *Handler) HandleAccountByID(w http.ResponseWriter, r *http.Request) {
 				Name: input.Name, Enabled: input.Enabled, MaxInFlight: input.MaxInFlight, Priority: input.Priority,
 				DropSystemPrompt: input.DropSystemPrompt, WorkBuddyAutoCheckin: input.WorkBuddyAutoCheckin,
 				WorkBuddyCheckinTime: input.WorkBuddyCheckinTime, ProxyURL: input.ProxyURL,
+				ModelAliases: input.ModelAliases, EnabledModels: input.EnabledModels, SetModelRouting: input.SetModelRouting,
 			})
 			if err != nil {
 				writeErr(w, http.StatusBadRequest, "account_update_failed", err.Error())
@@ -206,16 +210,18 @@ func (h *Handler) HandleAccountByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, payload)
 		return
 	}
-	var callbackURL string
-	if action == "login/callback" {
+	var callbackURL, loginMethod string
+	if action == "login/device" || action == "login/callback" {
 		var input struct {
 			CallbackURL string `json:"callback_url"`
+			LoginMethod string `json:"login_method"`
 		}
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxConsoleBodyBytes)).Decode(&input); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxConsoleBodyBytes)).Decode(&input); err != nil && err != io.EOF {
 			writeErr(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
 		callbackURL = input.CallbackURL
+		loginMethod = input.LoginMethod
 	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -223,7 +229,7 @@ func (h *Handler) HandleAccountByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := h.Control.Accounts.Admin(r.Context(), control.AccountAdminAction{
-		AccountID: accountID, Action: action, Method: r.Method, ContentType: r.Header.Get("Content-Type"), Body: body, CallbackURL: callbackURL,
+		AccountID: accountID, Action: action, Method: r.Method, ContentType: r.Header.Get("Content-Type"), Body: body, CallbackURL: callbackURL, LoginMethod: loginMethod,
 	})
 	if err != nil {
 		writeOperationError(w, err)

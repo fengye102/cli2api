@@ -1,3 +1,5 @@
+import { toast } from '@/lib/toast'
+import { HoldToConfirm } from '@/components/motion/HoldToConfirm'
 import { copyText } from '@/lib/clipboard'
 import { useEffect, useState } from 'react'
 import { Alert, Button, Card, Checkbox, Chip, Description, Form, Input, Label, Modal } from '@heroui/react'
@@ -7,7 +9,6 @@ import { fetchProviders, type ProviderDescriptor } from '@/api/overview'
 import { BrandMark } from '@/components/BrandMark'
 import { ProviderMark } from '@/components/ProviderMark'
 import { CompactSwitch } from '@/components/ui/CompactSwitch'
-import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { EmptyPanel } from '@/components/ui/EmptyPanel'
 import { FormRow } from '@/components/ui/FormRow'
 import { PageAlert } from '@/components/ui/PageAlert'
@@ -102,7 +103,6 @@ export function KeysPage() {
   const [error, setError] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
   const [editKey, setEditKey] = useState<APIKeyRecord | null>(null)
-  const [deleteKey, setDeleteKey] = useState<APIKeyRecord | null>(null)
   const [revealed, setRevealed] = useState<APIKeyRecord | null>(null)
   const [copied, setCopied] = useState(false)
 
@@ -157,13 +157,12 @@ export function KeysPage() {
     }
   }
 
-  async function onDelete() {
-    if (!deleteKey) return
-    setBusyId(deleteKey.id)
+  async function onDelete(target: APIKeyRecord) {
+    setBusyId(target.id)
     try {
-      await deleteAPIKey(deleteKey.id)
-      setKeys((current) => current.filter((item) => item.id !== deleteKey.id))
-      setDeleteKey(null)
+      await deleteAPIKey(target.id)
+      setKeys((current) => current.filter((item) => item.id !== target.id))
+      toast({ type: 'success', title: t('toastKeyDeleted') })
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -175,10 +174,10 @@ export function KeysPage() {
 
   return (
     <div className="space-y-6">
-      <section className="flex flex-wrap items-end justify-between gap-4 border-b border-separator pb-4">
+      <section className="flex flex-wrap items-end justify-between gap-4 pb-4">
         <div>
-          <h2 data-gsap-reveal className="text-2xl font-semibold tracking-[-0.035em]">{t('navKeys')}</h2>
-          <p className="mt-1 max-w-2xl text-sm leading-6 text-muted">{t('keysLead')}</p>
+          <h2 data-gsap-reveal className="text-title font-semibold">{t('navKeys')}</h2>
+          <p className="mt-1 max-w-2xl text-body leading-6 text-muted">{t('keysLead')}</p>
         </div>
         <Button size="sm" isDisabled={!optionsReady} onPress={() => setCreateOpen(true)}>
           <Plus size={14} />{t('keysCreate')}
@@ -191,7 +190,7 @@ export function KeysPage() {
       {loading ? (
         <section className="grid gap-2.5 lg:grid-cols-2 xl:grid-cols-3" aria-busy>
           {Array.from({ length: Math.max(3, keys.length) }, (_, index) => (
-            <div key={index} className="overflow-hidden rounded-3xl border border-border bg-surface p-3">
+            <div key={index} className="overflow-hidden rounded-3xl bg-surface shadow-surface p-3">
               <SkeletonBlock className="h-4 w-28" />
               <SkeletonBlock className="mt-2 h-3 w-40" />
               <SkeletonBlock className="mt-4 h-6 w-24" />
@@ -201,7 +200,7 @@ export function KeysPage() {
         </section>
       ) : !keys.length ? (
         <EmptyPanel
-          className="rounded-3xl border border-dashed border-border"
+          className="rounded-3xl bg-surface-secondary"
           icon={<BrandMark size={28} />}
           title={t('keysEmpty')}
           hint={t('keysEmptyHint')}
@@ -213,14 +212,14 @@ export function KeysPage() {
             <Card key={key.id} className="overflow-hidden p-0">
               <Card.Header className="flex-row items-start justify-between gap-3 px-3 pt-3 pb-2.5">
                 <div className="min-w-0">
-                  <Card.Title className="truncate text-sm tracking-[-0.015em]">{key.name}</Card.Title>
-                  <Card.Description className="mono mt-1 truncate">{key.prefix}</Card.Description>
+                  <Card.Title className="truncate text-body">{key.name}</Card.Title>
                 </div>
                 <Chip size="sm" variant="soft" color={key.enabled ? 'success' : 'default'}>
                   {key.enabled ? t('enabled') : t('disabled')}
                 </Chip>
               </Card.Header>
               <Card.Content className="space-y-2.5 px-3 pb-2.5">
+                <div className="mono w-full rounded-lg bg-surface-secondary px-3 py-2 text-body text-foreground" title={key.prefix}>{key.prefix}</div>
                 <div className="flex flex-wrap items-center gap-1.5">
                   {(key.providers.length ? key.providers : ['all']).map((entry) => (
                     <Chip key={entry} size="sm" variant="soft">
@@ -231,15 +230,19 @@ export function KeysPage() {
                     </Chip>
                   ))}
                 </div>
-                <p className="text-[11px] leading-5 text-muted">
+                <p className="text-caption leading-5 text-muted">
                   {key.last_used_at ? t('keysLastUsed', { time: formatTime(key.last_used_at) }) : t('keysNeverUsed')}
                 </p>
               </Card.Content>
-              <Card.Footer className="gap-1.5 border-t border-separator px-3 py-2">
+              <Card.Footer className="gap-1.5 bg-surface-secondary px-3 py-2">
                 <Button size="sm" variant="ghost" isDisabled={!optionsReady} onPress={() => setEditKey(key)}>{t('edit')}</Button>
-                <Button isIconOnly size="sm" variant="ghost" aria-label={t('delete')} onPress={() => setDeleteKey(key)}>
+                <HoldToConfirm
+                  label={t('holdToDelete')}
+                  isPending={busyId === key.id}
+                  onConfirm={() => void onDelete(key)}
+                >
                   <TrashSimple size={14} />
-                </Button>
+                </HoldToConfirm>
                 <div className="ml-auto">
                   <CompactSwitch
                     isSelected={key.enabled}
@@ -290,8 +293,8 @@ export function KeysPage() {
             <Modal.Dialog>
               <Modal.Header className="items-start justify-between gap-4 px-6 pt-6">
                 <div>
-                  <Modal.Heading className="text-lg font-semibold">{t('keysSecretTitle')}</Modal.Heading>
-                  <p className="mt-1.5 text-sm leading-6 text-muted">{t('keysSecretHint')}</p>
+                  <Modal.Heading className="text-section font-semibold">{t('keysSecretTitle')}</Modal.Heading>
+                  <p className="mt-1.5 text-body leading-6 text-muted">{t('keysSecretHint')}</p>
                 </div>
                 <Modal.CloseTrigger aria-label={t('close')} className="grid size-9 place-items-center rounded-lg text-muted hover:bg-surface-secondary"><X size={18} /></Modal.CloseTrigger>
               </Modal.Header>
@@ -300,7 +303,7 @@ export function KeysPage() {
                   <Alert.Indicator />
                   <Alert.Content><Alert.Title>{t('keysSecretOnce')}</Alert.Title></Alert.Content>
                 </Alert>
-                <code className="mono block break-all rounded-lg border border-separator bg-surface-secondary px-3 py-3 text-sm">{revealed?.secret}</code>
+                <code className="mono block break-all rounded-lg bg-surface-secondary px-3 py-3 text-body">{revealed?.secret}</code>
               </Modal.Body>
               <Modal.Footer className="justify-end">
                 <Button variant="ghost" onPress={() => setRevealed(null)}>{t('close')}</Button>
@@ -313,17 +316,6 @@ export function KeysPage() {
         </Modal.Backdrop>
       </Modal.Root>
 
-      <ConfirmDialog
-        isOpen={Boolean(deleteKey)}
-        title={t('delete')}
-        description={t('keysDeleteConfirm', { name: deleteKey?.name || '' })}
-        confirmLabel={t('delete')}
-        cancelLabel={t('cancel')}
-        closeLabel={t('close')}
-        isPending={busyId === deleteKey?.id}
-        onClose={() => setDeleteKey(null)}
-        onConfirm={() => void onDelete()}
-      />
     </div>
   )
 }
@@ -429,8 +421,8 @@ function KeyEditorModal({
             <Form onSubmit={submit}>
               <Modal.Header className="items-start justify-between gap-4 px-6 pt-6">
                 <div>
-                  <Modal.Heading className="text-lg font-semibold tracking-[-0.015em]">{title}</Modal.Heading>
-                  <p className="mt-1.5 text-sm leading-6 text-muted">{hint}</p>
+                  <Modal.Heading className="text-section font-semibold">{title}</Modal.Heading>
+                  <p className="mt-1.5 text-body leading-6 text-muted">{hint}</p>
                 </div>
                 <Modal.CloseTrigger isDisabled={busy} aria-label={t('close')} className="grid size-9 place-items-center rounded-lg text-muted hover:bg-surface-secondary"><X size={18} /></Modal.CloseTrigger>
               </Modal.Header>
@@ -445,25 +437,25 @@ function KeyEditorModal({
                   <Input value={name} onChange={(event) => setName(event.target.value)} placeholder={t('keysNamePh')} aria-label={t('keysName')} />
                 </FormRow>
                 <div className="space-y-2">
-                  <Label className="text-sm font-medium text-muted">{t('keysProviders')}</Label>
-                  <Description className="text-xs leading-5 text-muted">{t('keysProvidersHint')}</Description>
+                  <Label className="text-body font-medium text-muted">{t('keysProviders')}</Label>
+                  <Description className="text-caption leading-5 text-muted">{t('keysProvidersHint')}</Description>
                   {!options.length ? (
-                    <p className="rounded-lg border border-separator bg-surface-secondary px-3 py-2.5 text-xs leading-5 text-muted">{t('keysProvidersNotLoaded')}</p>
+                    <p className="rounded-lg bg-surface-secondary px-3 py-2.5 text-caption leading-5 text-muted">{t('keysProvidersNotLoaded')}</p>
                   ) : (
                     <div className="grid gap-2 sm:grid-cols-2">
                       {options.map((option) => {
                         const checked = selected.includes(option.value)
                         const allRegions = allRegionsFamilies.has(option.provider)
                         return (
-                          <Checkbox key={option.value} isSelected={checked} onChange={() => toggle(option.value)} className="rounded-xl border border-separator px-3 py-2.5 data-selected:border-accent data-selected:bg-accent-soft">
+                          <Checkbox key={option.value} isSelected={checked} onChange={() => toggle(option.value)} className="rounded-xl bg-surface-secondary px-3 py-2.5 data-selected:border-accent data-selected:bg-accent-soft">
                             <Checkbox.Content className="flex items-center gap-2.5">
                               <Checkbox.Control>
                                 <Checkbox.Indicator />
                               </Checkbox.Control>
                               <ProviderMark provider={option.provider} size={16} />
-                              <span className="text-sm font-medium">{accountProviderLabel(option.provider, option.region, t)}</span>
+                              <span className="text-body font-medium">{accountProviderLabel(option.provider, option.region, t)}</span>
                               {allRegions ? (
-                                <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10px] font-medium text-accent">{t('keysAllRegions')}</span>
+                                <span className="rounded-md bg-surface-secondary px-1.5 py-0.5 text-caption font-medium text-muted">{t('keysAllRegions')}</span>
                               ) : null}
                             </Checkbox.Content>
                           </Checkbox>
@@ -471,7 +463,7 @@ function KeyEditorModal({
                       })}
                     </div>
                   )}
-                  <p className="text-xs text-muted">{providersLabel(selected, t)}</p>
+                  <p className="text-caption text-muted">{providersLabel(selected, t)}</p>
                 </div>
               </Modal.Body>
               <Modal.Footer className="justify-end">

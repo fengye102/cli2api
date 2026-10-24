@@ -28,6 +28,7 @@ import (
 	"github.com/caigee-cmd/cli2api/internal/providers/devin"
 	"github.com/caigee-cmd/cli2api/internal/providers/qoder"
 	"github.com/caigee-cmd/cli2api/internal/providers/raccoon"
+	"github.com/caigee-cmd/cli2api/internal/providers/qwenwork"
 	"github.com/caigee-cmd/cli2api/internal/providers/trae"
 	"github.com/caigee-cmd/cli2api/internal/providers/workbuddy"
 	"github.com/caigee-cmd/cli2api/internal/providers/zcode"
@@ -124,6 +125,7 @@ func New(cfg config.Config) *App {
 	providerReg.Register(zhipu.NewClient(store).Adapter())
 	providerReg.Register(raccoon.NewClient(store).Adapter())
 	providerReg.Register(antigravity.NewClient(store).Adapter())
+	providerReg.Register(qwenwork.NewClient(store).Adapter())
 	qoderClient := qoder.NewClient()
 	qoderClient.Bind(manager.AccountURL, manager.ProxyAPIKey)
 	qoderClient.SetDirect(qoder.NewDirect(store, func(ctx context.Context, accountID string) (string, error) {
@@ -133,6 +135,13 @@ func New(cfg config.Config) *App {
 		}
 		return account.ProviderRegion, nil
 	}))
+	qoderClient.SetPATStore(store, func(ctx context.Context, accountID string) (string, error) {
+		account, err := store.Get(ctx, accountID)
+		if err != nil {
+			return "", err
+		}
+		return account.ProviderRegion, nil
+	})
 	providerReg.Register(qoderClient.Adapter())
 	manager.SetProviders(providerReg)
 	manager.SetWorkBuddy(workbuddyClient)

@@ -112,6 +112,7 @@ export type RequestStatsTotals = {
   canceled: number
   streaming: number
   success_rate: number
+  credits?: number
 }
 
 export type RequestStatsLatency = {
@@ -125,6 +126,7 @@ export type RequestStatsTokens = {
   prompt: number
   completion: number
   cache_read: number
+  cache_write?: number
   total: number
 }
 
@@ -139,6 +141,12 @@ export type RequestStatsNamed = {
   ok: number
   error: number
   latency_avg_ms?: number | null
+  latency_p95_ms?: number | null
+  prompt_tokens?: number
+  completion_tokens?: number
+  cache_read_tokens?: number
+  cache_write_tokens?: number
+  credits?: number
 }
 
 export type RequestStatsPoint = {
@@ -146,7 +154,14 @@ export type RequestStatsPoint = {
   requests: number
   ok: number
   error: number
+  prompt_tokens?: number
+  completion_tokens?: number
+  cache_read_tokens?: number
+  latency_p50_ms?: number | null
+  latency_p95_ms?: number | null
 }
+
+export type RequestStatsDim = 'model' | 'account' | 'provider'
 
 export type RequestStats = {
   window: RequestStatsWindow
@@ -161,12 +176,70 @@ export type RequestStats = {
   series: RequestStatsPoint[]
 }
 
+export type RequestUsageTotals = {
+  total_tokens: number
+  prompt_tokens: number
+  completion_tokens: number
+  cache_hit_tokens: number
+  cache_miss_tokens: number
+  requests: number
+  errors: number
+  avg_latency_ms?: number | null
+  avg_tokens_per_second?: number | null
+  credits: number
+  credit_tokens: number
+  credit_samples: number
+  credits_per_1m_tokens?: number | null
+  success_rate: number
+}
+
+export type RequestUsageRow = {
+  key: string
+  realm?: string
+  extra?: string
+  total_tokens: number
+  prompt_tokens: number
+  completion_tokens: number
+  cache_hit_tokens: number
+  cache_miss_tokens: number
+  requests: number
+  errors: number
+  avg_latency_ms?: number | null
+  avg_tokens_per_second?: number | null
+}
+
+export type RequestUsageCreditRow = {
+  key: string
+  nickname?: string
+  realm?: string
+  rate?: number | null
+  requests: number
+  credit_samples: number
+  credits: number
+  credit_tokens: number
+  credits_per_1m_tokens?: number | null
+  cache_hit_tokens: number
+  cache_miss_tokens: number
+}
+
+export type RequestUsage = {
+  window: RequestStatsWindow
+  totals: RequestUsageTotals
+  by_account: RequestUsageRow[]
+  by_model: RequestUsageRow[]
+  by_realm: RequestUsageRow[]
+  credit_by_account: RequestUsageCreditRow[]
+  credit_by_model: RequestUsageCreditRow[]
+  series: RequestStatsPoint[]
+}
+
 export type RequestLogQuery = {
   account?: string
   status?: string
   stream?: boolean
   error_kind?: string
   model?: string
+  provider?: string
   id?: string
   q?: string
   from?: string
@@ -175,13 +248,29 @@ export type RequestLogQuery = {
   offset?: number
 }
 
-export function fetchRequestStats(query: { hours?: number; from?: string; to?: string } = {}) {
+/**
+ * GET /api/logs/stats. Without dim/limit the response keeps the overview
+ * contract (all three grouped lists, top 6 each). dim picks the grouped
+ * lists to compute; limit caps their rows (server max 500).
+ */
+export function fetchRequestStats(query: { hours?: number; from?: string; to?: string; dim?: RequestStatsDim[]; limit?: number } = {}) {
   const params = new URLSearchParams()
+  if (query.dim?.length) params.set('dim', query.dim.join(','))
+  if (query.limit != null) params.set('limit', String(query.limit))
   if (query.hours != null) params.set('hours', String(query.hours))
   if (query.from) params.set('from', query.from)
   if (query.to) params.set('to', query.to)
   const suffix = params.toString() ? `?${params}` : ''
   return api<RequestStats>(`/api/logs/stats${suffix}`)
+}
+
+export function fetchRequestUsage(query: { hours?: number; from?: string; to?: string } = {}) {
+  const params = new URLSearchParams()
+  if (query.hours != null) params.set('hours', String(query.hours))
+  if (query.from) params.set('from', query.from)
+  if (query.to) params.set('to', query.to)
+  const suffix = params.toString() ? `?${params}` : ''
+  return api<RequestUsage>(`/api/logs/usage${suffix}`)
 }
 
 export function fetchRequestLogs(query: RequestLogQuery = {}) {
@@ -191,6 +280,7 @@ export function fetchRequestLogs(query: RequestLogQuery = {}) {
   if (query.stream != null) params.set('stream', query.stream ? '1' : '0')
   if (query.error_kind) params.set('error_kind', query.error_kind)
   if (query.model) params.set('model', query.model)
+  if (query.provider) params.set('provider', query.provider)
   if (query.id) params.set('id', query.id)
   if (query.q) params.set('q', query.q)
   if (query.from) params.set('from', query.from)

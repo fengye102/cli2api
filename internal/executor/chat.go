@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/caigee-cmd/cli2api/internal/accounts"
@@ -115,6 +116,23 @@ func allowedProvidersFrom(ctx context.Context) []string {
 	}
 	providers, _ := ctx.Value(allowedProvidersKey{}).([]string)
 	return providers
+}
+
+type regionFilterKey struct{}
+
+func WithRegionFilter(ctx context.Context, region string) context.Context {
+	if strings.TrimSpace(region) == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, regionFilterKey{}, region)
+}
+
+func regionFilterFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	region, _ := ctx.Value(regionFilterKey{}).(string)
+	return region
 }
 
 func requestContextDone(ctx context.Context, err error) bool {
@@ -311,6 +329,21 @@ func (e ChatExecutor) pick(requestID, prefer, providerFilter, regionFilter, publ
 				Cooldown: 5 * time.Second, RetryAfter: 5 * time.Second, Failover: true,
 			}, nil)
 		}
+		// No eligible account is ready right now. Before blaming the model or
+		// reporting "no accounts available", check whether accounts that could
+		// serve this model are blocked only by an exhausted quota. A stale or
+		// genuinely exhausted snapshot leaves no routing hint, so without this
+		// the client sees a generic "no accounts available" instead of a quota
+		// error that explains the real cause.
+		if _, ok := e.Pool.QuotaBlockedForModel(query); ok {
+			retryAfter := NextLocalMidnightCooldown()
+			return Item{}, NewExecutionError(Classified{
+				Kind: accounts.KindQuota, Status: 429, Code: "insufficient_quota",
+				Type: "insufficient_quota", Failover: false,
+				Cooldown: retryAfter, RetryAfter: retryAfter,
+				Message: quotaBlockedMessage(publicModel),
+			}, nil)
+		}
 		if publicModel != "" && publicModel != "auto" {
 			unfiltered := query
 			unfiltered.PublicModel = ""
@@ -410,6 +443,13 @@ func logTime(value time.Time) string {
 		return ""
 	}
 	return value.UTC().Format(time.RFC3339)
+}
+
+func quotaBlockedMessage(publicModel string) string {
+	if strings.TrimSpace(publicModel) != "" {
+		return fmt.Sprintf("all accounts that can serve %s are out of quota", publicModel)
+	}
+	return "all accounts are out of quota"
 }
 
 func coolingPickError(item Item, publicModel string, retryAfter time.Duration) error {
@@ -584,7 +624,7 @@ func (e ChatExecutor) markClassified(id string, c Classified, model string) {
 		return
 	}
 	if c.Model == "" && c.Kind == accounts.KindRateLimit {
-		c.Model = model
+		c.Model = e.cooldownModel(id, model)
 	}
 	e.Pool.MarkClassified(id, c)
 }
@@ -596,7 +636,20 @@ func (e ChatExecutor) markOK(id, model string) {
 	if e.Pool == nil {
 		return
 	}
-	e.Pool.MarkOK(id, model)
+	e.Pool.MarkOK(id, e.cooldownModel(id, model))
+}
+
+// cooldownModel records the account's real catalog model when the client
+// used that account's alias, so the alias and the real name share one cooldown.
+func (e ChatExecutor) cooldownModel(id, model string) string {
+	if e.Pool == nil || id == "" {
+		return model
+	}
+	item, ok := e.Pool.ByID(id)
+	if !ok {
+		return model
+	}
+	return AccountModelID(item, model)
 }
 
 func (e ChatExecutor) recordAttempt(ctx context.Context, attempt accounts.RequestAttempt) {
@@ -702,12 +755,19 @@ type routeLoop struct {
 func (e ChatExecutor) newRouteLoop(ctx context.Context, prefer, providerFilter string, req translate.ChatRequest) routeLoop {
 	prefer, providerFilter, regionFilter, routing := e.prepareRouting(ctx, prefer, providerFilter, req)
 	allowed := allowedProvidersFrom(ctx)
-	// A key whose grants narrow the selected family to exactly one region
-	// pre-seeds the region filter: scheduling never even considers accounts
-	// of other regions — including a pin to an out-of-grant account (the
-	// grant overrides the pinned account's region, so the pin falls back
-	// into the granted region) and every failover hop.
-	if providerFilter != "" {
+	// A model-name region prefix (e.g. "workbuddy-cn/model") sets an explicit
+	// region that overrides sticky-session and pin-derived regions. It
+	// coexists with key grants: routeBaseMatches enforces both filters
+	// independently, so a prefix that conflicts with a grant yields no
+	// candidates and a clean error.
+	if modelRegion := regionFilterFromContext(ctx); modelRegion != "" {
+		regionFilter = modelRegion
+	} else if providerFilter != "" {
+		// A key whose grants narrow the selected family to exactly one region
+		// pre-seeds the region filter: scheduling never even considers accounts
+		// of other regions — including a pin to an out-of-grant account (the
+		// grant overrides the pinned account's region, so the pin falls back
+		// into the granted region) and every failover hop.
 		if granted, narrowed := keyGrantedSingleRegion(providerFilter, allowed); narrowed {
 			regionFilter = granted
 		}
@@ -775,6 +835,46 @@ func (l routeLoop) pickFailure(err error) (int, string, string, error) {
 	return 0, "", "", err
 }
 
+// releaseCloser runs release exactly once when the body is closed, so a
+// successful stream keeps its Acquire until the caller finishes reading.
+type releaseCloser struct {
+	io.ReadCloser
+	once    sync.Once
+	release func()
+}
+
+func (c *releaseCloser) Close() error {
+	err := c.ReadCloser.Close()
+	if c.release != nil {
+		c.once.Do(c.release)
+	}
+	return err
+}
+
+func (e ChatExecutor) acquireInFlight(id string) bool {
+	if e.Pool == nil {
+		return true
+	}
+	return e.Pool.Acquire(id)
+}
+
+func (e ChatExecutor) releaseInFlight(id string) {
+	if e.Pool != nil {
+		e.Pool.Release(id)
+	}
+}
+
+// attachInFlightRelease transfers an acquired slot to the response body.
+// Close releases the pool id that was Acquired (not a rewritten account id).
+func (e ChatExecutor) attachInFlightRelease(resp *http.Response, poolID string) *http.Response {
+	if resp == nil || resp.Body == nil {
+		e.releaseInFlight(poolID)
+		return resp
+	}
+	resp.Body = &releaseCloser{ReadCloser: resp.Body, release: func() { e.releaseInFlight(poolID) }}
+	return resp
+}
+
 func (e ChatExecutor) ChatNonStream(ctx context.Context, req translate.ChatRequest, prefer, providerFilter string) (result ChatResult, returnErr error) {
 	loop := e.newRouteLoop(ctx, prefer, providerFilter, req)
 	defer func() { result.Routing = loop.routing.Source }()
@@ -787,31 +887,44 @@ func (e ChatExecutor) ChatNonStream(ctx context.Context, req translate.ChatReque
 			}
 			return ChatResult{}, pickErr
 		}
+		// Acquire with the pool id before any rewrite of item.ID (X-Qoder-Account).
+		poolID := item.ID
+		if !e.acquireInFlight(poolID) {
+			loop.exclude(item)
+			continue
+		}
+		release := func() { e.releaseInFlight(poolID) }
 		if isInProcessItem(item) || e.qoderDirect(item) {
 			result, classified, err := e.chatInProcessNonStreamAttempt(ctx, item, req, i)
 			if err == nil {
 				result.AttemptCount = i + 1
 				e.observeRouting(&loop.routing, result.AccountID)
 				e.bindSession(loop.routing, result.AccountID)
+				release()
 				return result, nil
 			}
 			loop.lastErr = err
 			if requestContextDone(ctx, err) {
+				release()
 				return ChatResult{AttemptCount: i + 1, AccountID: item.ID, Provider: item.Provider}, err
 			}
 			if loop.canFailover(classified) {
+				release()
 				loop.exclude(item)
 				continue
 			}
+			release()
 			return ChatResult{AttemptCount: i + 1, AccountID: item.ID, Provider: item.Provider}, err
 		}
 		payload, err := json.Marshal(buildWorkerChatPayload(req, false))
 		if err != nil {
+			release()
 			return ChatResult{}, err
 		}
 		headerAccount := loop.headerAccount(item, i)
 		httpReq, err := e.newWorkerRequest(ctx, item, payload, headerAccount)
 		if err != nil {
+			release()
 			return ChatResult{}, err
 		}
 		started := time.Now()
@@ -823,6 +936,7 @@ func (e ChatExecutor) ChatNonStream(ctx context.Context, req translate.ChatReque
 					AttemptIndex: i, AccountID: item.ID, StartedAt: started, FinishedAt: ptrTime(time.Now().UTC()),
 					Status: accounts.AttemptStatusError, ErrorKind: accounts.KindUnavailable, ErrorMessage: err.Error(), LatencyMs: &latency,
 				})
+				release()
 				return ChatResult{AttemptCount: i + 1, AccountID: item.ID, Provider: item.Provider}, err
 			}
 			classified := Classify(0, err.Error(), "", accounts.KindUnavailable, "")
@@ -833,6 +947,7 @@ func (e ChatExecutor) ChatNonStream(ctx context.Context, req translate.ChatReque
 				AttemptIndex: i, AccountID: item.ID, StartedAt: started, FinishedAt: ptrTime(time.Now().UTC()),
 				Status: accounts.AttemptStatusFailover, ErrorKind: classified.Kind, ErrorMessage: loop.lastErr.Error(), LatencyMs: &latency,
 			})
+			release()
 			loop.exclude(item)
 			continue
 		}
@@ -862,6 +977,7 @@ func (e ChatExecutor) ChatNonStream(ctx context.Context, req translate.ChatReque
 					Status: status, HTTPStatus: ptrInt(resp.StatusCode), ErrorKind: classified.Kind,
 					ErrorMessage: truncateErr(msg), LatencyMs: &latency,
 				})
+				release()
 				continue
 			}
 			e.recordAttempt(ctx, accounts.RequestAttempt{
@@ -869,6 +985,7 @@ func (e ChatExecutor) ChatNonStream(ctx context.Context, req translate.ChatReque
 				Status: status, HTTPStatus: ptrInt(resp.StatusCode), ErrorKind: classified.Kind,
 				ErrorMessage: truncateErr(msg), LatencyMs: &latency,
 			})
+			release()
 			return ChatResult{AttemptCount: i + 1, AccountID: item.ID, Provider: loop.resultProvider(item)}, loop.lastErr
 		}
 		result, err := decodeChatResult(req, body)
@@ -878,6 +995,7 @@ func (e ChatExecutor) ChatNonStream(ctx context.Context, req translate.ChatReque
 				Status: accounts.AttemptStatusError, HTTPStatus: ptrInt(resp.StatusCode),
 				ErrorKind: accounts.KindUnavailable, ErrorMessage: truncateErr(err.Error()), LatencyMs: &latency,
 			})
+			release()
 			return ChatResult{AttemptCount: i + 1, AccountID: item.ID, Provider: loop.resultProvider(item)}, err
 		}
 		result.AccountID = item.ID
@@ -896,6 +1014,7 @@ func (e ChatExecutor) ChatNonStream(ctx context.Context, req translate.ChatReque
 			PromptTokens: ptrInt(result.PromptTokens), CompletionTokens: ptrInt(result.CompletionTokens),
 			UsageSource: result.UsageSource,
 		})
+		release()
 		return result, nil
 	}
 	if loop.lastErr == nil {
@@ -910,6 +1029,7 @@ func (e ChatExecutor) ChatNonStream(ctx context.Context, req translate.ChatReque
 // WorkBuddy still needs a leading system slot after the strip (code 11128);
 // the adapter inserts an empty placeholder, this helper only drops caller text.
 func sanitizeForItem(item Item, req translate.ChatRequest) translate.ChatRequest {
+	req.Model = AccountModelID(item, req.Model)
 	if native := NativeModelID(item, req.Model); native != "" {
 		req.Model = native
 	}
@@ -967,6 +1087,7 @@ func (e ChatExecutor) chatInProcessNonStreamAttempt(ctx context.Context, item It
 		CompletionTokens: outcome.CompletionTokens,
 		CacheReadTokens:  outcome.CacheReadTokens,
 		CacheWriteTokens: outcome.CacheWriteTokens,
+		CachedTokens:     outcome.CacheReadTokens,
 		UsageSource:      outcome.UsageSource,
 		ConsumedCredits:  outcome.Credits,
 		AccountID:        item.ID,
@@ -993,7 +1114,7 @@ func (e ChatExecutor) chatInProcessStreamAttempt(ctx context.Context, item Item,
 	nativeResponses := false
 	if preferNativeResponses && native != nil && adapter.NativeResponses != nil {
 		options := providers.RequestOptions{
-			Model:            NativeModelID(item, req.Model),
+			Model:            NativeModelID(item, AccountModelID(item, req.Model)),
 			DropSystemPrompt: item.DropSystemPrompt && itemProvider(item) != "qoder",
 		}
 		resp, resolved, err = adapter.NativeResponses.ResponsesStream(ctx, item.ID, native, options)
@@ -1061,13 +1182,14 @@ func decodeChatResult(req translate.ChatRequest, body []byte) (ChatResult, error
 	var parsed struct {
 		Model string `json:"model"`
 		Usage struct {
-			PromptTokens     int      `json:"prompt_tokens"`
-			CompletionTokens int      `json:"completion_tokens"`
-			CacheReadTokens  *int     `json:"cache_read_tokens"`
-			CacheWriteTokens *int     `json:"cache_write_tokens"`
-			Source           string   `json:"source"`
-			Credits          *float64 `json:"credits"`
-			PromptDetails    struct {
+			PromptTokens         int      `json:"prompt_tokens"`
+			CompletionTokens     int      `json:"completion_tokens"`
+			CacheReadTokens      *int     `json:"cache_read_tokens"`
+			CacheWriteTokens     *int     `json:"cache_write_tokens"`
+			PromptCacheHitTokens *int     `json:"prompt_cache_hit_tokens"`
+			Source               string   `json:"source"`
+			Credits              *float64 `json:"credits"`
+			PromptDetails        struct {
 				CachedTokens *int `json:"cached_tokens"`
 			} `json:"prompt_tokens_details"`
 		} `json:"usage"`
@@ -1105,6 +1227,17 @@ func decodeChatResult(req translate.ChatRequest, body []byte) (ChatResult, error
 	if source == "" {
 		source = "estimate"
 	}
+	cacheRead := parsed.Usage.CacheReadTokens
+	if cacheRead == nil {
+		cacheRead = parsed.Usage.PromptDetails.CachedTokens
+	}
+	if cacheRead == nil {
+		cacheRead = parsed.Usage.PromptCacheHitTokens
+	}
+	cachedTokens := parsed.Usage.PromptDetails.CachedTokens
+	if cachedTokens == nil {
+		cachedTokens = cacheRead
+	}
 	return ChatResult{
 		Model:            model,
 		Content:          content,
@@ -1113,9 +1246,9 @@ func decodeChatResult(req translate.ChatRequest, body []byte) (ChatResult, error
 		FinishReason:     finishReason,
 		PromptTokens:     parsed.Usage.PromptTokens,
 		CompletionTokens: parsed.Usage.CompletionTokens,
-		CacheReadTokens:  parsed.Usage.CacheReadTokens,
+		CacheReadTokens:  cacheRead,
 		CacheWriteTokens: parsed.Usage.CacheWriteTokens,
-		CachedTokens:     parsed.Usage.PromptDetails.CachedTokens,
+		CachedTokens:     cachedTokens,
 		UsageSource:      source,
 		Credits:          parsed.Usage.Credits,
 	}, nil
@@ -1203,31 +1336,43 @@ func (e ChatExecutor) chatStreamProxy(ctx context.Context, req translate.ChatReq
 			}
 			return StreamResult{}, pickErr
 		}
+		poolID := item.ID
+		if !e.acquireInFlight(poolID) {
+			loop.exclude(item)
+			continue
+		}
+		release := func() { e.releaseInFlight(poolID) }
 		if isInProcessItem(item) || (e.qoderDirect(item) && !(preferNativeResponses && native != nil)) {
 			result, classified, err := e.chatInProcessStreamAttempt(ctx, item, req, native, i, preferNativeResponses)
 
 			if err == nil {
 				result.AttemptCount = i + 1
 				e.observeRouting(&loop.routing, result.AccountID)
+				result.Response = e.attachInFlightRelease(result.Response, poolID)
 				return result, nil
 			}
 			loop.lastErr = err
 			if requestContextDone(ctx, err) {
+				release()
 				return StreamResult{AttemptCount: i + 1, AccountID: item.ID, Provider: item.Provider}, err
 			}
 			if loop.canFailover(classified) {
+				release()
 				loop.exclude(item)
 				continue
 			}
+			release()
 			return StreamResult{AttemptCount: i + 1, AccountID: item.ID, Provider: item.Provider}, err
 		}
 		payload, err := json.Marshal(buildWorkerChatPayload(req, true))
 		if err != nil {
+			release()
 			return StreamResult{}, err
 		}
 		headerAccount := loop.headerAccount(item, i)
 		httpReq, err := e.newWorkerRequest(ctx, item, payload, headerAccount)
 		if err != nil {
+			release()
 			return StreamResult{}, err
 		}
 		started := time.Now()
@@ -1239,6 +1384,7 @@ func (e ChatExecutor) chatStreamProxy(ctx context.Context, req translate.ChatReq
 					AttemptIndex: i, AccountID: item.ID, StartedAt: started, FinishedAt: ptrTime(time.Now().UTC()),
 					Status: accounts.AttemptStatusError, ErrorKind: accounts.KindUnavailable, ErrorMessage: err.Error(), LatencyMs: &latency,
 				})
+				release()
 				return StreamResult{AttemptCount: i + 1, AccountID: item.ID, Provider: item.Provider}, err
 			}
 			classified := Classify(0, err.Error(), "", accounts.KindUnavailable, "")
@@ -1249,6 +1395,7 @@ func (e ChatExecutor) chatStreamProxy(ctx context.Context, req translate.ChatReq
 				AttemptIndex: i, AccountID: item.ID, StartedAt: started, FinishedAt: ptrTime(time.Now().UTC()),
 				Status: accounts.AttemptStatusFailover, ErrorKind: classified.Kind, ErrorMessage: loop.lastErr.Error(), LatencyMs: &latency,
 			})
+			release()
 			loop.exclude(item)
 			continue
 		}
@@ -1276,6 +1423,7 @@ func (e ChatExecutor) chatStreamProxy(ctx context.Context, req translate.ChatReq
 					Status: status, HTTPStatus: ptrInt(resp.StatusCode), ErrorKind: classified.Kind,
 					ErrorMessage: truncateErr(msg), LatencyMs: &latency,
 				})
+				release()
 				continue
 			}
 			e.recordAttempt(ctx, accounts.RequestAttempt{
@@ -1283,6 +1431,7 @@ func (e ChatExecutor) chatStreamProxy(ctx context.Context, req translate.ChatReq
 				Status: status, HTTPStatus: ptrInt(resp.StatusCode), ErrorKind: classified.Kind,
 				ErrorMessage: truncateErr(msg), LatencyMs: &latency,
 			})
+			release()
 			return StreamResult{AttemptCount: i + 1, AccountID: item.ID, Provider: loop.resultProvider(item)}, loop.lastErr
 		}
 		e.markOK(item.ID, req.Model)
@@ -1297,6 +1446,7 @@ func (e ChatExecutor) chatStreamProxy(ctx context.Context, req translate.ChatReq
 		if resolved != "" {
 			logResolvedReasoning(ctx, "chat_stream", item, req.Model, resolved)
 		}
+		resp = e.attachInFlightRelease(resp, poolID)
 		return StreamResult{
 			Response:       resp,
 			AccountID:      item.ID,

@@ -485,12 +485,7 @@ func (c *Client) ChatNonStream(ctx context.Context, accountID string, req transl
 	if err != nil {
 		return providers.ChatOutcome{}, err
 	}
-	client, err := c.httpClient(ctx, accountID)
-	if err != nil {
-		return providers.ChatOutcome{}, err
-	}
-	client.Timeout = 0
-	resp, err := client.Do(httpReq)
+	resp, err := c.sendChat(ctx, accountID, credential, req, httpReq)
 	if err != nil {
 		return providers.ChatOutcome{}, err
 	}
@@ -498,9 +493,6 @@ func (c *Client) ChatNonStream(ctx context.Context, accountID string, req transl
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if readErr != nil {
 		return providers.ChatOutcome{}, fmt.Errorf("read workbuddy stream: %w", readErr)
-	}
-	if resp.StatusCode >= 300 {
-		return providers.ChatOutcome{}, classifiedError(resp.StatusCode, body)
 	}
 	aggregate, err := Aggregate(bytes.NewReader(body))
 	if err != nil {
@@ -523,21 +515,117 @@ func (c *Client) ChatStream(ctx context.Context, accountID string, req translate
 	if err != nil {
 		return nil, providers.ResolvedChat{}, err
 	}
-	client, err := c.httpClient(ctx, accountID)
+	resp, err := c.sendChat(ctx, accountID, credential, req, httpReq)
 	if err != nil {
 		return nil, providers.ResolvedChat{}, err
-	}
-	client.Timeout = 0
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return nil, providers.ResolvedChat{}, err
-	}
-	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		resp.Body.Close()
-		return nil, providers.ResolvedChat{}, classifiedError(resp.StatusCode, body)
 	}
 	return rewriteChatStream(resp), resolved, nil
+}
+
+// sendChat performs one chat round trip and returns a 2xx response with an
+// unread body. A 401 usually means the access token expired before its JWT
+// clock said so: refresh the token once and retry on the same account. When
+// refresh itself fails, only a real KindAuth / session-dead failure is
+// surfaced as KindAuth (Refresh already Observe(login_required) there);
+// transport / 5xx / other non-auth refresh failures return KindUnavailable
+// so the pool applies short cooldown + failover without marking the account
+// login_required. TLS certificate verification failures are deterministic
+// configuration errors and are reported without retry.
+func (c *Client) sendChat(ctx context.Context, accountID string, credential Credential, req translate.ChatRequest, httpReq *http.Request) (*http.Response, error) {
+	client, err := c.httpClient(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	client.Timeout = 0
+	refreshed := false
+	for {
+		// Fail over when the upstream accepts but never sends a response head
+		// (see ttfb.go). Kept inside sendChat so the 401 refresh loop still runs.
+		resp, err := doWithFirstByteTimeout(client, httpReq, resolveFirstByteTimeout())
+		if err != nil {
+			return nil, wrapTransportError(err)
+		}
+		if resp.StatusCode < 300 {
+			return resp, nil
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized || refreshed || credential.RefreshToken == "" {
+			return nil, classifiedError(resp.StatusCode, body)
+		}
+		refreshed = true
+		fresh, refreshErr := c.Refresh(ctx, accountID, credential)
+		if refreshErr != nil {
+			if tlsErr := tlsVerifyError(refreshErr); tlsErr != nil {
+				return nil, tlsErr
+			}
+			if refreshFailureIsAuth(refreshErr) {
+				out := classifiedError(resp.StatusCode, body)
+				if pe, ok := out.(*providers.Error); ok && pe.Kind == accounts.KindAuth {
+					pe.Message = "token refresh after 401 failed; re-login required"
+				}
+				return nil, out
+			}
+			// Non-auth refresh failure (transport / 5xx / etc.): keep the
+			// account out of login_required; pool short-cools via Unavailable.
+			summary := refreshErr.Error()
+			_ = c.store.Observe(ctx, accountID, credential.UID, "error", "token refresh after 401: "+summary, accounts.KindUnavailable)
+			return nil, &providers.Error{
+				Kind:    accounts.KindUnavailable,
+				Status:  http.StatusBadGateway,
+				Message: "token refresh after 401 unavailable: " + summary,
+			}
+		}
+		credential = fresh
+		httpReq, _, err = c.chatRequest(ctx, accountID, credential, req)
+		if err != nil {
+			return nil, err
+		}
+	}
+}
+
+// tlsVerifyHint mirrors workbuddy2api-hub #441: certificate failures are a
+// local trust-store problem (corporate proxy, HTTPS-decrypting VPN), not an
+// account or transient network fault.
+const tlsVerifyHint = "TLS certificate verification failed: the upstream certificate chain is not trusted by this host (corporate proxy / HTTPS-decrypting VPN?). Install the issuing root CA into the system trust store or set SSL_CERT_FILE, then retry."
+
+// refreshFailureIsAuth reports whether a Refresh error is a real session-dead
+// / KindAuth failure. Reuses Classify and the existing session-dead markers;
+// Refresh already Observe(login_required) on that path. Non-auth failures
+// (transport, 5xx, envelope) must not be upgraded to KindAuth in sendChat.
+func refreshFailureIsAuth(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pe *providers.Error
+	if errors.As(err, &pe) && pe.Kind == accounts.KindAuth {
+		return true
+	}
+	msg := err.Error()
+	// Refresh returns "workbuddy session dead: re-login required" for Classify KindAuth.
+	if strings.Contains(strings.ToLower(msg), "session dead") {
+		return true
+	}
+	return Classify(0, msg).Kind == accounts.KindAuth
+}
+
+func tlsVerifyError(err error) error {
+	if !providers.IsTLSVerifyError(err) {
+		return nil
+	}
+	return &providers.Error{
+		Kind:    accounts.KindUnavailable,
+		Status:  http.StatusBadGateway,
+		Code:    providers.CodeTLSVerifyFailed,
+		Message: tlsVerifyHint + " (" + err.Error() + ")",
+	}
+}
+
+func wrapTransportError(err error) error {
+	if tlsErr := tlsVerifyError(err); tlsErr != nil {
+		return tlsErr
+	}
+	return err
 }
 
 func outcomeFromAggregate(aggregate map[string]any) (providers.ChatOutcome, error) {
@@ -548,13 +636,14 @@ func outcomeFromAggregate(aggregate map[string]any) (providers.ChatOutcome, erro
 	var parsed struct {
 		Model string `json:"model"`
 		Usage struct {
-			PromptTokens     int      `json:"prompt_tokens"`
-			CompletionTokens int      `json:"completion_tokens"`
-			CacheReadTokens  *int     `json:"cache_read_tokens"`
-			CacheWriteTokens *int     `json:"cache_write_tokens"`
-			Source           string   `json:"source"`
-			Credit           *float64 `json:"credit"`
-			PromptDetails    struct {
+			PromptTokens         int      `json:"prompt_tokens"`
+			CompletionTokens     int      `json:"completion_tokens"`
+			CacheReadTokens      *int     `json:"cache_read_tokens"`
+			CacheWriteTokens     *int     `json:"cache_write_tokens"`
+			PromptCacheHitTokens *int     `json:"prompt_cache_hit_tokens"`
+			Source               string   `json:"source"`
+			Credit               *float64 `json:"credit"`
+			PromptDetails        struct {
 				CachedTokens *int `json:"cached_tokens"`
 			} `json:"prompt_tokens_details"`
 		} `json:"usage"`
@@ -585,6 +674,9 @@ func outcomeFromAggregate(aggregate map[string]any) (providers.ChatOutcome, erro
 	out.CacheReadTokens = parsed.Usage.CacheReadTokens
 	if out.CacheReadTokens == nil {
 		out.CacheReadTokens = parsed.Usage.PromptDetails.CachedTokens
+	}
+	if out.CacheReadTokens == nil {
+		out.CacheReadTokens = parsed.Usage.PromptCacheHitTokens
 	}
 	out.CacheWriteTokens = parsed.Usage.CacheWriteTokens
 	out.Credits = parsed.Usage.Credit

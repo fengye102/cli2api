@@ -57,8 +57,8 @@ export function LoginPage() {
             <div className="flex items-center gap-3">
               <BrandMark size={36} />
               <div>
-                <div className="font-semibold tracking-[-0.015em]">CLI2API</div>
-                <div className="text-xs text-muted">{t('controlPlane')}</div>
+                <div className="font-semibold">CLI2API</div>
+                <div className="text-caption text-muted">{t('controlPlane')}</div>
               </div>
             </div>
             <Toolbar isAttached>
@@ -82,18 +82,18 @@ export function LoginPage() {
           </header>
 
           <div className="my-auto max-w-3xl py-16 lg:py-24">
-            <p data-gsap-reveal className="mb-5 mono text-xs text-muted">:3010</p>
+            <p data-gsap-reveal className="mb-5 mono text-caption text-muted">:3010</p>
             <h1 data-gsap-reveal className="max-w-3xl text-[clamp(2.25rem,4vw,3.6rem)] font-semibold leading-[0.98] tracking-[-0.045em] text-balance">
               {t('loginTitle')}
             </h1>
-            <p data-gsap-reveal className="mt-6 max-w-xl text-base leading-7 text-muted sm:text-lg">{t('loginLead')}</p>
+            <p data-gsap-reveal className="mt-6 max-w-xl text-section font-normal text-muted sm:text-title sm:font-normal">{t('loginLead')}</p>
 
-            <p data-gsap-reveal className="mt-10 max-w-xl border-t border-separator pt-5 text-sm leading-6 text-muted">
+            <p data-gsap-reveal className="mt-10 max-w-xl pt-5 text-body leading-6 text-muted">
               {t('loginHint')}
             </p>
           </div>
 
-          <footer className="hidden items-center justify-between text-xs text-muted lg:flex">
+          <footer className="hidden items-center justify-between text-caption text-muted lg:flex">
             <span>{t('loginHint')}</span>
             <span>{t('routesHint')}</span>
           </footer>
@@ -106,7 +106,7 @@ export function LoginPage() {
                 <div className="flex min-w-0 items-center gap-3">
                   <BrandMark size={28} loading={busy} />
                   <div>
-                    <Card.Title className="text-xl tracking-[-0.015em]">{t('loginFormTitle')}</Card.Title>
+                    <Card.Title className="text-title">{t('loginFormTitle')}</Card.Title>
                     <Card.Description className="mt-1">{t('loginDesc')}</Card.Description>
                   </div>
                 </div>
@@ -140,7 +140,7 @@ export function LoginPage() {
                     </InputGroup.Suffix>
                   </InputGroup>
                 </TextField>
-                {message ? <PageAlert title={message} /> : <p className="text-xs text-muted">{t('loginHint')}</p>}
+                {message ? <PageAlert title={message} /> : <p className="text-caption text-muted">{t('loginHint')}</p>}
                 <Button type="submit" fullWidth size="lg" isPending={busy}>
                   {busy ? t('loggingInConsole') : t('loginSubmit')}
                   {!busy ? <ArrowRight size={17} /> : null}
