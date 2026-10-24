@@ -1,5 +1,3 @@
-# Fork: Antigravity browser login (Google OAuth) + Cloud Code Assist
-
 ### English
 
 - Add **Antigravity browser login**: sign in with a Google account through the

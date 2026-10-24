@@ -1,5 +1,3 @@
-# Fork: Raccoon + Antigravity channels and ZCode Start-Plan claim
-
 ### English
 
 - Add a **Raccoon (小浣熊 / SenseTime)** in-process channel: import an access/refresh token pair, OpenAI-compatible chat, remote `model_catalog` refresh with a static fallback, and automatic 401 token refresh.

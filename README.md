@@ -11,7 +11,7 @@
 [![License](https://img.shields.io/github/license/caigee-cmd/cli2api)](LICENSE)
 [![Telegram](https://img.shields.io/badge/Telegram-community-26A5E4)](https://t.me/+jCjL8ou_g7Q2MzI1)
 
-<sub>[English](README_EN.md) · [问题反馈](https://github.com/caigee-cmd/cli2api/issues) · [Telegram](https://t.me/+jCjL8ou_g7Q2MzI1)</sub>
+<sub>[English](README_EN.md) · [问题反馈](https://github.com/fengye102/cli2api/issues) · [Telegram](https://t.me/+jCjL8ou_g7Q2MzI1)</sub>
 
 <img src="./docs/assets/readme/hero-zh.svg" width="100%" alt="CLI2API — 把你自己的登录态，变成一个本机运行的 OpenAI 兼容 API">
 
@@ -79,6 +79,27 @@ Go 网关统一鉴权、调度和记录请求。Qoder 每个账号使用独立 N
 - 跨上游同名模型调度受系统开关、账号权限和地域约束；不是任意账号之间都能切换。
 - 上游协议变化可能影响兼容性；请求日志默认不保存提示词或回复正文。
 
+## 与上游的差异
+
+本仓库是 [caigee-cmd/cli2api](https://github.com/caigee-cmd/cli2api) 的 fork，在上游基础上增加了：
+
+- **ZCode（Z.ai）渠道**：用 ZCode 客户端（Z.ai 的 Coding Plan）的登录态接入 GLM 系列模型。
+  - 登录与导入：浏览器授权（走 ZCode CLI 那套登录流程，或退回粘贴回调链接）、粘贴 API Key（PAT），以及多种凭证导入格式 —— ZCode 凭证包、官方客户端 `~/.zcode/**/config.json` 里的明文 `apiKey`、`credentials.json`、裸 API Key / JWT；机器绑定的 `enc:v1:` 密文会被拒绝并给出可操作提示。
+  - 对话走 Anthropic Messages 上游，翻译成 OpenAI 兼容的流式 / 非流式响应，覆盖工具调用与 thinking 块对应的 `reasoning_content`；推理档位由模型 catalog 驱动。
+  - **计划通道需要验证码节点**：该通道要求每个请求带新鲜的阿里云无痕验证参数，所以要把 `deploy/captcha_node`（Chromium + 目录内 `npm install`）部署好，并用 `ZCODE_CAPTCHA_DIR` / `ZCODE_CHROMIUM_PATH` 指过去；没有它，计划通道的对话会被上游以 3012 拒绝。
+  - 请求体按官方客户端的**三块 system 契约**构造（第 3 块末尾拼接调用方 prompt），与官方桌面端逐字节一致；改动这段文本会破坏契约。
+  - 只保留 **Z.ai** 一个服务（BigModel 国内版已移除）。
+- **小浣熊 Raccoon 渠道**：导入 Raccoon（商汤）网页端的 access/refresh token 对即用，OpenAI 兼容对话、远程 `model_catalog` 目录刷新、401 自动刷新重试，并支持每日签到（北京时间日切）与额度抓取。
+- **Antigravity 渠道**：两种鉴权方式都支持 —— ①**浏览器登录**：用 Google 账号授权（授权码 + loopback 回调，回调落在网关自身的 `/oauth-callback`，也可粘贴回调链接），走 Antigravity IDE 同款协议 **Cloud Code Assist（`v1internal`）**，`streamGenerateContent` 流式推理、`fetchAvailableModels` 目录、`loadCodeAssist`/`onboardUser` 自动发现 `cloudaicompanionProject`，access token 临期/401 自动刷新；②**粘贴 Gemini API Key**（Google AI Studio）：走 Gemini 的 OpenAI 兼容层（`/v1beta/openai`）。两种模式 gemini-* 模型都带推理档位。Google 对该服务有地区限制，可配 `antigravity_region_egress` 走受支持地区出口。
+- **ZCode Start-Plan 每日领取**：控制台账号操作新增 `claim` / `claim/preview`，可每日领取 ZCode 限时体验套餐（Trust Build 等），复用了计划网关的 preview/claim 协议与验证码节点。
+- **凭证导入修复**：多个候选字段按字段优先级确定性解析（此前依赖 map 迭代顺序，同一份内容会随机选中不同账号且不报错）；保留 token 自身含 `+` 的 `uid+token` 拼接形式；`{account, auth}` 这类嵌套导出结构只有在确实带 access token 时才按该结构解析。
+- **控制台细节**：zcode 账号显示 `ZCode Z.ai` 与官方图标；API 访问页给 Anthropic 兼容端点单独一张**根地址** Base URL 卡片（Anthropic 客户端自己会拼 `/v1/messages`，填带 `/v1` 的地址会变成 `/v1/v1/messages`）；系统设置在 fork / 开发版构建下也会列出官方版本历史。
+- **WorkBuddy 额外模型**：用 `WORKBUDDY_EXTRA_MODELS` 注入不在 Grayscale 目录里的模型（默认已注入 `deepseek-v4.1-flash`，见 `deploy/docker-compose.yml`）。
+
+已同步到上游 **v0.7.9**：`/v1/messages` 支持内联 `role: "system"`（Claude Code 2.1.293+ 的形态）、首字节超时切换账号、区域限定前缀（`workbuddy-cn/` 等）、QwenWork 渠道、请求日志保留可配置、用量页费用选项卡。
+
+除以上差异外，功能与部署方式与上游一致，上游文档与更新说明仍然适用。
+
 ## 文档
 
 - [部署与运维：启动步骤、环境变量、接口、托管更新](deploy/README.md)
@@ -90,7 +111,7 @@ Go 网关统一鉴权、调度和记录请求。Qoder 每个账号使用独立 N
 
 ## 社区与贡献
 
-讨论请加入 [Telegram 群](https://t.me/+jCjL8ou_g7Q2MzI1)。国内也可扫下方个人微信二维码联系。缺陷和功能请求请走 GitHub [Issue](https://github.com/caigee-cmd/cli2api/issues)；文档改进与 Pull Request 见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+讨论请加入 [Telegram 群](https://t.me/+jCjL8ou_g7Q2MzI1)。国内也可扫下方个人微信二维码联系。缺陷和功能请求请走 GitHub [Issue](https://github.com/fengye102/cli2api/issues)；文档改进与 Pull Request 见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 <p align="center">
   <img src="./docs/assets/readme/wechat-contact.jpg" width="220" alt="个人微信二维码">

@@ -11,7 +11,7 @@ Deploy with Docker, manage accounts in the web console, and connect clients thro
 [![License](https://img.shields.io/github/license/caigee-cmd/cli2api)](LICENSE)
 [![Telegram](https://img.shields.io/badge/Telegram-community-26A5E4)](https://t.me/+jCjL8ou_g7Q2MzI1)
 
-<sub>[中文](README.md) · [Issues](https://github.com/caigee-cmd/cli2api/issues) · [Telegram](https://t.me/+jCjL8ou_g7Q2MzI1)</sub>
+<sub>[中文](README.md) · [Issues](https://github.com/fengye102/cli2api/issues) · [Telegram](https://t.me/+jCjL8ou_g7Q2MzI1)</sub>
 
 <img src="./docs/assets/readme/hero-en.svg" width="100%" alt="CLI2API — turn your own logins into a local OpenAI-compatible API">
 
@@ -79,6 +79,27 @@ Account cards provide WorkBuddy, QwenWork CN/Global, Qoder CN, and Qoder Global 
 - Cross-provider routing for shared model IDs follows system settings, key grants, and region constraints; failover is not unrestricted.
 - Upstream changes can break compatibility. Request logs do not store prompt or completion bodies by default.
 
+## Differences from upstream
+
+This repository is a fork of [caigee-cmd/cli2api](https://github.com/caigee-cmd/cli2api) and adds:
+
+- **ZCode (Z.ai) channel**: use a ZCode client login (Z.ai Coding Plan) to reach the GLM family.
+  - Login and import: browser sign-in (the ZCode CLI flow, or a pasted callback URL as fallback), a pasted API key (PAT), and several credential import shapes — a ZCode credential bundle, the plaintext `apiKey` in the official client's `~/.zcode/**/config.json`, a `credentials.json` document, or a bare API key / JWT. Machine-bound `enc:v1:` values are rejected with an actionable message.
+  - Chat runs against the Anthropic Messages upstream and is translated to OpenAI-compatible streaming and non-streaming responses, including tool calls and `reasoning_content` for thinking blocks; reasoning levels are catalog-driven.
+  - **The plan channel needs the verification solver**: it rejects a request without a fresh Aliyun verification token, so deploy `deploy/captcha_node` (Chromium plus `npm install` in that directory) and point `ZCODE_CAPTCHA_DIR` / `ZCODE_CHROMIUM_PATH` at it. Without it, plan-channel chat is rejected upstream with code 3012.
+  - Requests follow the client's **three-block system contract** (the caller prompt is appended to the end of the third block), byte-identical to the official desktop client. Editing that text breaks the contract.
+  - Only **Z.ai** is supported (the BigModel region is gone).
+- **Raccoon (SenseTime) channel**: paste the web client's access/refresh token pair and go — OpenAI-compatible chat, remote `model_catalog` refresh, automatic 401 refresh, plus daily check-in (Asia/Shanghai day boundary) and quota fetching.
+- **Antigravity channel**: both credential shapes are supported — ① **browser login**: authorize with a Google account (authorization code plus a loopback callback on the gateway's own `/oauth-callback`, or paste the callback URL) and speak the Antigravity IDE protocol **Cloud Code Assist (`v1internal`)**: `streamGenerateContent` streaming, `fetchAvailableModels` catalog, `loadCodeAssist`/`onboardUser` project discovery, and automatic refresh on expiry or 401; ② **paste a Gemini API key** (Google AI Studio) to use Gemini's OpenAI-compatible layer (`/v1beta/openai`). Both modes expose reasoning levels for gemini-* models. Google geo-restricts this service, so `antigravity_region_egress` can route through a supported region.
+- **ZCode Start-Plan daily claim**: the console account actions gain `claim` / `claim/preview` to claim ZCode's time-limited plans (Trust Build and friends) each day, reusing the plan gateway's preview/claim protocol and the verification solver.
+- **Credential import fixes**: candidate fields are resolved in a deterministic, caller-defined priority order (previously map iteration order could silently pick a different account from the same paste), `uid+token` values keep the `+` inside the token, and `{account, auth}`-style nested exports are only parsed that way when they really carry an access token.
+- **Console details**: zcode accounts show `ZCode Z.ai` and the vendor mark; the API access page gives the Anthropic-compatible endpoint its own origin-only base URL card (Anthropic clients append `/v1/messages` themselves, so a `/v1`-suffixed base becomes `/v1/v1/messages`); and system settings list the official version history even on a fork or development build.
+- **Extra WorkBuddy models**: inject models outside the Grayscale catalog with `WORKBUDDY_EXTRA_MODELS` (the default injects `deepseek-v4.1-flash`, see `deploy/docker-compose.yml`).
+
+Synced to upstream **v0.7.9**: inline `role: "system"` in `/v1/messages` (the shape Claude Code 2.1.293+ sends), first-byte-timeout failover, region-qualified prefixes (`workbuddy-cn/` and friends), the QwenWork channel, configurable request-log retention, and the Usage page Cost tab.
+
+Everything else behaves and deploys like upstream; the upstream documentation and release notes still apply.
+
 ## Documentation
 
 - [Deployment and operations: setup steps, environment variables, endpoints, managed updates](deploy/README.md)
@@ -90,7 +111,7 @@ The default deployment exposes only `127.0.0.1:3010`; do not expose it directly 
 
 ## Community & Contributing
 
-Discussion is in the [Telegram group](https://t.me/+jCjL8ou_g7Q2MzI1). In China you can also scan the personal WeChat QR below. Bugs and feature requests go to GitHub [Issues](https://github.com/caigee-cmd/cli2api/issues); documentation improvements and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+Discussion is in the [Telegram group](https://t.me/+jCjL8ou_g7Q2MzI1). In China you can also scan the personal WeChat QR below. Bugs and feature requests go to GitHub [Issues](https://github.com/fengye102/cli2api/issues); documentation improvements and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 <p align="center">
   <img src="./docs/assets/readme/wechat-contact.jpg" width="220" alt="Personal WeChat QR code">

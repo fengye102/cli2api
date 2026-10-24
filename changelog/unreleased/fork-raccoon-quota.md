@@ -1,5 +1,3 @@
-# Fix: Raccoon quota was never fetched (empty stub)
-
 ### English
 
 - **Fix the Raccoon (小浣熊) account quota never appearing.** The quota reader was an empty stub that returned a window-less snapshot without ever calling upstream. The runtime treats a window-less snapshot as "not fetched yet" and drops it, so every Raccoon account showed the "no quota data" state permanently, no matter how often the console refreshed.

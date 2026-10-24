@@ -1,5 +1,3 @@
-## 0.6.21-fork - 2026-10-13
-
 ### English
 
 - Fork: merge upstream v0.6.20 (Qoder in-process chat signing, empty-stream guard, GLM/Zhipu API-key channel, console resource card, devin rate-limit fixes).
