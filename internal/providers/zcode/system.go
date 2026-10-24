@@ -6,52 +6,71 @@ import (
 	"strings"
 )
 
-// The plan gateway performs its own content review: a request whose system
-// prompt lacks the official ZCode identity blocks is rejected with 3012
-// "unusual activity" no matter how valid the credential is. The blocks are the
-// desktop client's own prefix, extracted verbatim from its bundle.
+// The plan gateway performs its own content review. A Start Plan request is
+// only accepted when its system prompt is shaped the way the ZCode desktop
+// client shapes it: exactly three cached blocks, the first two byte for byte
+// the client's, every dynamic section (the client's before/after sections, the
+// environment, and the caller's own prompt) joined with "\n\n" into the third.
+// A fourth block is refused with 405/3012 "unusual activity" (magpie
+// plugins#343), so the block count is a contract, not a style choice.
 //
-//go:embed zcode_system.json
-var zcodeSystemJSON []byte
+// The texts below are ZCode 3.14.3's, the same ones zcode.z.ai checks for.
+//
+//go:embed zcode_prompt.json
+var zcodePromptJSON []byte
 
-var zcodeSystemBlocks = func() []map[string]any {
-	var blocks []map[string]any
-	if err := json.Unmarshal(zcodeSystemJSON, &blocks); err != nil {
+// zcodePrompt is the client's own prompt set.
+type zcodePrompt struct {
+	CLIPrefix         string   `json:"cliPrefix"`
+	StableSections    []string `json:"stableSections"`
+	BeforeEnvironment string   `json:"beforeEnvironment"`
+	AfterEnvironment  string   `json:"afterEnvironment"`
+	Environment       struct {
+		Heading       string `json:"heading"`
+		InvokedLine   string `json:"invokedLine"`
+		PoweredByLine string `json:"poweredByLine"`
+	} `json:"environment"`
+}
+
+var zcodePlanPrompt = func() *zcodePrompt {
+	var p zcodePrompt
+	if err := json.Unmarshal(zcodePromptJSON, &p); err != nil {
 		return nil
 	}
-	return blocks
+	if p.CLIPrefix == "" || len(p.StableSections) == 0 {
+		return nil
+	}
+	return &p
 }()
 
-// applyPlanIdentity prepends the official identity blocks, stamps the resolved
-// model, appends the caller's own system prompt and adds the cache markers the
-// desktop client sends. It is idempotent: a body already carrying the first
-// official block is left alone.
+// applyPlanIdentity reshapes the body's system prompt into the three-block form
+// the desktop client sends, stamps the resolved model into the environment
+// section and the account identity into metadata.user_id.
+//
+// It returns true when the body was rewritten. A body that already carries the
+// official first block is left alone, which keeps the call idempotent.
 func applyPlanIdentity(body map[string]any, model, userID string) bool {
-	if len(zcodeSystemBlocks) == 0 || body == nil {
+	prompt := zcodePlanPrompt
+	if prompt == nil || body == nil {
 		return false
 	}
-	if first := firstSystemText(body["system"]); first != "" && first == systemBlockText(zcodeSystemBlocks[0]) {
+	if first := firstSystemText(body["system"]); first != "" && first == prompt.CLIPrefix {
 		return false
 	}
-	system := make([]any, 0, len(zcodeSystemBlocks)+2)
-	for _, block := range zcodeSystemBlocks {
-		cloned := make(map[string]any, len(block))
-		for k, v := range block {
-			cloned[k] = v
-		}
-		system = append(system, cloned)
-	}
-	if m := strings.TrimSpace(model); m != "" {
-		system = append(system, map[string]any{
-			"type":          "text",
-			"text":          "- You are powered by the model named " + m + ".",
-			"cache_control": map[string]any{"type": "ephemeral"},
-		})
-	}
+
+	dynamic := make([]string, 0, 4)
+	dynamic = append(dynamic, prompt.BeforeEnvironment)
+	dynamic = append(dynamic, planEnvironment(prompt, model))
+	dynamic = append(dynamic, prompt.AfterEnvironment)
 	if user := userSystemText(body["system"]); user != "" {
-		system = append(system, map[string]any{"type": "text", "text": user})
+		dynamic = append(dynamic, user)
 	}
-	body["system"] = system
+
+	body["system"] = []any{
+		planSystemBlock(prompt.CLIPrefix),
+		planSystemBlock(strings.Join(prompt.StableSections, "\n\n")),
+		planSystemBlock("\n\n" + strings.Join(dynamic, "\n\n")),
+	}
 
 	finalizeCacheControl(body)
 
@@ -60,15 +79,53 @@ func applyPlanIdentity(body map[string]any, model, userID string) bool {
 		if metadata == nil {
 			metadata = map[string]any{}
 		}
-		metadata["user_id"] = id
+		metadata["user_id"] = planUserID(id)
 		body["metadata"] = metadata
 	}
 	return true
 }
 
-func systemBlockText(block map[string]any) string {
-	text, _ := block["text"].(string)
-	return text
+func planSystemBlock(text string) map[string]any {
+	return map[string]any{
+		"type":          "text",
+		"text":          text,
+		"cache_control": map[string]any{"type": "ephemeral"},
+	}
+}
+
+// planEnvironment rebuilds the client's "# Environment" section. Platform and
+// OS version come from the same identity settings the headers use, so the body
+// and the headers never disagree — a mismatch is itself a fingerprint signal.
+func planEnvironment(prompt *zcodePrompt, model string) string {
+	platform := envOr("ZCODE_IDENTITY_PLATFORM", identityPlatform)
+	osVersion := envOr("ZCODE_IDENTITY_OS_VERSION", identityOSVersion)
+	workingDir := envOr("ZCODE_WORKING_DIR", "unknown")
+	lines := []string{
+		prompt.Environment.Heading,
+		prompt.Environment.InvokedLine,
+		"- Primary working directory: " + workingDir,
+		"- Platform: " + platform,
+		"- OS Version: " + platform + " " + osVersion,
+	}
+	if m := strings.TrimSpace(model); m != "" {
+		line := strings.ReplaceAll(prompt.Environment.PoweredByLine, "{provider}", "zai-api")
+		lines = append(lines, strings.ReplaceAll(line, "{model}", m))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// planUserID renders metadata.user_id the way the client does: a JSON object
+// encoded as a string, with the field order the gateway expects.
+func planUserID(device string) string {
+	encoded, err := json.Marshal(struct {
+		DeviceID    string `json:"device_id"`
+		AccountUUID string `json:"account_uuid"`
+		SessionID   string `json:"session_id"`
+	}{DeviceID: device})
+	if err != nil {
+		return device
+	}
+	return string(encoded)
 }
 
 // userSystemText returns the caller's own system prompt as plain text.
@@ -100,7 +157,9 @@ func firstSystemText(system any) string {
 			return ""
 		}
 		if block, ok := typed[0].(map[string]any); ok {
-			return strings.TrimSpace(systemBlockText(block))
+			if text, ok := block["text"].(string); ok {
+				return strings.TrimSpace(text)
+			}
 		}
 	}
 	return ""
@@ -121,11 +180,7 @@ func finalizeCacheControl(body map[string]any) {
 		}
 		switch content := message["content"].(type) {
 		case string:
-			message["content"] = []any{map[string]any{
-				"type":          "text",
-				"text":          content,
-				"cache_control": map[string]any{"type": "ephemeral"},
-			}}
+			message["content"] = []any{planSystemBlock(content)}
 		case []any:
 			if len(content) == 0 {
 				return

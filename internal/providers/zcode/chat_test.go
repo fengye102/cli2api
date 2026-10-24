@@ -323,6 +323,7 @@ func TestAggregate_TextAndToolCalls(t *testing.T) {
 func TestChatStream_HeadersAndBody(t *testing.T) {
 	var sawAuth, sawAPIKey, sawVersion, sawUA string
 	var sawDeviceMid, sawOsCategory, sawTitle, sawChannel, sawAgent string
+	var sawQuerySource, sawUserID string
 	var sawBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Only the chat POST carries the auth header assertions; the catalog
@@ -342,8 +343,12 @@ func TestChatStream_HeadersAndBody(t *testing.T) {
 		sawTitle = r.Header.Get("X-Title")
 		sawChannel = r.Header.Get("X-Release-Channel")
 		sawAgent = r.Header.Get("X-ZCode-Agent")
+		sawQuerySource = r.Header.Get("x-zcode-query-source")
 		if err := json.NewDecoder(r.Body).Decode(&sawBody); err != nil {
 			t.Errorf("decode body: %v", err)
+		}
+		if metadata, ok := sawBody["metadata"].(map[string]any); ok {
+			sawUserID, _ = metadata["user_id"].(string)
 		}
 		if r.URL.Path != "/api/v1/zcode-plan/anthropic/v1/messages" {
 			t.Errorf("path=%s", r.URL.Path)
@@ -389,12 +394,18 @@ func TestChatStream_HeadersAndBody(t *testing.T) {
 		t.Errorf("identity headers: os=%q title=%q channel=%q agent=%q", sawOsCategory, sawTitle, sawChannel, sawAgent)
 	}
 	blocks, ok := sawBody["system"].([]any)
-	if !ok || len(blocks) == 0 {
-		t.Fatalf("plan identity blocks missing: %#v", sawBody["system"])
+	if !ok || len(blocks) != 3 {
+		t.Fatalf("plan system block count=%d want exactly 3: %#v", len(blocks), sawBody["system"])
 	}
 	first, _ := blocks[0].(map[string]any)
 	if first["text"] != "You are ZCode, an interactive coding agent" {
 		t.Errorf("first system block=%v", first["text"])
+	}
+	if sawQuerySource != "main_turn" {
+		t.Errorf("x-zcode-query-source=%q want main_turn", sawQuerySource)
+	}
+	if want := planUserID(sawDeviceMid); sawUserID != want {
+		t.Errorf("metadata.user_id=%q want %q", sawUserID, want)
 	}
 	if sawAuth != "Bearer jwt-abc" {
 		t.Errorf("Authorization=%q", sawAuth)

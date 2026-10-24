@@ -3,7 +3,6 @@ package zcode
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -93,7 +92,7 @@ func (c *Client) chatRequest(ctx context.Context, accountID string, cred Credent
 	if cred.IsOAuth() {
 		// The plan gateway reviews the system prompt and rejects a request
 		// that lacks the official ZCode identity blocks with 3012.
-		applyPlanIdentity(body, req.Model, credentialUserID(cred))
+		applyPlanIdentity(body, req.Model, deviceMid(accountID))
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -121,40 +120,6 @@ func (c *Client) chatRequest(ctx context.Context, accountID string, cred Credent
 		httpReq.Header.Set(CaptchaRegionHeader, region)
 	}
 	return httpReq, providers.ResolvedChat{ReasoningLevel: level}, nil
-}
-
-// credentialUserID is the plan account identity stamped into metadata.user_id.
-func credentialUserID(cred Credential) string {
-	if id := strings.TrimSpace(cred.UserID); id != "" {
-		return id
-	}
-	return jwtUserID(cred.ZCodeJWT)
-}
-
-// jwtUserID decodes the user id out of the ZCode JWT payload (sub / user_id).
-func jwtUserID(token string) string {
-	token = strings.TrimSpace(token)
-	if strings.Count(token, ".") != 2 {
-		return ""
-	}
-	segment := strings.Split(token, ".")[1]
-	for len(segment)%4 != 0 {
-		segment += "="
-	}
-	decoded, err := base64.URLEncoding.DecodeString(segment)
-	if err != nil {
-		return ""
-	}
-	var payload map[string]any
-	if json.Unmarshal(decoded, &payload) != nil {
-		return ""
-	}
-	for _, key := range []string{"user_id", "sub"} {
-		if value, ok := payload[key].(string); ok && strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 // noteRiskResponse empties the verification pool when the upstream reports a

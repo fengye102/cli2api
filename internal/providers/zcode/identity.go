@@ -101,12 +101,14 @@ func osCategory(platform string) string {
 }
 
 // traceHeaders are regenerated per request. The plan (JWT) channel takes only
-// these three: sending x-query-id / x-session-id on it — the coding-plan shape —
-// is itself a 3012 trigger.
+// these: sending x-query-id / x-session-id on it — the coding-plan shape — is
+// itself a 3012 trigger. x-zcode-query-source names the client's turn kind and
+// is what the desktop sends on a normal chat turn.
 func traceHeaders() map[string]string {
 	return map[string]string{
 		"x-request-id":         randomUUID(),
 		"x-zcode-session-type": "main",
 		"x-zcode-trace-id":     randomUUID(),
+		"x-zcode-query-source": "main_turn",
 	}
 }
