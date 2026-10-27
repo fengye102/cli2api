@@ -1196,6 +1196,9 @@ func outcomeFromAggregate(aggregate map[string]any, fallbackModel string) (provi
 			out.FinishReason = parsed.Choices[0].FinishReason
 		}
 	}
+	// Same reconciliation as the stream paths: a turn that produced tool
+	// calls ended in tool_calls, even when upstream omitted finish_reason.
+	out.FinishReason = reconcileTraeFinish(out.FinishReason, len(out.ToolCalls) > 0 && string(out.ToolCalls) != "null")
 	out.PromptTokens = parsed.Usage.PromptTokens
 	out.CompletionTokens = parsed.Usage.CompletionTokens
 	cacheRead := parsed.Usage.CacheReadTokens

@@ -151,6 +151,9 @@ func Aggregate(reader io.Reader) (map[string]any, error) {
 		}
 		message["tool_calls"] = calls
 	}
+	// A turn that produced tool calls ended in tool_calls, whatever
+	// finish_reason upstream reported (Solo often omits it entirely).
+	finishReason = reconcileTraeFinish(finishReason, len(toolCalls) > 0)
 	if model != "" {
 		result["model"] = model
 	}
@@ -165,6 +168,22 @@ func Aggregate(reader io.Reader) (map[string]any, error) {
 		"finish_reason": finishReason,
 	}}
 	return result, nil
+}
+
+// reconcileTraeFinish keeps finish_reason honest about tool use. Solo closes a
+// turn that emitted tool_calls with an empty finish_reason (or "stop"), and the
+// old fallback turned that into "stop". OpenAI clients read "stop" as "the
+// assistant finished talking", so a reply that is nothing but tool calls looks
+// like an empty response — the agent then retries and gives up with "no output".
+// Whenever the turn carried tool calls, it ended in tool_calls.
+func reconcileTraeFinish(finish string, sawToolCalls bool) string {
+	if sawToolCalls {
+		return "tool_calls"
+	}
+	if finish == "" {
+		return "stop"
+	}
+	return finish
 }
 
 func rewriteSoloStream(src io.ReadCloser, model string) (*http.Response, error) {
@@ -251,6 +270,9 @@ func startSoloRewrite(src io.ReadCloser, upstream io.Closer, model string) (*htt
 		var pendingUsage any
 		var lastUsage any
 		ended := false
+		// sawToolCalls records whether any chunk carried tool_calls, so the
+		// terminal frame can report tool_calls even when Solo omits it.
+		sawToolCalls := false
 		writeChunk := func(delta map[string]any, finish string, usage any) error {
 			chunk := map[string]any{
 				"id":      id,
@@ -304,6 +326,7 @@ func startSoloRewrite(src io.ReadCloser, upstream io.Closer, model string) (*htt
 				if len(out.ToolCalls) > 0 && string(out.ToolCalls) != "null" {
 					if remapped := remapToolCallsJSON(out.ToolCalls); remapped != nil {
 						delta["tool_calls"] = remapped
+						sawToolCalls = true
 					}
 				}
 				if len(delta) == 0 {
@@ -321,10 +344,7 @@ func startSoloRewrite(src io.ReadCloser, upstream io.Closer, model string) (*htt
 					FinishReason string `json:"finish_reason"`
 				}
 				_ = json.Unmarshal(ev.Data, &done)
-				finish := done.FinishReason
-				if finish == "" {
-					finish = "stop"
-				}
+				finish := reconcileTraeFinish(done.FinishReason, sawToolCalls)
 				usage := pendingUsage
 				if usage == nil && lastUsage != nil {
 					usage = lastUsage
@@ -352,7 +372,7 @@ func startSoloRewrite(src io.ReadCloser, upstream io.Closer, model string) (*htt
 			if usage == nil && lastUsage != nil {
 				usage = lastUsage
 			}
-			_ = writeChunk(map[string]any{}, "stop", usage)
+			_ = writeChunk(map[string]any{}, reconcileTraeFinish("", sawToolCalls), usage)
 			_, _ = io.WriteString(pw, "data: [DONE]\n\n")
 		}
 		if err != nil {

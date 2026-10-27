@@ -306,10 +306,7 @@ func translateAnthropicStream(src io.Reader, dst io.Writer) error {
 			return nil
 		case "message_stop":
 			state.stopSeen = true
-			finish := state.finishReason
-			if finish == "" {
-				finish = "stop"
-			}
+			finish := reconcileFinish(state.finishReason, state.sawToolUse())
 			usage := state.usage
 			if usage != nil {
 				if p, ok := usage["prompt_tokens"].(int); ok {
@@ -348,10 +345,7 @@ func translateAnthropicStream(src io.Reader, dst io.Writer) error {
 		if state.id == "" {
 			state.id = fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 		}
-		finish := state.finishReason
-		if finish == "" {
-			finish = "stop"
-		}
+		finish := reconcileFinish(state.finishReason, state.sawToolUse())
 		if err := emit(map[string]any{}, finish, state.usage); err != nil {
 			return err
 		}
@@ -371,6 +365,33 @@ func anthropicStopToOpenAI(reason string) string {
 		return "tool_calls"
 	}
 	return "stop"
+}
+
+// reconcileFinish keeps finish_reason honest about tool use. Some upstreams
+// (GLM via the ZCode plan gateway) close a turn that emitted tool_use blocks
+// with stop_reason "end_turn" — or with no stop_reason at all — so a plain
+// mapping reports "stop". OpenAI clients read "stop" as "the assistant finished
+// talking", so a reply that is nothing but tool calls looks like an empty
+// response and gets retried or dropped. Whenever the stream carried a tool_use
+// block, the turn ended in tool calls regardless of what upstream claimed.
+func reconcileFinish(finish string, sawToolUse bool) string {
+	if sawToolUse {
+		return "tool_calls"
+	}
+	if finish == "" {
+		return "stop"
+	}
+	return finish
+}
+
+// sawToolUse reports whether any content block in this turn was a tool_use.
+func (s *streamState) sawToolUse() bool {
+	for _, isTool := range s.blockTool {
+		if isTool {
+			return true
+		}
+	}
+	return false
 }
 
 // Aggregate consumes a full Anthropic SSE body and returns a single OpenAI
@@ -533,6 +554,9 @@ func Aggregate(reader io.Reader) (map[string]any, error) {
 		}
 		message["tool_calls"] = calls
 	}
+	// Same reconciliation as the streaming path: a turn that produced tool
+	// calls ended in tool_calls, whatever stop_reason upstream reported.
+	finishReason = reconcileFinish(finishReason, len(toolCalls) > 0)
 	if id == "" {
 		id = fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	}
