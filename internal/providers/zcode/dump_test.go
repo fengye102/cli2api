@@ -73,7 +73,23 @@ func TestDumpPlanRequestShape(t *testing.T) {
 	fmt.Printf("x-zcode-query-source: %q\n", hdr.Get("x-zcode-query-source"))
 	fmt.Printf("x-zcode-session-type: %q\n", hdr.Get("x-zcode-session-type"))
 	fmt.Printf("X-Device-Mid    : %q\n", hdr.Get("X-Device-Mid"))
-	fmt.Printf("----------------------\n\n")
+	fmt.Printf("----------------------\n")
+
+	// The conversation: the day reminder first, the caller's turn second.
+	msgs, _ := captured["messages"].([]any)
+	fmt.Printf("\n--- messages ---\n")
+	for i, raw := range msgs {
+		m, _ := raw.(map[string]any)
+		blocks, _ := m["content"].([]any)
+		for j, rb := range blocks {
+			b, _ := rb.(map[string]any)
+			text, _ := b["text"].(string)
+			_, cached := b["cache_control"]
+			fmt.Printf("  [%d][%d] role=%-9s len=%-4d cached=%v head=%q\n",
+				i, j, m["role"], len(text), cached, firstN(text, 46))
+		}
+	}
+	fmt.Printf("----------------\n\n")
 
 	if len(blocks) != 3 {
 		t.Fatalf("system block count=%d want 3", len(blocks))
@@ -82,6 +98,35 @@ func TestDumpPlanRequestShape(t *testing.T) {
 	text, _ := third["text"].(string)
 	if !strings.Contains(text, "you are a terse assistant") {
 		t.Error("caller prompt missing from third block")
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("message count=%d want 2 (reminder + caller turn)", len(msgs))
+	}
+	reminder, _ := msgs[0].(map[string]any)
+	rb, _ := reminder["content"].([]any)
+	rb0, _ := rb[0].(map[string]any)
+	reminderText, _ := rb0["text"].(string)
+	if !strings.HasPrefix(reminderText, "<system-reminder>") {
+		t.Errorf("first turn must be the day reminder, got %q", firstN(reminderText, 40))
+	}
+	if _, cached := rb0["cache_control"]; cached {
+		t.Error("the reminder turn must not carry cache_control")
+	}
+	// Exactly one cache mark in the whole conversation, on the last block.
+	marks := 0
+	for _, raw := range msgs {
+		m, _ := raw.(map[string]any)
+		blks, _ := m["content"].([]any)
+		for _, r := range blks {
+			if b, ok := r.(map[string]any); ok {
+				if _, ok := b["cache_control"]; ok {
+					marks++
+				}
+			}
+		}
+	}
+	if marks != 1 {
+		t.Errorf("conversation cache marks=%d want 1", marks)
 	}
 }
 

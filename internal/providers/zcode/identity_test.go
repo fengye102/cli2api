@@ -112,18 +112,112 @@ func TestApplyPlanIdentity(t *testing.T) {
 	if metadata["user_id"] != want {
 		t.Errorf("metadata.user_id=%v want %s", metadata["user_id"], want)
 	}
+	// The day reminder opens the conversation as its own user turn.
 	messages, _ := body["messages"].([]map[string]any)
-	content, _ := messages[0]["content"].([]any)
-	if len(content) != 1 {
-		t.Fatalf("cache control rewrite=%#v", messages[0]["content"])
+	if len(messages) != 2 {
+		t.Fatalf("message count=%d want 2 (reminder + caller turn)", len(messages))
 	}
-	block, _ := content[0].(map[string]any)
+	reminder, _ := messages[0]["content"].([]any)
+	if len(reminder) != 1 {
+		t.Fatalf("reminder blocks=%#v", messages[0]["content"])
+	}
+	reminderBlock, _ := reminder[0].(map[string]any)
+	reminderText, _ := reminderBlock["text"].(string)
+	if !strings.HasPrefix(reminderText, "<system-reminder>") || !strings.HasSuffix(reminderText, "</system-reminder>") {
+		t.Errorf("reminder must be wrapped in system-reminder tags: %q", reminderText)
+	}
+	if !strings.Contains(reminderText, zcodePlanPrompt.Context.CurrentDateHeading+"\n") {
+		t.Error("reminder must carry the currentDate heading on its own line")
+	}
+	if !strings.Contains(reminderText, "Today's date is ") || strings.Contains(reminderText, "{date}") {
+		t.Errorf("reminder must carry a substituted date: %q", reminderText)
+	}
+	// The cache mark belongs to the last block of the last turn, not the reminder.
+	if _, marked := reminderBlock["cache_control"]; marked {
+		t.Error("the reminder turn must not carry cache_control")
+	}
+	last, _ := messages[len(messages)-1]["content"].([]any)
+	if len(last) != 1 {
+		t.Fatalf("cache control rewrite=%#v", messages[len(messages)-1]["content"])
+	}
+	block, _ := last[0].(map[string]any)
 	if _, ok := block["cache_control"].(map[string]any); !ok {
-		t.Error("last content block must carry cache_control")
+		t.Error("last content block of the last turn must carry cache_control")
 	}
 	// Idempotent: a body that already carries the official prefix is untouched.
 	if applyPlanIdentity(body, "GLM-5.3-Flash", "user-1") {
 		t.Error("second call must be a no-op")
+	}
+	if count := countSystemReminders(body); count != 1 {
+		t.Errorf("system-reminder turns=%d want 1", count)
+	}
+}
+
+// countSystemReminders counts the day-reminder turns in a body.
+func countSystemReminders(body map[string]any) int {
+	messages, _ := body["messages"].([]map[string]any)
+	total := 0
+	for _, message := range messages {
+		if hasSystemReminder(message) {
+			total++
+		}
+	}
+	return total
+}
+
+// The caller's own cache marks and tool marks are not part of the client's
+// layout, so they must be stripped before the single one is set.
+func TestFinalizeCacheControlStripsCallerMarks(t *testing.T) {
+	mark := map[string]any{"type": "ephemeral"}
+	body := map[string]any{
+		"messages": []map[string]any{
+			{"role": "user", "content": []any{
+				map[string]any{"type": "text", "text": "first", "cache_control": mark},
+			}},
+			{"role": "assistant", "content": []any{
+				map[string]any{"type": "text", "text": "second", "cache_control": mark},
+			}},
+			{"role": "user", "content": "third"},
+		},
+		"tools": []map[string]any{
+			{"name": "read", "cache_control": mark},
+		},
+	}
+	finalizeCacheControl(body)
+
+	messages := body["messages"].([]map[string]any)
+	first := messages[0]["content"].([]any)[0].(map[string]any)
+	if _, exists := first["cache_control"]; exists {
+		t.Error("caller mark on an earlier turn must be removed")
+	}
+	second := messages[1]["content"].([]any)[0].(map[string]any)
+	if _, exists := second["cache_control"]; exists {
+		t.Error("caller mark on the assistant turn must be removed")
+	}
+	if _, exists := body["tools"].([]map[string]any)[0]["cache_control"]; exists {
+		t.Error("tool cache_control must be removed")
+	}
+	last := messages[2]["content"].([]any)
+	if len(last) != 1 {
+		t.Fatalf("string content must become one block: %#v", last)
+	}
+	if _, ok := last[0].(map[string]any)["cache_control"].(map[string]any); !ok {
+		t.Error("the last block must carry exactly one cache_control")
+	}
+	// Exactly one marker survives in the whole body.
+	total := 0
+	for _, message := range messages {
+		content, _ := message["content"].([]any)
+		for _, item := range content {
+			if block, ok := item.(map[string]any); ok {
+				if _, marked := block["cache_control"]; marked {
+					total++
+				}
+			}
+		}
+	}
+	if total != 1 {
+		t.Errorf("cache_control count=%d want 1", total)
 	}
 }
 

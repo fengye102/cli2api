@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"strings"
+	"time"
 )
 
 // The plan gateway performs its own content review. A Start Plan request is
@@ -30,6 +31,14 @@ type zcodePrompt struct {
 		InvokedLine   string `json:"invokedLine"`
 		PoweredByLine string `json:"poweredByLine"`
 	} `json:"environment"`
+	// Context is the day reminder the client puts in a user turn ahead of the
+	// agent's own first turn, wrapped in <system-reminder> tags.
+	Context struct {
+		Intro              string `json:"intro"`
+		Outro              string `json:"outro"`
+		CurrentDateHeading string `json:"currentDateHeading"`
+		CurrentDateLine    string `json:"currentDateLine"`
+	} `json:"context"`
 }
 
 var zcodePlanPrompt = func() *zcodePrompt {
@@ -44,8 +53,9 @@ var zcodePlanPrompt = func() *zcodePrompt {
 }()
 
 // applyPlanIdentity reshapes the body's system prompt into the three-block form
-// the desktop client sends, stamps the resolved model into the environment
-// section and the account identity into metadata.user_id.
+// the desktop client sends, puts the day reminder ahead of the conversation,
+// stamps the resolved model into the environment section and the account
+// identity into metadata.user_id.
 //
 // It returns true when the body was rewritten. A body that already carries the
 // official first block is left alone, which keeps the call idempotent.
@@ -72,6 +82,7 @@ func applyPlanIdentity(body map[string]any, model, userID string) bool {
 		planSystemBlock("\n\n" + strings.Join(dynamic, "\n\n")),
 	}
 
+	prependContextPrefix(body, prompt)
 	finalizeCacheControl(body)
 
 	if id := strings.TrimSpace(userID); id != "" {
@@ -165,32 +176,95 @@ func firstSystemText(system any) string {
 	return ""
 }
 
-// finalizeCacheControl marks the last non-system content block as ephemeral,
-// mirroring the desktop client. Anthropic silently ignores the marker on
-// requests below the caching threshold, so it is safe to always add.
-func finalizeCacheControl(body map[string]any) {
+// prependContextPrefix puts the day reminder in a user turn ahead of the
+// caller's first turn, the way the desktop client opens a conversation: the
+// text wrapped in <system-reminder> tags, the sections joined by "\n". It is
+// skipped when the body already opens with one, so a retried or re-dressed
+// request keeps exactly one.
+func prependContextPrefix(body map[string]any, prompt *zcodePrompt) {
 	messages, ok := body["messages"].([]map[string]any)
 	if !ok || len(messages) == 0 {
 		return
 	}
-	for i := len(messages) - 1; i >= 0; i-- {
-		message := messages[i]
+	if role, _ := messages[0]["role"].(string); role == "user" {
+		if hasSystemReminder(messages[0]) {
+			return
+		}
+	}
+	context := prompt.Context
+	if context.Intro == "" || context.CurrentDateLine == "" {
+		return
+	}
+	line := strings.ReplaceAll(context.CurrentDateLine, "{date}", today())
+	parts := []string{context.Intro, context.CurrentDateHeading + "\n" + line, "", context.Outro}
+	text := "<system-reminder>" + strings.Join(parts, "\n") + "</system-reminder>"
+	body["messages"] = append([]map[string]any{{
+		"role":    "user",
+		"content": []any{map[string]any{"type": "text", "text": text}},
+	}}, messages...)
+}
+
+// hasSystemReminder reports whether a message's first text block is already the
+// client's day reminder.
+func hasSystemReminder(message map[string]any) bool {
+	content, ok := message["content"].([]any)
+	if !ok || len(content) == 0 {
+		return false
+	}
+	block, ok := content[0].(map[string]any)
+	if !ok {
+		return false
+	}
+	text, _ := block["text"].(string)
+	return strings.HasPrefix(text, "<system-reminder>")
+}
+
+// today is the reminder's date in the client's format. A fixed clock would make
+// the reminder stale, so it is read per request.
+func today() string {
+	return time.Now().Format("2006-01-02")
+}
+
+// finalizeCacheControl reproduces the client's cache marks: none on the turns
+// and none on the tools, then one ephemeral mark on the last block of the last
+// non-system turn. Marks the caller brought are removed first — the gateway
+// compares the cache layout, and stray markers are not part of it.
+func finalizeCacheControl(body map[string]any) {
+	if tools, ok := body["tools"].([]map[string]any); ok {
+		for _, tool := range tools {
+			delete(tool, "cache_control")
+		}
+	}
+	messages, ok := body["messages"].([]map[string]any)
+	if !ok || len(messages) == 0 {
+		return
+	}
+	var last map[string]any
+	for _, message := range messages {
 		if role, _ := message["role"].(string); role == "system" {
 			continue
 		}
-		switch content := message["content"].(type) {
-		case string:
-			message["content"] = []any{planSystemBlock(content)}
-		case []any:
-			if len(content) == 0 {
-				return
-			}
-			if last, ok := content[len(content)-1].(map[string]any); ok {
-				if _, exists := last["cache_control"]; !exists {
-					last["cache_control"] = map[string]any{"type": "ephemeral"}
+		last = message
+		if content, ok := message["content"].([]any); ok {
+			for _, item := range content {
+				if block, ok := item.(map[string]any); ok {
+					delete(block, "cache_control")
 				}
 			}
 		}
+	}
+	if last == nil {
 		return
+	}
+	switch content := last["content"].(type) {
+	case string:
+		last["content"] = []any{planSystemBlock(content)}
+	case []any:
+		if len(content) == 0 {
+			return
+		}
+		if block, ok := content[len(content)-1].(map[string]any); ok {
+			block["cache_control"] = map[string]any{"type": "ephemeral"}
+		}
 	}
 }
