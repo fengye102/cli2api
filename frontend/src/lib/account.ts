@@ -64,8 +64,19 @@ export function runtimeTone(state: AccountState): 'ok' | 'warn' | 'danger' | 'mu
 
 export function formatQuotaAmount(value: number | undefined) {
   if (value == null || !Number.isFinite(value)) return '—'
-  if (Math.abs(value) >= 1000) return `${(value / 1000).toFixed(value % 1000 === 0 ? 0 : 1)}k`
+  const abs = Math.abs(value)
+  // Token grants run into the hundreds of millions (ZCode ships 300M), so
+  // thousands alone would render "300000k". Scale to M/B once the number is
+  // large enough for the extra unit to read better than the digits.
+  if (abs >= 1_000_000_000) return `${trimZero(value / 1_000_000_000)}B`
+  if (abs >= 1_000_000) return `${trimZero(value / 1_000_000)}M`
+  if (abs >= 1000) return `${(value / 1000).toFixed(value % 1000 === 0 ? 0 : 1)}k`
   return String(Math.round(value * 100) / 100)
+}
+
+function trimZero(value: number) {
+  const fixed = value.toFixed(1)
+  return fixed.endsWith('.0') ? fixed.slice(0, -2) : fixed
 }
 
 export function quotaUsedRatio(quota: AccountQuota) {

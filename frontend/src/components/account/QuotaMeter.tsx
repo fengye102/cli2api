@@ -44,19 +44,36 @@ function WindowMeter({
   window,
   t,
   extra,
+  fallbackUnit,
 }: {
   window: AccountQuotaWindow
   t: Translate
   extra?: string[]
+  fallbackUnit?: string
 }) {
   const percent = Math.round(window.percentage ?? 0)
   const label = quotaWindowLabel(window, t)
   const usedText = t('quotaUsedPercent', { n: percent })
   const reset = quotaResetLabel(window.reset_at, t)
-  const valueLabel = `${label} · ${usedText}${reset ? ` · ${reset}` : ''}`
   const ratio = quotaUsedRatio(window)
   const tone = quotaTone(window)
   const color = tone === 'danger' ? 'danger' : tone === 'warn' ? 'warning' : 'success'
+  // Windows carry absolute numbers (credits, points, tokens) as well as a
+  // percentage. Showing only "0% used" hides the real remaining balance, which
+  // is the number people actually look at. When the window reports amounts,
+  // the remaining count becomes the headline and the percentage moves next to
+  // the used/total pair.
+  const hasAmount = window.remaining != null && Number.isFinite(window.remaining)
+  const unit = window.unit || fallbackUnit || ''
+  const amountText = hasAmount
+    ? `${formatQuotaAmount(window.remaining)}${unit ? ` ${unit}` : ''}`
+    : ''
+  const usedPair = window.total != null && Number.isFinite(window.total)
+    ? `${formatQuotaAmount(window.used)} / ${formatQuotaAmount(window.total)}`
+    : ''
+  const valueLabel = hasAmount
+    ? `${label} · ${t('quotaRemaining')} ${amountText}${usedPair ? ` · ${t('quotaUsed')} ${usedPair}${unit ? ` ${unit}` : ''}` : ''}${reset ? ` · ${reset}` : ''}`
+    : `${label} · ${usedText}${reset ? ` · ${reset}` : ''}`
 
   return (
     <Tooltip>
@@ -74,7 +91,14 @@ function WindowMeter({
           >
             <Meter.Output className="flex w-full items-baseline justify-between gap-3 text-caption">
               <span className="min-w-0 truncate font-medium text-foreground">{label}</span>
-              <span className="mono shrink-0 text-foreground/70">{usedText}</span>
+              <span className="mono shrink-0 text-foreground/70">
+                {hasAmount ? (
+                  <>
+                    <span className="text-body font-semibold text-foreground tabular-nums">{amountText}</span>
+                    <span className="ml-1.5">{usedText}</span>
+                  </>
+                ) : usedText}
+              </span>
             </Meter.Output>
             <Meter.Track>
               <Meter.Fill />
@@ -126,6 +150,7 @@ export function QuotaMeter({ quota, t, label, usedLabel, remainingLabel, addOnLa
               window={window}
               t={t}
               extra={index === 0 ? extra : undefined}
+              fallbackUnit={unit}
             />
           </div>
         ))}
