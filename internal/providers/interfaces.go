@@ -191,10 +191,12 @@ type QuotaWindow struct {
 // QuotaPackage is one upstream credit/resource pack with its own expiry.
 // EndsAt is a Unix second; EndTime is the provider-native wall-clock string.
 type QuotaPackage struct {
-	Remain  float64
-	Used    float64
-	Size    float64
-	Unit    string
+	Remain float64
+	Used   float64
+	Size   float64
+	Unit   string
+	// Scope follows accounts.QuotaPackageScopeAccountFEFO; empty is unknown.
+	Scope   string
 	EndsAt  int64
 	EndTime string
 }
@@ -312,6 +314,15 @@ type CredentialImport struct {
 type CredentialImporter interface {
 	Format() string
 	PrepareImport([]byte) (CredentialImport, error)
+}
+
+// CredentialBatchExpander unwraps a multi-account credential package into
+// one raw credential JSON per account. Importers that only accept a single
+// payload do not implement this interface. Control prepares and persists
+// each chunk independently so invalid entries can fail without blocking
+// the rest of the package.
+type CredentialBatchExpander interface {
+	SplitImport([]byte) ([][]byte, error)
 }
 
 // AdminRequest/Response carry worker protocol data, never a public HTTP writer.

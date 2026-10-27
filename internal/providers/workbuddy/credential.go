@@ -13,6 +13,8 @@ import (
 
 const (
 	CredentialFormat = "workbuddy-oauth-v1"
+	// AccountsFormat is the multi-account export produced by workbuddy2api-hub.
+	AccountsFormat = "workbuddy-accounts"
 
 	DomainCN     = "codebuddy.cn"
 	DomainGlobal = "workbuddy.ai"

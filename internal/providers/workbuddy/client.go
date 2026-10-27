@@ -1027,7 +1027,7 @@ func (c *Client) Keepalive(ctx context.Context, accountID string) error {
 // UserResource aggregates package remain/used/total from get-user-resource.
 // packages carries the per-pack expiry detail parsed from CycleEndTime.
 func (c *Client) UserResource(ctx context.Context, accountID string, credential Credential) (remain, used, total int64, packages []providers.QuotaPackage, err error) {
-	now := time.Now()
+	now := time.Now().In(cycleEndTimeZone)
 	payload, err := json.Marshal(map[string]any{
 		"PageNumber":               1,
 		"PageSize":                 100,
@@ -1066,7 +1066,16 @@ func (c *Client) UserResource(ctx context.Context, accountID string, credential 
 		return 0, 0, 0, nil, fmt.Errorf("user-resource code=%d msg=%s", env.Code, env.Msg)
 	}
 	remain, used, total = aggregateUserResource(env.Data.Response.Data.Accounts, env.Data.Response.Data.TotalDosage)
-	return remain, used, total, quotaPackages(env.Data.Response.Data.Accounts), nil
+	packages = quotaPackages(env.Data.Response.Data.Accounts)
+	// These packs are account-wide only for a personal identity. Enterprise
+	// resources may belong to a shared pool or an unselected payer, and a full
+	// page may hide additional packs; either case leaves FEFO scope unknown.
+	if credential.EnterpriseID != "" || len(env.Data.Response.Data.Accounts) >= 100 {
+		for i := range packages {
+			packages[i].Scope = ""
+		}
+	}
+	return remain, used, total, packages, nil
 }
 
 type resourcePackage struct {
@@ -1085,6 +1094,10 @@ var cycleEndTimeZone = time.FixedZone("UTC+8", 8*60*60)
 
 // quotaPackages converts raw packs into per-pack expiry detail for the
 // console. A pack with no parseable CycleEndTime keeps EndsAt zero.
+//
+// The request above filters ProductCode=p_tcaca and live statuses, so every
+// returned pack is a personal credit pack. The scope declaration is cleared by
+// UserResource for enterprise identities and incomplete pages.
 func quotaPackages(packages []resourcePackage) []providers.QuotaPackage {
 	out := make([]providers.QuotaPackage, 0, len(packages))
 	for _, pkg := range packages {
@@ -1094,6 +1107,7 @@ func quotaPackages(packages []resourcePackage) []providers.QuotaPackage {
 			Used:   float64(used),
 			Size:   float64(size),
 			Unit:   "credits",
+			Scope:  accounts.QuotaPackageScopeAccountFEFO,
 		}
 		if trimmed := strings.TrimSpace(pkg.CycleEndTime); trimmed != "" {
 			if parsed, err := time.ParseInLocation("2006-01-02 15:04:05", trimmed, cycleEndTimeZone); err == nil {
@@ -1106,11 +1120,17 @@ func quotaPackages(packages []resourcePackage) []providers.QuotaPackage {
 	return out
 }
 
-// soonestExpiry returns the earliest non-zero pack expiry and the remaining
-// amount that expires at that time.
+// soonestExpiry returns the earliest future expiry of a positive balance and
+// the remaining amount that expires at that time. Depleted and already-expired
+// packages must not keep advertising a stale date after the cached snapshot has
+// outlived the package.
 func soonestExpiry(packages []providers.QuotaPackage) (expiresAt int64, expiringRemain float64) {
+	return soonestExpiryAt(packages, time.Now().Unix())
+}
+
+func soonestExpiryAt(packages []providers.QuotaPackage, nowUnix int64) (expiresAt int64, expiringRemain float64) {
 	for _, pkg := range packages {
-		if pkg.EndsAt <= 0 {
+		if pkg.EndsAt <= 0 || pkg.EndsAt <= nowUnix || !(pkg.Remain > 0) {
 			continue
 		}
 		if expiresAt == 0 || pkg.EndsAt < expiresAt {

@@ -11,7 +11,7 @@ import (
 func splitModelSettingPath(raw, queryProvider string) (provider, modelKey string) {
 	raw = strings.TrimPrefix(raw, "/api/models/")
 	provider = strings.ToLower(strings.TrimSpace(queryProvider))
-	for _, prefix := range []string{"trae/", "workbuddy/", "qoder/", "devin/", "command/", "codex/", "zhipu/", "qwenwork/"} {
+	for _, prefix := range []string{"trae/", "workbuddy/", "qoder/", "devin/", "command/", "codex/", "zhipu/", "qwenwork/", "kimi/"} {
 		if strings.HasPrefix(strings.ToLower(raw), prefix) {
 			provider = strings.TrimSuffix(prefix, "/")
 			raw = raw[len(prefix):]
@@ -36,6 +36,26 @@ func (h *Handler) HandleModelsAPI(w http.ResponseWriter, r *http.Request) {
 		"object": "list",
 		"data":   h.decorateModels(r.Context(), h.filterModels(r, models)),
 	})
+}
+
+// HandleCatalogStatus reports the model-catalog sync state. GET only reads it;
+// POST forces one full reload first and answers with the state that resulted.
+// The body is 200 in both cases — a partial or failed refresh is described by
+// last_error and the per-provider rows, not by the HTTP status.
+func (h *Handler) HandleCatalogStatus(w http.ResponseWriter, r *http.Request) {
+	if h == nil || h.Control == nil || h.Control.Catalog == nil {
+		writeErr(w, http.StatusServiceUnavailable, "catalog_unavailable", "model catalog is not configured")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, h.Control.Catalog.Status())
+	case http.MethodPost:
+		status, _ := h.Control.Catalog.Refresh()
+		writeJSON(w, http.StatusOK, status)
+	default:
+		writeErr(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET or POST only")
+	}
 }
 
 func (h *Handler) HandleModelSetting(w http.ResponseWriter, r *http.Request) {
@@ -82,6 +102,14 @@ func modelSettingResponse(setting control.ModelSetting) map[string]any {
 			"model": setting.Model, "provider": setting.Provider,
 			"max_mode": setting.MaxMode, "reasoning_effort": setting.ReasoningEffort,
 			"context_custom": setting.ContextCustom,
+		}
+	case "kimi":
+		// Kimi Code has no max-mode tier, so only the reasoning default is
+		// part of its setting payload.
+		return map[string]any{
+			"model": setting.Model, "provider": setting.Provider,
+			"reasoning_effort": setting.ReasoningEffort,
+			"context_custom":   setting.ContextCustom,
 		}
 	case "qoder":
 		return map[string]any{

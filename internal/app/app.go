@@ -26,9 +26,10 @@ import (
 	"github.com/caigee-cmd/cli2api/internal/providers/codex"
 	"github.com/caigee-cmd/cli2api/internal/providers/command"
 	"github.com/caigee-cmd/cli2api/internal/providers/devin"
+	"github.com/caigee-cmd/cli2api/internal/providers/kimi"
 	"github.com/caigee-cmd/cli2api/internal/providers/qoder"
-	"github.com/caigee-cmd/cli2api/internal/providers/raccoon"
 	"github.com/caigee-cmd/cli2api/internal/providers/qwenwork"
+	"github.com/caigee-cmd/cli2api/internal/providers/raccoon"
 	"github.com/caigee-cmd/cli2api/internal/providers/trae"
 	"github.com/caigee-cmd/cli2api/internal/providers/workbuddy"
 	"github.com/caigee-cmd/cli2api/internal/providers/zcode"
@@ -126,6 +127,7 @@ func New(cfg config.Config) *App {
 	providerReg.Register(raccoon.NewClient(store).Adapter())
 	providerReg.Register(antigravity.NewClient(store).Adapter())
 	providerReg.Register(qwenwork.NewClient(store).Adapter())
+	providerReg.Register(kimi.NewClient(store).Adapter())
 	qoderClient := qoder.NewClient()
 	qoderClient.Bind(manager.AccountURL, manager.ProxyAPIKey)
 	qoderClient.SetDirect(qoder.NewDirect(store, func(ctx context.Context, accountID string) (string, error) {
@@ -173,6 +175,13 @@ func New(cfg config.Config) *App {
 	}
 	a.CrossProviderModelPool.Store(crossProviderModelPool)
 	a.Control.Catalog = appsvc.NewCatalog(a.FetchWorkerModelsForMode)
+	a.Control.Catalog.Store = a.Manager.Store()
+	a.Control.Catalog.Interval = cfg.CatalogRefreshInterval
+	a.Control.Catalog.Health = appsvc.NewCatalogHealth()
+	// Restore the last successful catalog before the first request so a restart
+	// serves the previous model list instead of an empty one.
+	a.Control.Catalog.Restore(context.Background())
+	go a.Control.Catalog.RunRefresher(stopLogs)
 	if a.Control.Settings != nil {
 		a.Control.Settings.BindCatalog(a.Control.Catalog)
 	}

@@ -21,6 +21,11 @@ import {
   startDeviceLogin,
   type ProviderDescriptor,
 } from '@/api/overview'
+import {
+  normalizeWorkbuddyImportBundle,
+  summarizeWorkbuddyImportResult,
+  type WorkbuddyImportResult,
+} from '@/lib/workbuddyImport'
 
 type Props = {
   isOpen: boolean
@@ -62,6 +67,7 @@ const labelKeys: Record<string, string> = {
   'antigravity-global': 'accountTypeAntigravity',
   'qwenwork-global': 'accountTypeQwenworkGlobal',
   'qwenwork-cn': 'accountTypeQwenworkCN',
+  'kimi-cn': 'accountTypeKimiCN',
 }
 
 const hintKeys: Record<string, string> = {
@@ -79,6 +85,7 @@ const hintKeys: Record<string, string> = {
   'antigravity-global': 'accountTypeAntigravityHint',
   'qwenwork-global': 'accountTypeQwenworkGlobalHint',
   'qwenwork-cn': 'accountTypeQwenworkCNHint',
+  'kimi-cn': 'accountTypeKimiCNHint',
 }
 
 function AccountTypeSkeleton({ ariaLabel }: { ariaLabel: string }) {
@@ -251,7 +258,11 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
     return {
       max_inflight: parsedMaxInFlight(),
       priority: parsedPriority(),
-      drop_system_prompt: showDropSystem ? dropSystemPrompt : true,
+      // WorkBuddy exposes the switch because upstream content screening rejects
+      // third-party system prompts. Kimi Code has no such screening, so a new
+      // Kimi account keeps caller system prompts. Every other provider keeps the
+      // historical drop=true default.
+      drop_system_prompt: showDropSystem ? dropSystemPrompt : activeOption?.provider !== 'kimi',
       proxy_url: proxyUrl.trim(),
     }
   }
@@ -471,20 +482,30 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
       setMessage(t('wizardBadJson'))
       return
     }
-    if (!bundle.format) {
-      if (activeOption.descriptor.id === 'workbuddy') bundle.format = 'workbuddy-oauth-v1'
-      else if (activeOption.descriptor.id === 'trae') bundle.format = 'trae-oauth-v1'
-      else if (activeOption.descriptor.id === 'devin') bundle.format = 'devin-session-v1'
-      else if (activeOption.descriptor.id === 'command') bundle.format = 'command-key-v1'
-      else if (activeOption.descriptor.id === 'raccoon') bundle.format = 'raccoon-credential-v1'
-      else if (activeOption.descriptor.id === 'antigravity') bundle.format = 'antigravity-key-v1'
-      else if (activeOption.descriptor.id === 'qwenwork') bundle.format = 'qwenwork-oauth-v1'
-      else bundle.format = 'qoder-native-v1'
-    }
-    try {
-      setPhase('busy')
-      const options = accountOptions()
-      await importAccount({
+    const options = accountOptions()
+    let payload: Record<string, unknown>
+    if (activeOption.provider === 'workbuddy') {
+      // Shared normalize keeps hub workbuddy-accounts packs intact (same as batch import).
+      payload = normalizeWorkbuddyImportBundle(bundle, {
+        region: activeOption.region === 'global' ? 'global' : 'cn',
+        name: name.trim() || undefined,
+        enabled: true,
+        max_inflight: options.max_inflight,
+        priority: options.priority,
+        drop_system_prompt: options.drop_system_prompt,
+        proxy_url: options.proxy_url,
+      })
+    } else {
+      if (!bundle.format) {
+        if (activeOption.descriptor.id === 'trae') bundle.format = 'trae-oauth-v1'
+        else if (activeOption.descriptor.id === 'devin') bundle.format = 'devin-session-v1'
+        else if (activeOption.descriptor.id === 'command') bundle.format = 'command-key-v1'
+        else if (activeOption.descriptor.id === 'raccoon') bundle.format = 'raccoon-credential-v1'
+        else if (activeOption.descriptor.id === 'antigravity') bundle.format = 'antigravity-key-v1'
+        else if (activeOption.descriptor.id === 'qwenwork') bundle.format = 'qwenwork-oauth-v1'
+        else bundle.format = 'qoder-native-v1'
+      }
+      payload = {
         ...bundle,
         name: name.trim() || bundle.name,
         enabled: true,
@@ -493,11 +514,16 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
         max_inflight: options.max_inflight,
         priority: options.priority,
         drop_system_prompt: options.drop_system_prompt,
-      })
+      }
+    }
+    try {
+      setPhase('busy')
+      const result = await importAccount(payload) as WorkbuddyImportResult
+      const { failed, message } = summarizeWorkbuddyImportResult(result, t)
       setPhase('done')
-      setMessage(t('accountImported'))
+      setMessage(message)
       onAdded()
-      window.setTimeout(finishAndClose, 700)
+      window.setTimeout(finishAndClose, failed > 0 ? 1600 : 700)
     } catch (error) {
       setPhase('idle')
       setMessage(error instanceof Error ? error.message : String(error))

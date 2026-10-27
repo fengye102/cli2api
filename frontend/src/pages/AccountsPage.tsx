@@ -1,11 +1,12 @@
 import { toast } from '@/lib/toast'
 import { copyText } from '@/lib/clipboard'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ChangeEvent } from 'react'
 import { Button, Label, ListBox, Select } from '@heroui/react'
 import {
   ArrowsClockwise,
   MagnifyingGlass,
   Plus,
+  UploadSimple,
 } from '@phosphor-icons/react'
 import { AccountCard, type AccountBusyKind } from '@/components/account/AccountCard'
 import { AccountCheckinRecordsModal } from '@/components/account/AccountCheckinRecordsModal'
@@ -42,6 +43,17 @@ import {
 } from '@/lib/account'
 import { accountProviderFamilyLabel } from '@/lib/provider'
 import { ProviderMark } from '@/components/ProviderMark'
+import { BatchImportConfirmModal } from '@/components/account/BatchImportConfirmModal'
+import {
+  detectImportBundle,
+  parseImportBundleText,
+  type ImportDetectResult,
+  type ImportRegion,
+} from '@/lib/accountImportDetect'
+import {
+  importWorkbuddyBundle,
+  summarizeWorkbuddyImportResult,
+} from '@/lib/workbuddyImport'
 
 type AccountBusy = { id: string; kind: AccountBusyKind }
 type AccountFilter = 'all' | 'available' | 'attention' | 'disabled'
@@ -60,6 +72,11 @@ export function AccountsPage() {
   const rows = accounts
   const hasAccounts = rows.length > 0
   const [addOpen, setAddOpen] = useState(false)
+  const [batchImporting, setBatchImporting] = useState(false)
+  const [batchConfirmOpen, setBatchConfirmOpen] = useState(false)
+  const [batchDetection, setBatchDetection] = useState<ImportDetectResult | null>(null)
+  const [batchBundle, setBatchBundle] = useState<Record<string, unknown> | null>(null)
+  const [batchFileName, setBatchFileName] = useState('')
   const [busy, setBusy] = useState<AccountBusy | null>(null)
   const [patById, setPatById] = useState<Record<string, string>>({})
   const [callbackById, setCallbackById] = useState<Record<string, string>>({})
@@ -320,6 +337,70 @@ export function AccountsPage() {
     }
   }
 
+  function closeBatchConfirm() {
+    if (batchImporting) return
+    setBatchConfirmOpen(false)
+    setBatchDetection(null)
+    setBatchBundle(null)
+    setBatchFileName('')
+  }
+
+  async function onBatchImportFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    try {
+      const raw = await file.text()
+      const record = parseImportBundleText(raw)
+      const detection = detectImportBundle(record)
+      if (!detection.provider) {
+        toast({ type: 'error', title: t('batchImportUnrecognized') })
+        return
+      }
+      setBatchBundle(record)
+      setBatchDetection(detection)
+      setBatchFileName(file.name)
+      setBatchConfirmOpen(true)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      toast({
+        type: 'error',
+        title: message === 'bad_json' ? t('wizardBadJson') : t('batchImportUnrecognized'),
+        description: message === 'bad_json' ? undefined : message,
+      })
+    }
+  }
+
+  async function onBatchImportConfirm(region: ImportRegion) {
+    if (!batchBundle || !batchDetection?.batchImportSupported || batchImporting) return
+    setBatchImporting(true)
+    const toastId = 'batch-import-accounts'
+    toast({ id: toastId, type: 'loading', title: t('batchImportLoading') })
+    try {
+      const result = await importWorkbuddyBundle(batchBundle, { region })
+      const { succeeded, failed, message } = summarizeWorkbuddyImportResult(result, t)
+      toast({
+        id: toastId,
+        type: failed > 0 && succeeded === 0 ? 'error' : failed > 0 ? 'info' : 'success',
+        title: message,
+      })
+      setBatchConfirmOpen(false)
+      setBatchDetection(null)
+      setBatchBundle(null)
+      setBatchFileName('')
+      if (succeeded > 0) await reloadAccounts(false)
+    } catch (error) {
+      toast({
+        id: toastId,
+        type: 'error',
+        title: t('toastFailed'),
+        description: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      setBatchImporting(false)
+    }
+  }
+
   async function onToggleAutoCheckin(id: string, selected: boolean) {
     await run(id, 'toggle', async () => {
       await updateAccount(id, { auto_checkin: selected })
@@ -421,15 +502,47 @@ export function AccountsPage() {
             />
           </>
         ) : null}
-        <div className="ml-auto flex items-center gap-2">
+        <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:ml-auto sm:w-auto">
           <Button size="sm" variant="secondary" isPending={quotaRefreshing} onPress={() => void onRefreshCredits()}>
             <ArrowsClockwise size={14} />{t('refreshCredits')}
           </Button>
+          {/*
+            Mobile Safari ignores programmatic input.click() from React Aria
+            onPress when the file input is display:none. Associate a real
+            label with an sr-only input so the picker opens from a direct
+            user gesture (same detect → confirm → WorkBuddy path).
+          */}
+          <label
+            htmlFor="accounts-batch-import-file"
+            className={`button button--sm button--secondary inline-flex items-center gap-1.5 ${
+              batchImporting || batchConfirmOpen ? 'pointer-events-none opacity-60' : 'cursor-pointer'
+            }`}
+          >
+            {batchImporting ? <BrandMark size={14} loading /> : <UploadSimple size={14} />}
+            {t('batchImport')}
+          </label>
+          <input
+            id="accounts-batch-import-file"
+            type="file"
+            accept=".json,application/json,text/json"
+            disabled={batchImporting || batchConfirmOpen}
+            className="sr-only"
+            onChange={(event) => void onBatchImportFile(event)}
+          />
           <Button size="sm" onPress={() => setAddOpen(true)}><Plus size={14} />{t('addAccount')}</Button>
         </div>
       </section>
 
       <AddAccountModal isOpen={addOpen} onClose={() => setAddOpen(false)} onAdded={() => { toast({ type: 'success', title: t('toastAccountAdded') }); void reloadAccounts(false) }} />
+      <BatchImportConfirmModal
+        isOpen={batchConfirmOpen}
+        detection={batchDetection}
+        fileName={batchFileName}
+        isPending={batchImporting}
+        t={t}
+        onClose={closeBatchConfirm}
+        onConfirm={(region) => { void onBatchImportConfirm(region) }}
+      />
       <AccountModelsModal key={modelsId ?? 'closed'} account={modelsAccount} t={t} onClose={() => setModelsId(null)} />
       <AccountCheckinRecordsModal key={checkinHistoryId ?? 'closed'} account={checkinHistoryAccount} t={t} onClose={() => setCheckinHistoryId(null)} />
       <EditAccountModal
