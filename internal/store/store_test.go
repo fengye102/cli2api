@@ -667,3 +667,61 @@ func TestStorePersistsQuotaAndStatus(t *testing.T) {
 		t.Fatalf("resource-package account state = %+v", stored)
 	}
 }
+
+// The create-time default must follow the provider: screened families strip
+// caller system prompts, trae/kimi keep them. Existing rows must not be
+// rewritten by a default change, which is why there is no migration here.
+func TestCreateAppliesProviderDropSystemPromptDefault(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "qoder.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	cases := []struct {
+		provider string
+		want     bool
+	}{
+		{"trae", false},
+		{"kimi", false},
+		{"qoder", true},
+		{"workbuddy", true},
+	}
+	for _, tc := range cases {
+		created, err := store.Create(ctx, accounts.CreateAccount{
+			Name: "n-" + tc.provider, Provider: tc.provider, Enabled: true,
+		})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.provider, err)
+		}
+		if created.DropSystemPrompt != tc.want {
+			t.Fatalf("%s drop_system_prompt=%v want %v", tc.provider, created.DropSystemPrompt, tc.want)
+		}
+	}
+
+	// An explicit value always wins over the provider default.
+	keep := true
+	created, err := store.Create(ctx, accounts.CreateAccount{
+		Name: "trae-explicit", Provider: "trae", Enabled: true, DropSystemPrompt: &keep,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created.DropSystemPrompt {
+		t.Fatal("explicit drop_system_prompt must win over the trae default")
+	}
+
+	// A default change must never touch rows already stored.
+	if _, err := store.DB().ExecContext(ctx,
+		`UPDATE accounts SET drop_system_prompt = 1 WHERE name = ?`, "n-trae"); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := store.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.DropSystemPrompt {
+		t.Fatal("existing explicit row must be preserved")
+	}
+}

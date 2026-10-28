@@ -1030,14 +1030,20 @@ func settingModelKey(model string) string {
 }
 
 func (c *Client) chatRequest(ctx context.Context, credential Credential, req translate.ChatRequest, accountID string) (*http.Request, providers.ResolvedChat, error) {
-	payload, err := json.Marshal(map[string]any{
+	body := map[string]any{
 		"model":       req.Model,
 		"messages":    req.Messages,
 		"max_tokens":  req.MaxTokens,
 		"temperature": req.Temperature,
 		"tools":       req.Tools,
 		"tool_choice": req.ToolChoice,
-	})
+	}
+	// Forward structured-output hints. Without this a client asking for
+	// {"type":"json_object"} or a JSON schema gets an unconstrained reply.
+	if len(req.ResponseFormat) > 0 && string(req.ResponseFormat) != "null" {
+		body["response_format"] = json.RawMessage(req.ResponseFormat)
+	}
+	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, providers.ResolvedChat{}, err
 	}

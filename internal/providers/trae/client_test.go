@@ -1456,3 +1456,75 @@ func TestChatRoutesByModelScene(t *testing.T) {
 		t.Fatalf("secondary-scene model function=%v", captured["kimi-k2.6"]["function"])
 	}
 }
+
+// A client asking for structured output must reach Solo with response_format
+// intact; the payload rewriter only normalises tools/model, so the field has to
+// survive PrepareBody and applySoloChatFields.
+func TestChatRequestForwardsResponseFormat(t *testing.T) {
+	payload, _ := Credential{AccessToken: "at", RefreshToken: "rt", UID: "u1", Domain: DomainCN, ExpiresAt: 4102444800}.Encode()
+	store := &memStore{items: map[string][]byte{"acc1": payload}}
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == pathModels {
+			_ = json.NewEncoder(w).Encode(map[string]any{"config_info_list": []map[string]any{{
+				"config_name": "glm-5.2", "display_config": map[string]any{"display_name": "GLM-5.2"},
+			}}})
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(soloSSE))
+	}))
+	defer server.Close()
+	client := NewClient(store)
+	client.http = server.Client()
+	client.http.Transport = rewriteTransport{server: server.URL, round: server.Client().Transport}
+	_, err := client.ChatNonStream(context.Background(), "acc1", translate.ChatRequest{
+		Model:          "glm-5.2",
+		ResponseFormat: json.RawMessage(`{"type":"json_object"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	format, _ := got["response_format"].(map[string]any)
+	if format["type"] != "json_object" {
+		t.Fatalf("response_format=%v", got["response_format"])
+	}
+}
+
+// An absent or explicit null response_format must not be sent upstream, or Solo
+// rejects the payload.
+func TestChatRequestOmitsNullResponseFormat(t *testing.T) {
+	for name, format := range map[string]json.RawMessage{
+		"absent": nil,
+		"null":   json.RawMessage(`null`),
+		"empty":  json.RawMessage(``),
+	} {
+		payload, _ := Credential{AccessToken: "at", RefreshToken: "rt", UID: "u1", Domain: DomainCN, ExpiresAt: 4102444800}.Encode()
+		store := &memStore{items: map[string][]byte{"acc1": payload}}
+		var got map[string]any
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == pathModels {
+				_ = json.NewEncoder(w).Encode(map[string]any{"config_info_list": []map[string]any{{
+					"config_name": "glm-5.2", "display_config": map[string]any{"display_name": "GLM-5.2"},
+				}}})
+				return
+			}
+			_ = json.NewDecoder(r.Body).Decode(&got)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(soloSSE))
+		}))
+		client := NewClient(store)
+		client.http = server.Client()
+		client.http.Transport = rewriteTransport{server: server.URL, round: server.Client().Transport}
+		if _, err := client.ChatNonStream(context.Background(), "acc1", translate.ChatRequest{
+			Model: "glm-5.2", ResponseFormat: format,
+		}); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		server.Close()
+		if _, present := got["response_format"]; present {
+			t.Fatalf("%s: response_format must be omitted, body=%v", name, got)
+		}
+	}
+}
