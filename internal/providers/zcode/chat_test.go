@@ -2,9 +2,11 @@ package zcode
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -458,6 +460,107 @@ func TestChatStream_ClassifiesUpstreamError(t *testing.T) {
 	}
 	if perr.Status != http.StatusUnauthorized {
 		t.Errorf("Status=%d", perr.Status)
+	}
+}
+
+// TestChatStream_ClassifiesEnvelopeWith200 pins the shape the plan gateway
+// actually uses for a spent entitlement: HTTP 200 plus
+// {"code":1005,"msg":"exceed quota limit"} labelled application/json. A
+// status-only check relays that as an empty turn, so the caller must get a
+// classified quota error instead and the account must cool down.
+func TestChatStream_ClassifiesEnvelopeWith200(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"code":1005,"msg":"exceed quota limit","logid":"abc"}`))
+	}))
+	defer server.Close()
+	store := &memStore{
+		items: map[string][]byte{
+			"acc1": []byte(`{"format":"zcode-credential-v1","auth_mode":"api_key","provider":"zai","api_key":"abc.def"}`),
+		},
+	}
+	client := NewClient(store)
+	client.http = server.Client()
+	client.http.Transport = rewriteTransport{server: server.URL, base: client.http.Transport}
+	_, _, err := client.ChatStream(context.Background(), "acc1", translate.ChatRequest{
+		Model:    "GLM-5.3-Flash",
+		Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatalf("expected a classified error, got a relayed stream")
+	}
+	var perr *providers.Error
+	if !errors.As(err, &perr) {
+		t.Fatalf("err type %T", err)
+	}
+	if perr.Kind != accounts.KindQuota {
+		t.Errorf("Kind=%q want %q", perr.Kind, accounts.KindQuota)
+	}
+}
+
+// TestChatNonStream_ClassifiesEnvelopeWith200 is the non-stream twin: a 200
+// envelope must not be aggregated into an empty outcome.
+func TestChatNonStream_ClassifiesEnvelopeWith200(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"code":1005,"msg":"exceed quota limit"}`))
+	}))
+	defer server.Close()
+	store := &memStore{
+		items: map[string][]byte{
+			"acc1": []byte(`{"format":"zcode-credential-v1","auth_mode":"api_key","provider":"zai","api_key":"abc.def"}`),
+		},
+	}
+	client := NewClient(store)
+	client.http = server.Client()
+	client.http.Transport = rewriteTransport{server: server.URL, base: client.http.Transport}
+	_, err := client.ChatNonStream(context.Background(), "acc1", translate.ChatRequest{
+		Model:    "GLM-5.3-Flash",
+		Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatalf("expected a classified error, got an empty outcome")
+	}
+	var perr *providers.Error
+	if !errors.As(err, &perr) {
+		t.Fatalf("err type %T", err)
+	}
+	if perr.Kind != accounts.KindQuota {
+		t.Errorf("Kind=%q want %q", perr.Kind, accounts.KindQuota)
+	}
+}
+
+// TestChatStream_EventStreamNotTreatedAsEnvelope guards the inverse: a real
+// SSE turn still relays. Without this the content-type gate could regress into
+// swallowing every stream.
+func TestChatStream_EventStreamNotTreatedAsEnvelope(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(anthropicStream))
+	}))
+	defer server.Close()
+	store := &memStore{
+		items: map[string][]byte{
+			"acc1": []byte(`{"format":"zcode-credential-v1","auth_mode":"api_key","provider":"zai","api_key":"abc.def"}`),
+		},
+	}
+	client := NewClient(store)
+	client.http = server.Client()
+	client.http.Transport = rewriteTransport{server: server.URL, base: client.http.Transport}
+	resp, _, err := client.ChatStream(context.Background(), "acc1", translate.ChatRequest{
+		Model:    "GLM-5.3-Flash",
+		Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(body, []byte("chat.completion.chunk")) {
+		t.Fatalf("relayed body lacks OpenAI chunks: %q", string(body)[:min(200, len(body))])
 	}
 }
 

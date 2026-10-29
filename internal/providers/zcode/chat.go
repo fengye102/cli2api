@@ -222,6 +222,14 @@ func (c *Client) ChatNonStream(ctx context.Context, accountID string, req transl
 		c.noteRiskResponse(resp.StatusCode, body)
 		return providers.ChatOutcome{}, classifiedHTTPError(resp.StatusCode, body)
 	}
+	if classified, ok := zcodeEnvelopeError(resp.StatusCode, body); ok {
+		c.noteRiskResponse(classified.Status, body)
+		return providers.ChatOutcome{}, &providers.Error{
+			Kind:    classified.Kind,
+			Status:  classified.Status,
+			Message: classified.Message,
+		}
+	}
 	aggregate, err := Aggregate(bytes.NewReader(body))
 	if err != nil {
 		return providers.ChatOutcome{}, err
@@ -255,6 +263,26 @@ func (c *Client) ChatStream(ctx context.Context, accountID string, req translate
 		resp.Body.Close()
 		c.noteRiskResponse(resp.StatusCode, body)
 		return nil, providers.ResolvedChat{}, classifiedHTTPError(resp.StatusCode, body)
+	}
+	// The plan gateway reports a spent entitlement or a risk block as a 2xx
+	// {"code":N,"msg":...} JSON body rather than as a status code. It also
+	// labels it application/json, while a real turn streams text/event-stream,
+	// so the content type alone decides whether a body is worth reading: a
+	// JSON-labelled 2xx is an error envelope, never a stream. Returning it as
+	// a stream would hand the caller an empty turn that no account cooldown
+	// ever sees — the agent then reports "returned no output".
+	if !streamIsEventStream(resp.Header) {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		if classified, ok := zcodeEnvelopeError(resp.StatusCode, body); ok {
+			c.noteRiskResponse(classified.Status, body)
+			return nil, providers.ResolvedChat{}, &providers.Error{
+				Kind:    classified.Kind,
+				Status:  classified.Status,
+				Message: classified.Message,
+			}
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(body))
 	}
 	return rewriteChatStream(resp), resolved, nil
 }
@@ -344,12 +372,72 @@ func zcodeQuotaText(text string) bool {
 	for _, signal := range []string{
 		"insufficient balance", "no resource package", "insufficient_quota",
 		"quota exceeded", "余额不足", "no available quota", "resource package",
+		"exceed quota limit", "exceed_quota", "quota limit",
 	} {
 		if strings.Contains(text, signal) {
 			return true
 		}
 	}
 	return false
+}
+
+// streamIsEventStream reports whether the response advertises an SSE body. A
+// real plan turn answers text/event-stream; the gateway's 2xx error envelope
+// answers application/json, which is the only reliable signal separating a
+// failed turn from an empty one (both carry status 200).
+func streamIsEventStream(header http.Header) bool {
+	if header == nil {
+		return false
+	}
+	contentType := strings.ToLower(header.Get("Content-Type"))
+	return strings.Contains(contentType, "text/event-stream")
+}
+
+// zcodeEnvelopeError reports the plan gateway's {\"code\":N,\"msg\":\"...\"} error
+// shape when it arrives with a 2xx status. The gateway answers a spent
+// entitlement (code 1005 \"exceed quota limit\"), a risk block (3012) and a
+// rejected token (401) this way instead of using the HTTP status, so a caller
+// that only inspects StatusCode treats the envelope as an ordinary stream and
+// relays an empty body — the agent then reports \"returned no output\" with no
+// account ever cooled down. Detecting it up front keeps the failure
+// classifiable and lets failover pick a funded account.
+//
+// It returns the classified error and true only when the body is that envelope
+// and carries a non-zero code; anything else (an Anthropic SSE frame, a normal
+// aggregate, empty bytes) is left to the caller.
+func zcodeEnvelopeError(status int, body []byte) (providers.ClassifiedError, bool) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return providers.ClassifiedError{}, false
+	}
+	var envelope struct {
+		Code json.Number `json:"code"`
+		Msg  string      `json:"msg"`
+	}
+	if err := json.Unmarshal(trimmed, &envelope); err != nil {
+		return providers.ClassifiedError{}, false
+	}
+	if envelope.Msg == "" {
+		return providers.ClassifiedError{}, false
+	}
+	code, err := envelope.Code.Int64()
+	if err != nil || code == 0 {
+		return providers.ClassifiedError{}, false
+	}
+	classified := Classify(status, string(trimmed))
+	if classified.Kind == "" {
+		// An envelope the taxonomy does not recognise is still a failure;
+		// never let it read as success.
+		classified = providers.ClassifiedError{
+			Kind:    accounts.KindUnavailable,
+			Status:  firstNonEmptyStatus(status, http.StatusBadGateway),
+			Message: strings.TrimSpace(string(trimmed)),
+		}
+	}
+	if classified.Message == "" {
+		classified.Message = strings.TrimSpace(string(trimmed))
+	}
+	return classified, true
 }
 
 // Classify maps ZCode upstream failures to the shared taxonomy. Anthropic
