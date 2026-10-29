@@ -326,3 +326,47 @@ func TestGrantNoteRendersToast(t *testing.T) {
 		t.Fatalf("nil grant must render nothing, got %q", note)
 	}
 }
+
+// Check-in and balance queries must honour the account proxy. A gateway hosted
+// outside mainland China cannot reach the main site at all — the TCP connect is
+// dropped — so a direct check-in dies on a dial timeout while chat, which
+// already uses the proxy, keeps working. That is the state this pins: the
+// account looks ready but its credits silently stop refreshing.
+func TestCheckinUsesAccountProxy(t *testing.T) {
+	var proxied int
+	// Only the proxy stub can answer; the upstream origin is never reachable
+	// from this test, so any direct call fails instead of silently passing.
+	proxyStub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxied++
+		if strings.HasSuffix(r.URL.Path, settingInfoPath) {
+			_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
+			return
+		}
+		_, _ = w.Write([]byte(billsBody([2]string{"100", todayAt("09:30")})))
+	}))
+	t.Cleanup(proxyStub.Close)
+
+	store := &memStore{
+		items: map[string][]byte{},
+		acc:   map[string]string{"acc-1": proxyStub.URL},
+	}
+	payload, err := EncodeCredential(Credential{Format: CredentialFormat, AccessToken: "token-1"})
+	if err != nil {
+		t.Fatalf("encode credential: %v", err)
+	}
+	store.items["acc-1"] = payload
+
+	client := NewClient(store)
+	// siteBase points at an address that cannot answer, so a request that
+	// bypasses the proxy times out rather than succeeding.
+	client.siteBase = "http://127.0.0.1:1"
+	client.authBase = proxyStub.URL
+	client.llmBase = proxyStub.URL
+
+	if _, err := client.Checkin(context.Background(), "acc-1"); err != nil {
+		t.Fatalf("check-in through the account proxy must succeed: %v", err)
+	}
+	if proxied == 0 {
+		t.Fatal("check-in never went through the account proxy")
+	}
+}

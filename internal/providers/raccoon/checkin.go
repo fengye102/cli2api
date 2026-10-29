@@ -35,12 +35,14 @@ import (
 // without evidence would let a silently-broken account look healthy forever.
 // The bills endpoint is slow (≈9s for limit=20), so it gets its own timeout.
 //
-// ── Why these calls are direct, not proxied ─────────────────────────────
+// ── Why these calls follow the account proxy ────────────────────────────
 // The reference implementation reaches this chain with a bare fetch: the
 // account-level proxy exists for the long streaming chat requests, and the main
-// site is a different host from the LLM gateway. Attaching the account proxy
-// here would diverge from the verified upstream behaviour, so these requests go
-// out directly (c.http) like the balance queries do (see quota.go).
+// site is a different host from the LLM gateway. That holds only when the
+// gateway itself can reach the main site. Hosted outside mainland China the
+// main site drops the TCP connect, so check-in and balance queries need the
+// same egress chat already uses — otherwise the account looks ready while its
+// credits silently stop refreshing.
 
 const (
 	// settingInfoPath is the desktop login entry that settles the daily grant.
@@ -176,9 +178,17 @@ func (c *Client) requestJSON(ctx context.Context, accountID, method, path, token
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
-	// Direct connection: see the module comment on why the account proxy is
-	// deliberately not attached here.
-	resp, err := c.http.Do(req)
+	// Honour the account proxy. The reference implementation uses a bare
+	// fetch because it runs on a host that reaches the main site directly;
+	// this gateway is routinely hosted outside mainland China, where the main
+	// site refuses the TCP connect outright (dial timeout, not a 4xx), so
+	// going direct makes check-in and every balance query fail while chat —
+	// which does use the proxy — keeps working.
+	client, err := c.httpClient(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("请求超时")
