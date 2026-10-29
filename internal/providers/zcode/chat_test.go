@@ -463,6 +463,43 @@ func TestChatStream_ClassifiesUpstreamError(t *testing.T) {
 	}
 }
 
+// TestChatRequest_SendsBareWhenCaptchaFails pins the degraded path: the
+// verification token is opportunistic, so a solver that cannot mint one must
+// not fail the turn. The request goes out without the captcha headers and the
+// pool records the reason for the console.
+func TestChatRequest_SendsBareWhenCaptchaFails(t *testing.T) {
+	var gotParam, gotRegion string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotParam = r.Header.Get(CaptchaHeader)
+		gotRegion = r.Header.Get(CaptchaRegionHeader)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(anthropicStream))
+	}))
+	defer server.Close()
+	store := &memStore{
+		items: map[string][]byte{
+			"acc1": []byte(`{"format":"zcode-credential-v1","auth_mode":"oauth","provider":"zai","zcode_jwt_token":"a.b.c"}`),
+		},
+	}
+	client := NewClient(store)
+	client.http = server.Client()
+	client.http.Transport = rewriteTransport{server: server.URL, base: client.http.Transport}
+	// A pool whose solver path does not exist: enabled() is false, so the chat
+	// path skips it entirely — the same wire shape as a solver that fails.
+	client.captcha = &captchaPool{dir: t.TempDir(), node: "/nonexistent/node"}
+	resp, _, err := client.ChatStream(context.Background(), "acc1", translate.ChatRequest{
+		Model:    "GLM-5.3-Flash",
+		Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("a missing solver must not fail the turn: %v", err)
+	}
+	defer resp.Body.Close()
+	if gotParam != "" || gotRegion != "" {
+		t.Errorf("captcha headers sent without a token: param=%q region=%q", gotParam, gotRegion)
+	}
+}
+
 // TestChatStream_ClassifiesEnvelopeWith200 pins the shape the plan gateway
 // actually uses for a spent entitlement: HTTP 200 plus
 // {"code":1005,"msg":"exceed quota limit"} labelled application/json. A

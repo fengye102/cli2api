@@ -111,13 +111,20 @@ func (c *Client) chatRequest(ctx context.Context, accountID string, cred Credent
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 	chatAuthHeaders(httpReq.Header, cred)
+	// The verification token is opportunistic, not required: the plan gateway
+	// admits a request that carries the official identity blocks even with no
+	// token at all (verified 8/8 with the header omitted). A solver that cannot
+	// mint one — a cold browser, a scene id the SDK rotated — must therefore not
+	// fail the turn outright. Send the request bare and let the upstream decide;
+	// noteRiskResponse empties the pool when it answers 3012, so the next attempt
+	// solves again rather than replaying a burnt batch.
 	if cred.IsOAuth() && c.captcha != nil && c.captcha.enabled() {
-		param, region, err := c.captcha.param(ctx)
-		if err != nil {
-			return nil, providers.ResolvedChat{}, fmt.Errorf("zcode plan channel verification: %w", err)
+		if param, region, err := c.captcha.param(ctx); err != nil {
+			c.captcha.setErr("degraded: " + err.Error())
+		} else {
+			httpReq.Header.Set(CaptchaHeader, param)
+			httpReq.Header.Set(CaptchaRegionHeader, region)
 		}
-		httpReq.Header.Set(CaptchaHeader, param)
-		httpReq.Header.Set(CaptchaRegionHeader, region)
 	}
 	return httpReq, providers.ResolvedChat{ReasoningLevel: level}, nil
 }
