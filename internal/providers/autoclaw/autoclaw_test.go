@@ -354,6 +354,30 @@ func TestBrandHeadersOmitHarnessType(t *testing.T) {
 	}
 }
 
+// TestUserAgentIsNotGoDefault: the upstream WAF rejects Go's default
+// User-Agent with a 405 HTML page, so every request path must override it.
+//
+// A regression here is invisible in unit tests that only inspect headers, and
+// in production it looks like a routing bug (HTML body, no upstream error),
+// which is why the assertion is on both header maps.
+func TestUserAgentIsNotGoDefault(t *testing.T) {
+	for name, headers := range map[string]map[string]string{
+		"chat":    brandHeaders(),
+		"userapi": signedHeaders("token", time.Now()),
+	} {
+		ua := headers["User-Agent"]
+		if ua == "" {
+			t.Fatalf("%s headers carry no User-Agent; the WAF 405s Go's default", name)
+		}
+		if strings.Contains(ua, "Go-http-client") {
+			t.Fatalf("%s headers still carry the Go default UA %q", name, ua)
+		}
+		if ua != clientUserAgent {
+			t.Fatalf("%s User-Agent = %q, want %q", name, ua, clientUserAgent)
+		}
+	}
+}
+
 // TestCredentialDecodeAcceptsDesktopShape: the desktop auth.json uses camelCase,
 // and the console's paste path hands a bare token.
 func TestCredentialDecodeAcceptsDesktopShape(t *testing.T) {

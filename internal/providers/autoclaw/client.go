@@ -187,6 +187,7 @@ func signedHeaders(token string, now time.Time) map[string]string {
 	headers := map[string]string{
 		"Content-Type":     "application/json",
 		"Accept":           "*/*",
+		"User-Agent":       clientUserAgent,
 		"X-Version":        userapiVersion,
 		"X-Product":        clientProduct,
 		"X-Client-Type":    clientType,
@@ -204,10 +205,30 @@ func signedHeaders(token string, now time.Time) map[string]string {
 	return headers
 }
 
+// clientUserAgent is sent on every outbound request.
+//
+// This is NOT cosmetic. The upstream sits behind an Aliyun WAF that rejects
+// Go's default "Go-http-client/1.1" User-Agent with a 405 HTML page before the
+// request ever reaches the autoclaw gateway - the response looks like a
+// routing bug (HTML, not JSON) and never carries the real error. Measured
+// 2026-10-30 from the LA host, same token/body/headers, UA varied alone:
+//
+//	Go-http-client/1.1   -> 405  (WAF block, HTML body)
+//	curl/8.5.0           -> 200
+//	Mozilla ... Chrome   -> 403  (WAF rejects a browser UA on this endpoint)
+//	Electron/32.2.7 ...  -> 200
+//	autoclaw/1.20.0      -> 200
+//
+// Electron is the honest choice: AutoClaw is an Electron desktop app, so this
+// is the UA the real client presents, and it is one of the values the WAF
+// accepts.
+const clientUserAgent = "Electron/32.2.7 Chrome/128.0.6613.186"
+
 // brandHeaders is the chat-path client fingerprint. X-Harness-Type is absent
 // on purpose (see signedHeaders).
 func brandHeaders() map[string]string {
 	return map[string]string{
+		"User-Agent":    clientUserAgent,
 		"X-Product":     clientProduct,
 		"X-Client-Type": clientType,
 		"X-Tm":          "win",
