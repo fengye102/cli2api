@@ -239,12 +239,15 @@ func brandHeaders() map[string]string {
 	}
 }
 
-// doJSON performs one signed userapi request and decodes the envelope.
+// doJSON performs one signed userapi request and returns the raw body.
 //
-// The upstream wraps every userapi response as {code, msg, data}; code 0 is
-// success. A non-zero code is returned as an error with the upstream message so
-// callers can react (400002 drives the refresh fallback).
-func (c *Client) doJSON(ctx context.Context, accountID, path string, body any) (json.RawMessage, int, error) {
+// The caller supplies the access token because the upstream requires
+// `authorization: Bearer <access_token>` on these paths even when the body
+// carries a refresh_token: posting /refresh with no Authorization header (or a
+// bogus refresh_token) answers `{"code":400000,"msg":"用户未登录，请重新登录"}`
+// rather than a refresh-specific error. Passing "" is only correct for paths
+// that genuinely need no identity.
+func (c *Client) doJSON(ctx context.Context, accountID, token, path string, body any) (json.RawMessage, int, error) {
 	client, err := c.httpClient(ctx, accountID)
 	if err != nil {
 		return nil, 0, err
@@ -261,7 +264,7 @@ func (c *Client) doJSON(ctx context.Context, accountID, path string, body any) (
 	if err != nil {
 		return nil, 0, err
 	}
-	for name, value := range signedHeaders("", c.now()) {
+	for name, value := range signedHeaders(token, c.now()) {
 		req.Header.Set(name, value)
 	}
 	resp, err := client.Do(req)

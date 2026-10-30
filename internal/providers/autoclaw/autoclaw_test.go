@@ -543,6 +543,58 @@ func TestRefreshUsesAccountProxy(t *testing.T) {
 	}
 }
 
+// TestRefreshSendsAccessToken: the upstream requires an Authorization header on
+// /refresh even though the body carries the refresh_token. Without it every
+// refresh answers {"code":400000,"msg":"用户未登录，请重新登录"} - indistinguishable
+// from a dead refresh token, which sends people hunting for a credential problem
+// that does not exist. Verified against the live upstream 2026-10-30:
+//
+//	valid access token + signature      -> 400000 (user not logged in)
+//	valid access token, no signature    -> 400002 (signature rejected)
+//	invalid access token + signature    -> 400000
+//
+// i.e. the signature is checked first, then the identity.
+func TestRefreshSendsAccessToken(t *testing.T) {
+	var seen []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"NEW","refresh_token":"R2"}}`))
+	}))
+	defer server.Close()
+
+	payload, _ := EncodeCredential(Credential{AccessToken: "OLD", RefreshToken: "R1"})
+	store := &memoryStore{payload: payload, account: accounts.Account{ID: "acct-1", Provider: ProviderID}}
+	client := NewClient(store, RegionCN)
+	client.userapiBase = server.URL
+
+	if _, err := client.forceRefresh(context.Background(), "acct-1", Credential{AccessToken: "OLD", RefreshToken: "R1"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) == 0 {
+		t.Fatal("refresh issued no request")
+	}
+	// The header must carry the CURRENT access token, not be absent.
+	if want := "Bearer OLD"; seen[0] != want {
+		t.Fatalf("Authorization = %q, want %q", seen[0], want)
+	}
+	// And the rotated refresh token must be persisted: it is single-use upstream,
+	// so losing it forces a full re-login.
+	_, saved, err := store.LoadCredentialPayload(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cred, err := DecodeCredential(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cred.RefreshToken != "R2" {
+		t.Fatalf("stored refresh token = %q, want the rotated R2", cred.RefreshToken)
+	}
+	if cred.AccessToken != "NEW" {
+		t.Fatalf("stored access token = %q, want NEW", cred.AccessToken)
+	}
+}
+
 // TestProbeReportsReadyOnCatalogSuccess: a catalog hit means the credential
 // works.
 func TestProbeReportsReadyOnCatalogSuccess(t *testing.T) {

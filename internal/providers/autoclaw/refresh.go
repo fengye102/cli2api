@@ -96,7 +96,7 @@ func (c *Client) callRefresh(ctx context.Context, accountID string, cred Credent
 	if cred.DeviceID != "" {
 		body["device_id"] = cred.DeviceID
 	}
-	raw, status, err := c.doJSON(ctx, accountID, refreshPath, body)
+	raw, status, err := c.doJSON(ctx, accountID, cred.AccessToken, refreshPath, body)
 	if err != nil {
 		return Credential{}, c.transportError(err)
 	}
@@ -109,7 +109,7 @@ func (c *Client) callRefresh(ctx context.Context, accountID string, cred Credent
 		}
 	}
 	if env.Code == refreshFallbackCode {
-		raw, status, err = c.doJSON(ctx, accountID, refreshFallbackPath, body)
+		raw, status, err = c.doJSON(ctx, accountID, cred.AccessToken, refreshFallbackPath, body)
 		if err != nil {
 			return Credential{}, c.transportError(err)
 		}
