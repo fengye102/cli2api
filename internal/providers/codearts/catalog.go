@@ -22,7 +22,9 @@ type modelRecord struct {
 	Description   string
 	ContextWindow int64
 	MaxTokens     int64
+	Images        bool
 	Benefit       bool
+	Reasoning     []string
 }
 
 // fetchModels merges the three official sources for one account. A source that
@@ -40,6 +42,9 @@ func (c *Client) fetchModels(ctx context.Context, accountID string) ([]providers
 	if records, fetchErr := c.fetchBuiltinModels(ctx, accountID, credential); fetchErr == nil {
 		mergeRecords(merged, records)
 	}
+	// Benefit discovery is additive. A failed claim/config (the normal state
+	// for credit-only trial accounts) must not hide agent models: the same
+	// model works over the credit path without maas_type: benefit.
 	if records, fetchErr := c.fetchBenefitModels(ctx, accountID, credential); fetchErr == nil {
 		for _, record := range records {
 			record.Benefit = true
@@ -54,6 +59,17 @@ func (c *Client) fetchModels(ctx context.Context, accountID string) ([]providers
 	for _, record := range merged {
 		records = append(records, record)
 	}
+	ids := make([]string, 0, len(records))
+	for _, record := range records {
+		ids = append(ids, record.ID)
+	}
+	if variants, err := c.fetchThinkingVariants(ctx, accountID, credential, ids); err == nil {
+		for index := range records {
+			if options := variants[strings.ToLower(records[index].ID)]; len(options) > 0 {
+				records[index].Reasoning = options
+			}
+		}
+	}
 	sort.Slice(records, func(i, j int) bool {
 		left, right := strings.ToLower(records[i].ID), strings.ToLower(records[j].ID)
 		if left != right {
@@ -66,6 +82,93 @@ func (c *Client) fetchModels(ctx context.Context, accountID string) ([]providers
 		models = append(models, toModelInfo(record))
 	}
 	return models, benefit, nil
+}
+
+// fetchThinkingVariants asks the PromptCenter endpoint for the reasoning
+// strengths each model accepts. The official provider uses the same endpoint
+// to populate its model picker; without it the adapter has no declared levels
+// and cannot distinguish a max request from "use the upstream default".
+func (c *Client) fetchThinkingVariants(ctx context.Context, accountID string, credential Credential, modelIDs []string) (map[string][]string, error) {
+	if len(modelIDs) == 0 {
+		return nil, nil
+	}
+	body, err := json.Marshal(map[string]any{"model_names": modelIDs})
+	if err != nil {
+		return nil, err
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, metadataTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, c.apiBase(credential)+thinkingVariants, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Agent-Type", "PromptCenter")
+	req.Header.Set("X-Language", Language)
+	signRequest(req, body, credential.Sign())
+	client, err := c.httpClient(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode >= 400 {
+		return nil, newProviderError(resp.StatusCode, string(raw))
+	}
+	type variant struct {
+		Strengths []string `json:"strengths"`
+	}
+	var out struct {
+		Variants map[string]variant `json:"variants"`
+		Data     struct {
+			Variants map[string]variant `json:"variants"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("parse codearts thinking variants: %w", err)
+	}
+	if len(out.Variants) == 0 {
+		out.Variants = out.Data.Variants
+	}
+	variants := make(map[string][]string, len(out.Variants))
+	for model, value := range out.Variants {
+		options := normalizeReasoningOptions(value.Strengths)
+		if len(options) > 0 {
+			variants[strings.ToLower(strings.TrimSpace(model))] = options
+		}
+	}
+	return variants, nil
+}
+
+func normalizeReasoningOptions(strengths []string) []string {
+	seen := map[string]bool{}
+	options := make([]string, 0, len(strengths))
+	for _, strength := range strengths {
+		level := providers.NormalizeReasoningLevel(strength)
+		if level == "" || seen[level] {
+			continue
+		}
+		seen[level] = true
+		options = append(options, level)
+	}
+	return options
+}
+
+func defaultReasoningOption(options []string) string {
+	for _, option := range options {
+		if option != "none" {
+			return option
+		}
+	}
+	if len(options) > 0 {
+		return options[0]
+	}
+	return ""
 }
 
 func mergeRecords(target map[string]modelRecord, records []modelRecord) {
@@ -88,6 +191,10 @@ func mergeRecords(target map[string]modelRecord, records []modelRecord) {
 			if current.Description == "" {
 				current.Description = record.Description
 			}
+			if len(current.Reasoning) == 0 {
+				current.Reasoning = record.Reasoning
+			}
+			current.Images = current.Images || record.Images
 			current.Benefit = current.Benefit || record.Benefit
 			target[key] = current
 			continue
@@ -98,7 +205,7 @@ func mergeRecords(target map[string]modelRecord, records []modelRecord) {
 
 // toModelInfo declares only what the upstream catalog publishes. Tools are a
 // provider-level capability (the chat endpoint accepts them natively); images
-// are not declared because the request mapper is text-only.
+// and reasoning levels are forwarded only when the catalog advertises them.
 func toModelInfo(record modelRecord) providers.ModelInfo {
 	maxOutput := record.MaxTokens
 	if maxOutput > 65536 {
@@ -112,6 +219,17 @@ func toModelInfo(record modelRecord) providers.ModelInfo {
 		MaxOutput:        int(maxOutput),
 		Tools:            true,
 		Reasoning:        true,
+		Images:           record.Images,
+	}
+	if options := normalizeReasoningOptions(record.Reasoning); len(options) > 0 {
+		caps.ReasoningOptions = options
+		caps.ReasoningDefault = defaultReasoningOption(options)
+		for _, option := range options {
+			if option == "none" {
+				caps.CanDisableThinking = true
+				break
+			}
+		}
 	}
 	return providers.ModelInfo{
 		NativeModel:  record.ID,
@@ -124,14 +242,14 @@ func toModelInfo(record modelRecord) providers.ModelInfo {
 // Models implements providers.ModelCatalogProvider.
 func (c *Client) Models(ctx context.Context, accountID string) ([]providers.ModelInfo, error) {
 	if models, _, ok := c.cachedCatalog(accountID); ok {
-		return models, nil
+		return cloneModels(c.filterAvailable(accountID, models)), nil
 	}
 	models, benefit, err := c.fetchModels(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
 	c.rememberCatalog(accountID, models, benefit)
-	return cloneModels(models), nil
+	return cloneModels(c.filterAvailable(accountID, models)), nil
 }
 
 func (c *Client) cachedCatalog(accountID string) ([]providers.ModelInfo, map[string]bool, bool) {
@@ -221,14 +339,16 @@ func (c *Client) fetchAgentModels(ctx context.Context, accountID string, credent
 	var detail struct {
 		Gpts struct {
 			Models []struct {
-				ModelAlias string `json:"model_alias"`
-				ModelName  string `json:"model_name"`
-				ModelID    string `json:"model_id"`
-				Params     struct {
-					ContextWindow int64  `json:"context_window"`
-					MaxTokens     int64  `json:"max_tokens"`
-					ModelID       string `json:"model_id"`
-					ModelDesc     string `json:"model_desc"`
+				ModelAlias     string `json:"model_alias"`
+				ModelName      string `json:"model_name"`
+				ModelID        string `json:"model_id"`
+				SupportsImages bool   `json:"supports_images"`
+				Params         struct {
+					ContextWindow  int64  `json:"context_window"`
+					MaxTokens      int64  `json:"max_tokens"`
+					ModelID        string `json:"model_id"`
+					ModelDesc      string `json:"model_desc"`
+					SupportsImages bool   `json:"supports_images"`
 				} `json:"model_parameters"`
 			} `json:"models"`
 		} `json:"gpts"`
@@ -238,13 +358,19 @@ func (c *Client) fetchAgentModels(ctx context.Context, accountID string, credent
 	}
 	out := make([]modelRecord, 0, len(detail.Gpts.Models))
 	for _, model := range detail.Gpts.Models {
-		id := firstNonEmpty(model.ModelName, model.ModelID, model.ModelAlias, model.Params.ModelID)
+		// The chat endpoint registers the lowercase model_id, not the display
+		// name. The official client keys its provider catalog by model_id and
+		// uses model_name only as the label; using model_name here makes
+		// display names such as GLM-5.2-ArkTS-SPARK fail with 002002009 while
+		// the real id (glm-5.2-sft-harmony) is callable.
+		id := firstNonEmpty(model.Params.ModelID, model.ModelID, model.ModelAlias, model.ModelName)
 		if id == "" {
 			continue
 		}
 		out = append(out, modelRecord{
-			ID: id, Name: id, Description: model.Params.ModelDesc,
+			ID: id, Name: firstNonEmpty(model.ModelName, id), Description: model.Params.ModelDesc,
 			ContextWindow: model.Params.ContextWindow, MaxTokens: model.Params.MaxTokens,
+			Images: model.SupportsImages || model.Params.SupportsImages,
 		})
 	}
 	return out, nil
@@ -313,11 +439,12 @@ func (c *Client) fetchBuiltinModels(ctx context.Context, accountID string, crede
 	}
 	var out struct {
 		BuiltinModels []struct {
-			ModelID       string `json:"model_id"`
-			ModelName     string `json:"model_name"`
-			ModelDesc     string `json:"model_desc"`
-			ContextWindow int64  `json:"context_window"`
-			MaxTokens     int64  `json:"max_tokens"`
+			ModelID        string `json:"model_id"`
+			ModelName      string `json:"model_name"`
+			ModelDesc      string `json:"model_desc"`
+			ContextWindow  int64  `json:"context_window"`
+			MaxTokens      int64  `json:"max_tokens"`
+			SupportsImages bool   `json:"supports_images"`
 		} `json:"builtinModels"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
@@ -330,8 +457,9 @@ func (c *Client) fetchBuiltinModels(ctx context.Context, accountID string, crede
 			continue
 		}
 		records = append(records, modelRecord{
-			ID: id, Name: id, Description: model.ModelDesc,
+			ID: id, Name: firstNonEmpty(model.ModelName, id), Description: model.ModelDesc,
 			ContextWindow: model.ContextWindow, MaxTokens: model.MaxTokens,
+			Images: model.SupportsImages,
 		})
 	}
 	return records, nil
@@ -341,9 +469,10 @@ func (c *Client) fetchBuiltinModels(ctx context.Context, accountID string, crede
 // official client opening the model menu, claims the benefit idempotently.
 func (c *Client) fetchBenefitModels(ctx context.Context, accountID string, credential Credential) ([]modelRecord, error) {
 	if err := c.claimBenefit(ctx, accountID, credential); err != nil {
-		// A claim failure must not hide the rest of the catalog; a later chat
-		// will surface benefit-not-found as model_not_available.
-		_ = err
+		// Match the official client: do not load benefit models when claim
+		// failed. The same model may still be callable over the credit path,
+		// and fetchModels keeps the agent/builtin records for that case.
+		return nil, err
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, metadataTimeout)
 	defer cancel()
@@ -372,11 +501,12 @@ func (c *Client) fetchBenefitModels(ctx context.Context, accountID string, crede
 		ErrorCode string `json:"error_code"`
 		Result    struct {
 			Models []struct {
-				ModelID       string `json:"model_id"`
-				ModelName     string `json:"model_name"`
-				ModelDesc     string `json:"model_desc"`
-				ContextWindow int64  `json:"context_window"`
-				MaxTokens     int64  `json:"max_tokens"`
+				ModelID        string `json:"model_id"`
+				ModelName      string `json:"model_name"`
+				ModelDesc      string `json:"model_desc"`
+				ContextWindow  int64  `json:"context_window"`
+				MaxTokens      int64  `json:"max_tokens"`
+				SupportsImages bool   `json:"supports_images"`
 			} `json:"models"`
 		} `json:"result"`
 	}
@@ -393,8 +523,9 @@ func (c *Client) fetchBenefitModels(ctx context.Context, accountID string, crede
 			continue
 		}
 		records = append(records, modelRecord{
-			ID: id, Name: id, Description: model.ModelDesc,
-			ContextWindow: model.ContextWindow, MaxTokens: model.MaxTokens, Benefit: true,
+			ID: id, Name: firstNonEmpty(model.ModelName, id), Description: model.ModelDesc,
+			ContextWindow: model.ContextWindow, MaxTokens: model.MaxTokens,
+			Images: model.SupportsImages, Benefit: true,
 		})
 	}
 	return records, nil
@@ -410,6 +541,7 @@ func (c *Client) claimBenefit(ctx context.Context, accountID string, credential 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Agent-Type", "PromptCenter")
 	req.Header.Set("X-Language", Language)
 	signRequest(req, body, credential.Sign())
 	client, err := c.httpClient(ctx, accountID)
@@ -424,6 +556,16 @@ func (c *Client) claimBenefit(ctx context.Context, accountID string, credential 
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
 		return newProviderError(resp.StatusCode, string(raw))
+	}
+	var envelope struct {
+		ErrorCode string `json:"error_code"`
+		ErrorMsg  string `json:"error_msg"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return fmt.Errorf("parse codearts benefit claim: %w", err)
+	}
+	if envelope.ErrorCode != "" && envelope.ErrorCode != "0000" {
+		return fmt.Errorf("codearts benefit claim error %s: %s", envelope.ErrorCode, envelope.ErrorMsg)
 	}
 	return nil
 }

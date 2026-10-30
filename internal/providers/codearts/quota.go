@@ -56,7 +56,12 @@ func (m quotaMeter) total() float64 {
 	if m.CreditTotal > 0 {
 		return m.CreditTotal
 	}
-	return float64(m.Allowance)
+	// package_token_amount=1 is the upstream's placeholder when the trial
+	// account has no chat-token package; it is a counter, not a 1-token quota.
+	if m.Allowance > 1 {
+		return float64(m.Allowance)
+	}
+	return 0
 }
 
 func (m quotaMeter) remaining() float64 {
@@ -66,21 +71,20 @@ func (m quotaMeter) remaining() float64 {
 		}
 		return m.CreditTotal - m.CreditUsed
 	}
-	if m.Allowance > 0 {
+	if m.Allowance > 1 {
 		return float64(m.Allowance - m.UsedTokens)
 	}
 	return 0
 }
 
 func (m quotaMeter) percentage() float64 {
+	if m.total() <= 0 {
+		return 0
+	}
 	if m.HasPercent {
 		return m.Percent
 	}
-	total := m.total()
-	if total <= 0 {
-		return 0
-	}
-	return m.used() / total * 100
+	return m.used() / m.total() * 100
 }
 
 // Quota reads the package meters. The activity/benefit balance is intentionally
@@ -213,8 +217,9 @@ func parseStatistics(raw []byte) (statistics, error) {
 		if meter.Label == "" {
 			meter.Label = name
 		}
-		if meter.UsedTokens == 0 && meter.Allowance == 0 &&
-			meter.CreditTotal == 0 && meter.CreditUsed == 0 && meter.CreditRemain == 0 && !meter.HasPercent {
+		if meter.UsedTokens == 0 && meter.Allowance <= 1 &&
+			meter.CreditTotal == 0 && meter.CreditUsed == 0 && meter.CreditRemain == 0 {
+			// A zero-credit row or the placeholder 1-token counter is noise.
 			continue
 		}
 		out.Meters = append(out.Meters, meter)

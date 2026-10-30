@@ -12,28 +12,25 @@ func TestDefaultAccountPolicyValues(t *testing.T) {
 	if DefaultPriorityValue(0) != DefaultPriority || DefaultPriorityValue(80) != 80 {
 		t.Fatal("priority defaults to 50 unless set")
 	}
-	if !DefaultDropSystemPrompt("qoder", nil) {
-		t.Fatal("drop system prompt defaults on for screened providers")
+	if !DefaultDropSystemPrompt("workbuddy", nil) {
+		t.Fatal("drop system prompt defaults on")
 	}
 	if DefaultDropSystemPrompt("trae", nil) {
-		t.Fatal("trae keeps caller system prompts")
+		t.Fatal("trae must keep caller system prompts by default")
 	}
 	if DefaultDropSystemPrompt("kimi", nil) {
-		t.Fatal("kimi keeps caller system prompts")
+		t.Fatal("kimi must keep caller system prompts by default")
 	}
-	if !DefaultDropSystemPrompt("workbuddy", nil) {
-		t.Fatal("workbuddy strips caller system prompts")
+	if DefaultDropSystemPrompt("codearts", nil) {
+		t.Fatal("codearts must keep caller system prompts by default")
 	}
 	off := false
-	if DefaultDropSystemPrompt("trae", &off) {
+	if DefaultDropSystemPrompt("workbuddy", &off) {
 		t.Fatal("explicit drop system prompt false must stick")
 	}
 	on := true
 	if !DefaultDropSystemPrompt("trae", &on) {
-		t.Fatal("explicit drop system prompt true must stick")
-	}
-	if !DefaultDropSystemPrompt("kimi", &on) {
-		t.Fatal("explicit drop system prompt true must stick")
+		t.Fatal("explicit trae drop system prompt true must stick")
 	}
 	if DefaultWorkBuddyAutoCheckin(nil) {
 		t.Fatal("auto check-in defaults off")

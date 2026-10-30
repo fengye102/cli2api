@@ -33,6 +33,7 @@ type memoryStore struct {
 	mu      sync.Mutex
 	payload []byte
 	account accounts.Account
+	setting accounts.ProviderModelSetting
 	saved   []byte
 }
 
@@ -56,6 +57,12 @@ func (s *memoryStore) SaveCredentialPayload(_ context.Context, _ string, _ strin
 
 func (s *memoryStore) Observe(context.Context, string, string, string, string, string) error {
 	return nil
+}
+
+func (s *memoryStore) GetProviderModelSetting(context.Context, string, string) (accounts.ProviderModelSetting, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.setting, nil
 }
 
 func testCredential() Credential {
@@ -157,6 +164,213 @@ func TestChatNonStreamAndToolMapping(t *testing.T) {
 	}
 	if gotBody["model"] != "GLM-5.2" {
 		t.Fatalf("model = %v", gotBody["model"])
+	}
+}
+
+func TestChatForwardsImagePartsForVisionModel(t *testing.T) {
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != chatPath {
+			http.NotFound(w, r)
+			return
+		}
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(t, w, map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "seen"}}}})
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+	client, _ := newTestClient(t, server)
+	client.rememberCatalog("acct-1", []providers.ModelInfo{{
+		NativeModel: "vision-model", PublicModel: "vision-model",
+		Capabilities: providers.ModelCapabilities{Images: true},
+	}}, nil)
+
+	_, err := client.ChatNonStream(context.Background(), "acct-1", translate.ChatRequest{
+		Model: "vision-model",
+		Messages: []translate.ChatMessage{{
+			Role: "user",
+			Content: []any{
+				map[string]any{"type": "text", "text": "describe"},
+				map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,AAAA"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ChatNonStream: %v", err)
+	}
+	messages, _ := gotBody["messages"].([]any)
+	if len(messages) == 0 {
+		t.Fatalf("messages = %#v", gotBody["messages"])
+	}
+	first, _ := messages[0].(map[string]any)
+	parts, ok := first["content"].([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("image content parts = %#v", first["content"])
+	}
+	image, _ := parts[1].(map[string]any)
+	imageValue, _ := image["image_url"].(map[string]any)
+	if image["type"] != "image_url" || imageValue["url"] != "data:image/png;base64,AAAA" {
+		t.Fatalf("image part = %#v", image)
+	}
+}
+
+func TestChatRejectsImageForTextModel(t *testing.T) {
+	client, _ := newTestClient(t, httptest.NewServer(http.NotFoundHandler()))
+	client.rememberCatalog("acct-1", []providers.ModelInfo{{
+		NativeModel: "text-model", PublicModel: "text-model",
+		Capabilities: providers.ModelCapabilities{Images: false},
+	}}, nil)
+	_, err := client.ChatNonStream(context.Background(), "acct-1", translate.ChatRequest{
+		Model: "text-model",
+		Messages: []translate.ChatMessage{{
+			Role: "user",
+			Content: []any{map[string]any{
+				"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,AAAA"},
+			}},
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not support image input") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestModelsAdvertiseImageSupport(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case modelBuiltinPath:
+			_, _ = io.WriteString(w, `{"builtinModels":[{"model_id":"vision-model","supports_images":true,"context_window":1000,"max_tokens":100},{"model_id":"text-model","supports_images":false,"context_window":1000,"max_tokens":100}]}`)
+		case agentListPath, agentDetailPath:
+			http.NotFound(w, r)
+		case benefitClaim:
+			_, _ = io.WriteString(w, `{"error_code":"0000"}`)
+		case benefitConfig:
+			_, _ = io.WriteString(w, `{"error_code":"0000","result":{"models":[]}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client, _ := newTestClient(t, server)
+	models, err := client.Models(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]providers.ModelInfo{}
+	for _, model := range models {
+		byID[model.NativeModel] = model
+	}
+	if !byID["vision-model"].Capabilities.Images {
+		t.Fatalf("vision model images = %+v", byID["vision-model"].Capabilities)
+	}
+	if byID["text-model"].Capabilities.Images {
+		t.Fatalf("text model images = %+v", byID["text-model"].Capabilities)
+	}
+}
+
+func TestModelsDeclareThinkingVariantLevels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case modelBuiltinPath:
+			_, _ = io.WriteString(w, `{"builtinModels":[{"model_id":"GLM-5.2","context_window":202752,"max_tokens":65536}]}`)
+		case agentListPath, agentDetailPath:
+			http.NotFound(w, r)
+		case benefitClaim:
+			_, _ = io.WriteString(w, `{"error_code":"0000"}`)
+		case benefitConfig:
+			_, _ = io.WriteString(w, `{"error_code":"0000","result":{"models":[]}}`)
+		case thinkingVariants:
+			_, _ = io.WriteString(w, `{"data":{"variants":{"GLM-5.2":{"strengths":["high","max"]}}}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client, _ := newTestClient(t, server)
+	models, err := client.Models(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("models = %+v", models)
+	}
+	options := models[0].Capabilities.ReasoningOptions
+	if len(options) != 2 || options[0] != "high" || options[1] != "max" {
+		t.Fatalf("reasoning options = %+v", options)
+	}
+	if models[0].Capabilities.ReasoningDefault != "high" {
+		t.Fatalf("reasoning default = %q", models[0].Capabilities.ReasoningDefault)
+	}
+}
+
+func TestResolveMaxReasoningHonorsRequestedLevel(t *testing.T) {
+	client := NewClient(&memoryStore{payload: mustTestCredential(t)})
+	client.rememberCatalog("acct-1", []providers.ModelInfo{{
+		NativeModel: "GLM-5.2", PublicModel: "GLM-5.2",
+		Capabilities: providers.ModelCapabilities{
+			ReasoningOptions: []string{"high", "max"}, ReasoningDefault: "high",
+		},
+	}}, nil)
+	level, caps := client.resolveLevel(context.Background(), "acct-1", "GLM-5.2", "max")
+	if level != "max" {
+		t.Fatalf("resolved level = %q", level)
+	}
+	body, err := buildChatBody(translate.ChatRequest{
+		Model: "GLM-5.2", Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}},
+	}, "GLM-5.2", level, caps.Images, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["reasoning_effort"] != "max" {
+		t.Fatalf("body reasoning_effort = %#v", body["reasoning_effort"])
+	}
+}
+
+func TestResolveStoredMaxReasoningHonorsConsoleSetting(t *testing.T) {
+	store := &memoryStore{
+		payload: mustTestCredential(t),
+		setting: accounts.ProviderModelSetting{ReasoningEffort: "max"},
+	}
+	client := NewClient(store)
+	client.rememberCatalog("acct-1", []providers.ModelInfo{{
+		NativeModel: "GLM-5.2", PublicModel: "GLM-5.2",
+		Capabilities: providers.ModelCapabilities{
+			ReasoningOptions: []string{"high", "max"}, ReasoningDefault: "high",
+		},
+	}}, nil)
+	level, _ := client.resolveLevel(context.Background(), "acct-1", "GLM-5.2", "")
+	if level != "max" {
+		t.Fatalf("stored max resolved to %q", level)
+	}
+}
+
+func mustTestCredential(t *testing.T) []byte {
+	t.Helper()
+	payload, err := testCredential().Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return payload
+}
+
+func TestImageURLFromPartVariants(t *testing.T) {
+	cases := []struct {
+		name  string
+		block map[string]any
+		want  string
+	}{
+		{"object", map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.com/a.png"}}, "https://example.com/a.png"},
+		{"string map", map[string]any{"type": "image_url", "image_url": map[string]string{"url": "https://example.com/b.png"}}, "https://example.com/b.png"},
+		{"string", map[string]any{"type": "image_url", "image_url": "https://example.com/c.png"}, "https://example.com/c.png"},
+		{"anthropic source", map[string]any{"type": "image", "source": map[string]any{"data": "AAAA", "media_type": "image/png"}}, "data:image/png;base64,AAAA"},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			if got := imageURLFromPart(test.block); got != test.want {
+				t.Fatalf("url = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 
@@ -367,6 +581,84 @@ func TestImporterAndClassifier(t *testing.T) {
 	}
 	if got := Classify(400, `InferHub.001001005 request param is invalid`); got.Kind != accounts.KindInvalidRequest {
 		t.Fatalf("param kind = %q", got.Kind)
+	}
+}
+
+func TestQuotaPlaceholderTokenMeterIsNotExceeded(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != statisticsPath {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = io.WriteString(w, `{"end_date":"2026-11-30","package":{"package_name_en":"Trial"},"metrics":[{"name":"usageTokenChatMessages","show":true,"usage_token_num":193,"package_token_amount":1,"value":0},{"name":"usageTotalPackageCredit","show":true,"package_credit_amount":4500,"package_credit_used":0.27,"package_credit_remain":4499.73,"value":0}]}`)
+	}))
+	defer server.Close()
+	client, _ := newTestClient(t, server)
+	quota, err := client.Quota(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("Quota: %v", err)
+	}
+	if quota.Total != 4500 || quota.Remaining != 4499.73 {
+		t.Fatalf("top-level quota = %+v", quota)
+	}
+	for _, window := range quota.Windows {
+		if window.ID == "usageTokenChatMessages" {
+			if window.Total != 0 || window.Exceeded {
+				t.Fatalf("placeholder token meter = %+v", window)
+			}
+		}
+	}
+}
+
+func TestModelsFiltersLearnedUnavailable(t *testing.T) {
+	credential, _ := testCredential().Encode()
+	client := NewClient(&memoryStore{payload: credential})
+	client.rememberCatalog("acct-1", []providers.ModelInfo{
+		{NativeModel: "good", PublicModel: "good"},
+		{NativeModel: "bad", PublicModel: "bad"},
+	}, nil)
+	client.markModelUnusable("acct-1", "bad")
+	models, err := client.Models(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 || models[0].NativeModel != "good" {
+		t.Fatalf("filtered models = %+v", models)
+	}
+}
+
+func TestCreditModelsRemainWhenBenefitUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case agentListPath:
+			_, _ = io.WriteString(w, `{"agents":[{"agent_id":"agent-1","agent_name":"CodeAgent","is_primary_agent":true,"show_in_ide":true,"alias":{"alias_zh_cn":"智能体"}}]}`)
+		case agentDetailPath:
+			_, _ = io.WriteString(w, `{"gpts":{"models":[{"model_name":"Normal","model_id":"normal-id","model_parameters":{"model_id":"normal-id","context_window":1000,"max_tokens":100}},{"model_name":"Trial","model_id":"trial-id","model_parameters":{"model_id":"trial-id","context_window":1000,"max_tokens":100,"model_desc":"限时体验"}}]}}`)
+		case modelBuiltinPath:
+			_, _ = io.WriteString(w, `{"builtinModels":[]}`)
+		case benefitClaim:
+			_, _ = io.WriteString(w, `{"error_code":"4000","error_msg":"invalid channel, group not found"}`)
+		case benefitConfig:
+			_, _ = io.WriteString(w, `{"error_code":"4000","error_msg":"invalid channel"}`)
+		case statisticsPath:
+			_, _ = io.WriteString(w, `{"metrics":[],"model_metrics":[{"model_id":"Trial","model_name":"Trial","model_desc":"限时体验","enable":true}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client, _ := newTestClient(t, server)
+	models, err := client.Models(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("models = %+v", models)
+	}
+	for _, model := range models {
+		if model.NativeModel == "trial-id" && model.DisplayName != "Trial" {
+			t.Fatalf("trial display = %+v", model)
+		}
 	}
 }
 

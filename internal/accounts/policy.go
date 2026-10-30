@@ -29,19 +29,15 @@ func DefaultPriorityValue(value int) int {
 
 // DefaultDropSystemPrompt is the create-time default. WorkBuddy strips caller
 // system prompts because upstream content screening rejects third-party
-// identity. Trae and Kimi keep them: clients such as MiMo Code put JSON
-// instructions in the system prompt, and those families have no equivalent
+// identity. Trae, Kimi, and CodeArts keep them: clients such as MiMo Code put
+// JSON instructions in the system prompt, and those families have no equivalent
 // screening. An explicit value always wins.
-//
-// This is a create-time default only. Rows already in the database keep
-// whatever they were created with, so flipping the default never rewrites an
-// account that is currently serving traffic.
 func DefaultDropSystemPrompt(provider string, value *bool) bool {
 	if value != nil {
 		return *value
 	}
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "trae", "kimi":
+	case "trae", "kimi", "codearts":
 		return false
 	default:
 		return true

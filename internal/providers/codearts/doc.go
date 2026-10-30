@@ -52,10 +52,35 @@
 // the limited-benefit gateway config. Each record declares its exact model id
 // plus context/output limits; those declarations are the only capability
 // source. The adapter declares tools because the chat endpoint natively
-// accepts them, and does not declare image input because the request mapper
-// sends text only. Benefits models are marked and routed with maas_type:
-// benefit; the adapter claims the benefit idempotently while discovering the
-// catalog, mirroring the official client opening its model menu.
+// accepts them, and forwards image_url content parts for models whose catalog
+// entry advertises supports_images. A text-only model rejects image input with
+// a 400 instead of silently dropping it. GET /v1/model/thinking-variants
+// supplies each model's allowed reasoning strengths; the adapter exposes them
+// as ReasoningOptions and forwards the selected level as reasoning_effort.
+// Benefits models are marked and routed with maas_type: benefit; the adapter
+// claims the benefit idempotently while discovering the catalog, mirroring the
+// official client opening its model menu.
+//
+// The discovered list is not the same as the display list: CodeArts' agent
+// and builtin catalogs are keyed by model_parameters.model_id, while
+// model_name is only the label. Sending the display name (for example
+// GLM-5.2-ArkTS-SPARK instead of glm-5.2-sft-harmony) returns 002002009. The
+// adapter keeps model_id as NativeModel and model_name only as DisplayName.
+//
+// Benefits are a separate routing path. A model advertised by a successful
+// benefit gateway/config is marked and sent with maas_type: benefit. A
+// credit-only trial account has no benefit group: claim/config answer 4000
+// invalid channel/group not found, and adding maas_type: benefit to the same
+// model returns 4004.200 benefit not found. Crucially, the same model works
+// over the credit path without that header. Therefore benefit discovery is
+// additive and a failed claim/config never hides agent/builtin models. Only a
+// real 002002009/4004.200 chat answer marks that model unusable for 30 minutes
+// and removes it from /v1/models; the account stays ready because this is an
+// entitlement failure, not auth.
+//
+// The catalog endpoint's values are capped for output: the upstream rejects
+// max_tokens above 65536 even when the catalog advertises more, so the public
+// ceiling is min(declared, 65536).
 //
 // GET /snap-manager/v1/statistics/plugin supplies the package meters
 // (usageTotalPackageCredit, usageTokenChatMessages, ...). The adapter maps the
