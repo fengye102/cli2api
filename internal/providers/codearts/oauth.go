@@ -196,14 +196,14 @@ func (c *Client) completeCode(ctx context.Context, accountID string, state *logi
 		CodeVerifier:   state.verifier,
 		DPoPPrivateKey: state.dpop,
 	}
-	token, err := c.exchangeCode(ctx, credential, code, state.port)
+	token, err := c.exchangeCode(ctx, accountID, credential, code, state.port)
 	if err != nil {
 		state.finish(err)
 		return err
 	}
 	credential = applyToken(credential, token)
 	if credential.UserID == "" || credential.UserName == "" {
-		if uid, name, domain, userErr := c.currentUser(ctx, credential); userErr == nil {
+		if uid, name, domain, userErr := c.currentUser(ctx, accountID, credential); userErr == nil {
 			credential.UserID = firstNonEmpty(credential.UserID, uid)
 			credential.UserName = firstNonEmpty(credential.UserName, name)
 			credential.DomainID = firstNonEmpty(credential.DomainID, domain)
@@ -218,9 +218,9 @@ func (c *Client) completeCode(ctx context.Context, accountID string, state *logi
 	return nil
 }
 
-func (c *Client) exchangeCode(ctx context.Context, credential Credential, code string, port int) (*tokenResponse, error) {
+func (c *Client) exchangeCode(ctx context.Context, accountID string, credential Credential, code string, port int) (*tokenResponse, error) {
 	redirect := fmt.Sprintf("http://127.0.0.1:%d%s", port, OAuthRedirect)
-	token, err := c.requestToken(ctx, map[string][]string{
+	token, err := c.requestToken(ctx, accountID, map[string][]string{
 		"client_id":     {ClientID},
 		"code":          {code},
 		"code_verifier": {credential.CodeVerifier},
@@ -303,7 +303,7 @@ func (c *Client) pollTicket(ctx context.Context, accountID string, state *loginS
 
 // currentUser performs a signed identity lookup. It exercises the same STS
 // material chat uses, so Probe can treat success as readiness.
-func (c *Client) currentUser(ctx context.Context, credential Credential) (uid, name, domain string, err error) {
+func (c *Client) currentUser(ctx context.Context, accountID string, credential Credential) (uid, name, domain string, err error) {
 	requestCtx, cancel := context.WithTimeout(ctx, metadataTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, c.apiBase(credential)+currentUserPath, nil)
@@ -314,7 +314,7 @@ func (c *Client) currentUser(ctx context.Context, credential Credential) (uid, n
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Language", Language)
 	signRequest(req, nil, credential.Sign())
-	client, err := c.httpClient(ctx, "")
+	client, err := c.httpClient(ctx, accountID)
 	if err != nil {
 		return "", "", "", err
 	}

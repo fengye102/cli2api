@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -60,10 +61,17 @@ type Client struct {
 }
 
 func NewClient(store Store) *Client {
+	// Huawei's regional gateways (sts/snap-access) silently drop SYN packets
+	// from some overseas networks. Without a dialer timeout Go falls back to
+	// kernel TCP retries, which turn a blocked route into a two-minute silent
+	// hang that the console shows as "the callback never returns". Bound the
+	// dial instead so a blocked egress surfaces as a fast, explicit error.
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	transport := &http.Transport{
 		MaxIdleConns:        20,
 		MaxIdleConnsPerHost: 4,
 		IdleConnTimeout:     90 * time.Second,
+		DialContext:         dialer.DialContext,
 	}
 	return &Client{
 		store: store,
@@ -206,7 +214,7 @@ func (c *Client) credential(ctx context.Context, accountID string) (Credential, 
 	if !current.NeedsRefresh(c.now()) {
 		return current, nil
 	}
-	refreshed, err := c.refreshCredential(ctx, current)
+	refreshed, err := c.refreshCredential(ctx, accountID, current)
 	if err != nil {
 		return Credential{}, err
 	}
@@ -241,7 +249,7 @@ func (c *Client) forceRefresh(ctx context.Context, accountID string) (Credential
 	if err != nil {
 		return Credential{}, err
 	}
-	refreshed, err := c.refreshCredential(ctx, current)
+	refreshed, err := c.refreshCredential(ctx, accountID, current)
 	if err != nil {
 		return Credential{}, err
 	}
@@ -261,7 +269,7 @@ func (c *Client) Probe(ctx context.Context, accountID string) (providers.Account
 		}
 		return health, nil
 	}
-	uid, name, domain, err := c.currentUser(ctx, credential)
+	uid, name, domain, err := c.currentUser(ctx, accountID, credential)
 	if err != nil {
 		health := providers.AccountHealth{LastError: err.Error()}
 		if providerErr, ok := err.(*providers.Error); ok {
@@ -344,7 +352,10 @@ type refreshExpiredError struct {
 func (e *refreshExpiredError) Error() string { return e.message }
 
 // requestToken posts a form to the STS token endpoint with a DPoP proof.
-func (c *Client) requestToken(ctx context.Context, form map[string][]string, cred Credential) (*tokenResponse, error) {
+// accountID selects the egress: an account-scoped proxy_url must apply here
+// too, because Huawei's cn-north-4 STS gateway rejects some overseas networks
+// outright. Without it, a proxied account still hangs on token exchange.
+func (c *Client) requestToken(ctx context.Context, accountID string, form map[string][]string, cred Credential) (*tokenResponse, error) {
 	endpoint := c.stsHost + oauthTokensPath
 	kp, err := dpopKeyPairFor(cred.DPoPPrivateKey)
 	if err != nil {
@@ -374,7 +385,7 @@ func (c *Client) requestToken(ctx context.Context, form map[string][]string, cre
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("DPoP", proof)
-	client, err := c.httpClient(ctx, "")
+	client, err := c.httpClient(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -425,8 +436,9 @@ func (c *Client) requestToken(ctx context.Context, form map[string][]string, cre
 }
 
 // refreshCredential rotates the STS trio with the stored refresh token, PKCE
-// verifier and DPoP key.
-func (c *Client) refreshCredential(ctx context.Context, credential Credential) (Credential, error) {
+// verifier and DPoP key. accountID keeps the refresh on the same egress as
+// the account's other traffic.
+func (c *Client) refreshCredential(ctx context.Context, accountID string, credential Credential) (Credential, error) {
 	if !credential.CanRefresh() {
 		return Credential{}, &providers.Error{
 			Kind:    accounts.KindAuth,
@@ -438,7 +450,7 @@ func (c *Client) refreshCredential(ctx context.Context, credential Credential) (
 	if clientID == "" {
 		clientID = ClientID
 	}
-	token, err := c.requestToken(ctx, map[string][]string{
+	token, err := c.requestToken(ctx, accountID, map[string][]string{
 		"client_id":     {clientID},
 		"code_verifier": {credential.CodeVerifier},
 		"grant_type":    {"refresh_token"},
