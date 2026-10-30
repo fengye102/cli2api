@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/caigee-cmd/cli2api/internal/accounts"
 	"github.com/caigee-cmd/cli2api/internal/providers"
 )
 
@@ -37,10 +38,14 @@ func (c *Client) Probe(ctx context.Context, accountID string) (providers.Account
 	}
 	if _, err := c.fetchRemoteCatalog(ctx, accountID); err != nil {
 		message := err.Error()
+		kind := accounts.KindUnavailable
 		if providerErr, ok := err.(*providers.Error); ok {
 			message = providerErr.Message
+			if providerErr.Kind != "" {
+				kind = providerErr.Kind
+			}
 		}
-		_ = c.store.Observe(ctx, accountID, cred.UserID, "error", message, "")
+		_ = c.store.Observe(ctx, accountID, cred.UserID, "error", message, kind)
 		return providers.AccountHealth{LastError: message}, nil
 	}
 	uid := cred.UserID
