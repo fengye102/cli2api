@@ -2,10 +2,12 @@ package autoclaw
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -410,6 +412,95 @@ func TestCredentialWithoutRefreshIsNotRefreshable(t *testing.T) {
 	if !cred.Ready() {
 		t.Fatal("a token-only credential is still usable")
 	}
+}
+
+// TestImportDerivesExpiresAt: an imported credential must carry the access
+// token's own exp claim. Leaving expires_at empty makes NeedsRefresh() return
+// false forever, so the account never refreshes proactively and dies silently
+// when the 24h token runs out.
+func TestImportDerivesExpiresAt(t *testing.T) {
+	exp := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	token := makeTestJWT(t, exp.Unix())
+	payload := []byte(`{"token":"` + token + `","refreshToken":"R","deviceId":"D"}`)
+
+	got, err := importer{region: RegionCN}.PrepareImport(payload)
+	if err != nil {
+		t.Fatalf("PrepareImport: %v", err)
+	}
+	cred, err := DecodeCredential(got.Payload)
+	if err != nil {
+		t.Fatalf("decode imported payload: %v", err)
+	}
+	if cred.ExpiresAt == "" {
+		t.Fatal("import dropped expires_at: the account would never refresh on its own")
+	}
+	parsed, err := time.Parse(time.RFC3339, cred.ExpiresAt)
+	if err != nil {
+		t.Fatalf("expires_at %q is not RFC3339: %v", cred.ExpiresAt, err)
+	}
+	if !parsed.Equal(exp) {
+		t.Fatalf("expires_at = %s, want the token's own exp %s", parsed, exp)
+	}
+}
+
+// TestImportKeepsExplicitExpiresAt: an expiry supplied by the caller wins, so
+// re-importing a credential never rewrites a deliberately overridden value.
+func TestImportKeepsExplicitExpiresAt(t *testing.T) {
+	exp := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	token := makeTestJWT(t, exp.Unix())
+	given := time.Now().Add(2 * time.Hour).Truncate(time.Second).Format(time.RFC3339)
+	payload := []byte(`{"token":"` + token + `","refreshToken":"R","expires_at":"` + given + `"}`)
+
+	got, err := importer{region: RegionCN}.PrepareImport(payload)
+	if err != nil {
+		t.Fatalf("PrepareImport: %v", err)
+	}
+	cred, err := DecodeCredential(got.Payload)
+	if err != nil {
+		t.Fatalf("decode imported payload: %v", err)
+	}
+	if cred.ExpiresAt != given {
+		t.Fatalf("expires_at = %q, want the supplied %q", cred.ExpiresAt, given)
+	}
+}
+
+// TestCredentialBackfillsExpiryFromToken covers credentials already stored
+// without expires_at (imported before the derivation existed). The load path
+// must derive it, otherwise those accounts keep dying silently.
+func TestCredentialBackfillsExpiryFromToken(t *testing.T) {
+	exp := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	token := makeTestJWT(t, exp.Unix())
+	store := &memoryStore{
+		payload: []byte(`{"access_token":"` + token + `","refresh_token":"R"}`),
+		account: accounts.Account{ID: "acct-1", Provider: ProviderID, ProviderRegion: "cn-north-4"},
+	}
+	c := NewClient(store, RegionCN)
+	c.nowFn = func() time.Time { return time.Now() }
+
+	cred, err := c.credential(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("credential: %v", err)
+	}
+	if cred.ExpiresAt == "" {
+		t.Fatal("a stored credential with no expires_at must have it backfilled from the JWT")
+	}
+	parsed, _ := time.Parse(time.RFC3339, cred.ExpiresAt)
+	if !parsed.Equal(exp) {
+		t.Fatalf("backfilled expiry = %s, want %s", parsed, exp)
+	}
+	if !cred.NeedsRefresh(exp.Add(-2 * time.Minute)) {
+		t.Fatal("a backfilled credential near expiry must be refreshable")
+	}
+}
+
+// makeTestJWT builds an unsigned HS256-shaped token carrying an exp claim. The
+// adapter never verifies signatures, it only reads claims.
+func makeTestJWT(t *testing.T, exp int64) string {
+	t.Helper()
+	head := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+	body := base64.RawURLEncoding.EncodeToString([]byte(
+		`{"user_id":"279828","source_id":"autoclawaccess_token","exp":` + strconv.FormatInt(exp, 10) + `}`))
+	return head + "." + body + ".sig"
 }
 
 // TestNeedsRefreshWindow: only tokens inside the window trigger a refresh, and

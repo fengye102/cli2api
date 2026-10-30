@@ -38,6 +38,15 @@ func (c *Client) credential(ctx context.Context, accountID string) (Credential, 
 	if cred.Region == "" {
 		cred.Region = c.region.String()
 	}
+	// Backfill expires_at for credentials stored before the importer derived
+	// it. Without this an account imported as a bare token pair keeps an empty
+	// expiry forever, NeedsRefresh() stays false, and the token dies silently
+	// 24h later with no proactive renewal.
+	if cred.ExpiresAt == "" {
+		if expiry, ok := jwtExpiry(cred.AccessToken); ok {
+			cred.ExpiresAt = expiry
+		}
+	}
 	if !cred.NeedsRefresh(c.now()) {
 		return cred, nil
 	}

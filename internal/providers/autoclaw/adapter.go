@@ -97,6 +97,17 @@ func (i importer) PrepareImport(payload []byte) (providers.CredentialImport, err
 	if cred.UserID == "" {
 		cred.UserID = jwtUserID(cred.AccessToken)
 	}
+	// Derive expires_at from the access token's own exp claim. Without it
+	// NeedsRefresh() returns false forever (an unknown expiry is treated as
+	// "the upstream is the authority"), so an imported credential never
+	// refreshes proactively - the account silently dies at the 24h mark and
+	// only a 401 brings it back, which is exactly what users saw as "the
+	// token expired and nothing renewed it".
+	if cred.ExpiresAt == "" {
+		if expiry, ok := jwtExpiry(cred.AccessToken); ok {
+			cred.ExpiresAt = expiry
+		}
+	}
 	encoded, err := EncodeCredential(cred)
 	if err != nil {
 		return providers.CredentialImport{}, err
