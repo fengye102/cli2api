@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/caigee-cmd/cli2api/internal/accounts"
+	"github.com/caigee-cmd/cli2api/internal/providers"
 	"github.com/caigee-cmd/cli2api/internal/translate"
 )
 
@@ -682,5 +683,23 @@ func TestImporterNormalizesRegion(t *testing.T) {
 	}
 	if cred.Format != IntlCredentialFormat {
 		t.Fatalf("format = %q, want %q", cred.Format, IntlCredentialFormat)
+	}
+}
+
+// TestAdapterCredentialImplementsImporter pins a wiring bug that made every
+// import fail with "unsupported account import format": the console reaches the
+// importer through adapter.Credential, so a codec that does not also implement
+// CredentialImporter fails the type assertion even though the provider and its
+// format are both registered.
+func TestAdapterCredentialImplementsImporter(t *testing.T) {
+	for _, region := range []Region{RegionCN, RegionIntl} {
+		adapter := NewClient(&memoryStore{}, region).Adapter()
+		importer, ok := adapter.Credential.(providers.CredentialImporter)
+		if !ok {
+			t.Fatalf("region %s: adapter.Credential does not implement CredentialImporter", region)
+		}
+		if importer.Format() != region.CredentialFormat() {
+			t.Fatalf("region %s: importer format = %q, want %q", region, importer.Format(), region.CredentialFormat())
+		}
 	}
 }

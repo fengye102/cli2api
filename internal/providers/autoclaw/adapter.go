@@ -16,7 +16,7 @@ import (
 func (c *Client) Adapter() providers.Adapter {
 	return providers.Adapter{
 		ID:           c.region.ProviderID(),
-		Credential:   credentialCodec{},
+		Credential:   credentialCodec{region: c.region},
 		Chat:         c,
 		Models:       c,
 		Classifier:   classifier{},
@@ -51,9 +51,21 @@ func (c *Client) Probe(ctx context.Context, accountID string) (providers.Account
 	return providers.AccountHealth{Ready: true, Hot: true, UID: uid}, nil
 }
 
-type credentialCodec struct{}
+type credentialCodec struct {
+	region Region
+}
 
-func (credentialCodec) Validate(payload []byte) error { return ValidateCredential(payload) }
+func (c credentialCodec) Validate(payload []byte) error { return ValidateCredential(payload) }
+
+// The console's import path reaches the importer through adapter.Credential, so
+// the codec itself must also satisfy CredentialImporter. Without this the
+// type assertion fails and every import is rejected as an unsupported format,
+// even though the provider and format are both registered.
+func (c credentialCodec) Format() string { return c.region.CredentialFormat() }
+
+func (c credentialCodec) PrepareImport(payload []byte) (providers.CredentialImport, error) {
+	return importer{region: c.region}.PrepareImport(payload)
+}
 
 // importer validates and exports credentials for the console.
 type importer struct {
@@ -100,6 +112,7 @@ func (i importer) Export(ctx context.Context, accountID string) (map[string]any,
 // Ensure the optional interfaces are actually satisfied.
 var (
 	_ providers.CredentialCodec      = credentialCodec{}
+	_ providers.CredentialImporter   = credentialCodec{}
 	_ providers.ProviderChat         = (*Client)(nil)
 	_ providers.ModelCatalogProvider = (*Client)(nil)
 	_ providers.ErrorClassifier      = classifier{}
