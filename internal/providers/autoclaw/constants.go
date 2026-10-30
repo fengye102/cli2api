@@ -93,8 +93,16 @@ const (
 	// chat/completions will never find it.
 	catalogPath = "/autoclaw-proxy/proxy/autoclaw-model-config"
 
-	// balancePath and subscribePath back the quota display.
-	balancePath   = "/userapi/v1/wallets/v2"
+	// balancePath backs the quota display. It lives under the asset-manager
+	// service, NOT under /userapi/v1: the old /userapi/v1/wallets/v2 path
+	// still answers HTTP 200 but with a business-level
+	// {"code":404,"msg":"未找到资源"} envelope, so every account rendered
+	// "no quota" while the wallet itself was full. Verified live 2026-10-30:
+	// /agent-assetmgr/api/v2/wallets?biz_app_id=autoclaw -> total_balance.
+	balancePath = "/agent-assetmgr/api/v2/wallets"
+	// balanceAppID is the biz_app_id the wallet endpoint requires.
+	balanceAppID = "autoclaw"
+	// subscribePath is the older subscription view; kept for reference only.
 	subscribePath = "/userapi/v1/subscribe-info"
 )
 

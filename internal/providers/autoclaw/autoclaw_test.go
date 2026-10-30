@@ -796,12 +796,103 @@ func TestCatalogFallsBackToStatic(t *testing.T) {
 // percentage would make routing think an account is nearly spent.
 func TestBalanceIsAbsoluteNotPercentage(t *testing.T) {
 	raw := json.RawMessage(`{"total_balance":1234.5}`)
-	if got := parseBalance(raw); got != 1234.5 {
-		t.Fatalf("balance = %v, want 1234.5", got)
+	if got := parseBalance(raw); got.Total != 1234.5 {
+		t.Fatalf("balance = %v, want 1234.5", got.Total)
 	}
 	nested := json.RawMessage(`{"wallets":[{"balance":100},{"balance":50}]}`)
-	if got := parseBalance(nested); got != 150 {
-		t.Fatalf("nested balance = %v, want 150", got)
+	if got := parseBalance(nested); got.Total != 150 {
+		t.Fatalf("nested balance = %v, want 150", got.Total)
+	}
+}
+
+// TestBalanceParsesNamedWallets pins the live wallet shape: the asset-manager
+// endpoint answers total_balance plus one entry per named bucket, and the
+// hidden ones (display=false) must be dropped rather than shown as zeros.
+func TestBalanceParsesNamedWallets(t *testing.T) {
+	raw := json.RawMessage(`{"schema_version":"wallets.v2","total_balance":13968,"wallets":[` +
+		`{"public_wallet_type":"reward","display_name":"奖励积分","balance":13968,"display":true},` +
+		`{"public_wallet_type":"daily","display_name":"每日积分","balance":0,"display":false},` +
+		`{"public_wallet_type":"subscription","display_name":"订阅积分","balance":0,"display":true}]}`)
+	got := parseBalance(raw)
+	if got.Total != 13968 {
+		t.Fatalf("total = %v, want 13968", got.Total)
+	}
+	if len(got.Buckets) != 2 {
+		t.Fatalf("buckets = %+v, want reward + subscription (daily is display=false)", got.Buckets)
+	}
+	if got.Buckets[0].Name != "奖励积分" || got.Buckets[0].Balance != 13968 {
+		t.Fatalf("bucket[0] = %+v", got.Buckets[0])
+	}
+	// Only the funded bucket becomes a window: a row of zeros says nothing.
+	windows := got.Windows()
+	if len(windows) != 1 {
+		t.Fatalf("windows = %+v, want only the funded bucket", windows)
+	}
+	if windows[0].Label != "奖励积分" || windows[0].Remaining != 13968 || windows[0].Unit != "积分" {
+		t.Fatalf("window = %+v", windows[0])
+	}
+}
+
+// TestQuotaCarriesWindows stops a regression where Quota returned only a bare
+// Remaining: the runtime drops a snapshot without windows as "not fetched yet",
+// so the card stayed blank even after the endpoint was fixed.
+func TestQuotaCarriesWindows(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/agent-assetmgr/api/v2/wallets" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if got := r.URL.Query().Get("biz_app_id"); got != "autoclaw" {
+			t.Errorf("biz_app_id = %q, want autoclaw", got)
+		}
+		// The asset-manager WAF rejects a request without these.
+		if r.Header.Get("X-Trace-Id") == "" {
+			t.Errorf("missing X-Trace-Id")
+		}
+		if r.Header.Get("Origin") == "" || r.Header.Get("Referer") == "" {
+			t.Errorf("missing Origin/Referer")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"msg":"SUCCESS","data":{"total_balance":13968,` +
+			`"wallets":[{"display_name":"奖励积分","balance":13968,"display":true}]}}`))
+	}))
+	defer server.Close()
+
+	client, _ := newTestClient(t, server)
+	info, err := client.Quota(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("Quota: %v", err)
+	}
+	if info == nil {
+		t.Fatal("Quota returned nil")
+	}
+	if info.Remaining != 13968 {
+		t.Fatalf("Remaining = %v, want 13968", info.Remaining)
+	}
+	if len(info.Windows) != 1 {
+		t.Fatalf("Windows = %+v, want 1; without windows the runtime drops the snapshot", info.Windows)
+	}
+	if info.Windows[0].Label != "奖励积分" {
+		t.Fatalf("window label = %q", info.Windows[0].Label)
+	}
+	if info.Exceeded {
+		t.Fatal("Exceeded=true on a funded wallet")
+	}
+}
+
+// TestBalanceRejectsBusinessNotFound stops the silent-zero failure: the old
+// path answered HTTP 200 with {"code":404}, which parsed as a zero balance
+// and rendered "no quota" instead of surfacing a broken endpoint.
+func TestBalanceRejectsBusinessNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":404,"msg":"未找到资源","data":null}`))
+	}))
+	defer server.Close()
+
+	client, _ := newTestClient(t, server)
+	if _, err := client.Quota(context.Background(), "acct-1"); err == nil {
+		t.Fatal("a business-level 404 must be an error, not a zero balance")
 	}
 }
 

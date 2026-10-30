@@ -80,10 +80,13 @@ func (c *Client) Refresh(ctx context.Context, accountID string, cred Credential)
 }
 
 // probe issues the readiness call that matches the credential's auth mode.
+//
+// Both modes now use /billing/balance. /billing/current answers 200 with an
+// empty body for a Start-Plan account, which made readiness look fine while
+// publishing no quota at all - and the two endpoints disagree about which
+// credential class they serve, so probing one and reading the other produced
+// "ready account, blank card". One endpoint keeps them consistent.
 func (c *Client) probe(ctx context.Context, accountID string, cred Credential) ([]byte, int, error) {
-	if cred.IsOAuth() {
-		return c.gatewayGet(ctx, accountID, cred, plansPath)
-	}
 	return c.gatewayGet(ctx, accountID, cred, balancePath)
 }
 
@@ -129,23 +132,29 @@ func (c *Client) Quota(ctx context.Context, accountID string) (*providers.QuotaI
 	if !cred.Ready() {
 		return nil, fmt.Errorf("zcode credential incomplete; re-import required")
 	}
-	path := plansPath
-	if !cred.IsOAuth() {
-		path = balancePath
-	}
-	body, status, err := c.gatewayGet(ctx, accountID, cred, path)
+	// /billing/balance is the ONLY endpoint that reports real consumption.
+	//
+	// /billing/current was used before and it is a trap: it answers
+	// 200 {"code":0} with NO data field for a Start-Plan account, so every
+	// such account rendered "no quota" while its gift was being spent
+	// normally. /billing/balance returns plans[] plus balances[] carrying
+	// total_units / used_units / remaining_units - the numbers the card needs.
+	body, status, err := c.gatewayGet(ctx, accountID, cred, balancePath)
 	if err != nil {
 		return nil, err
 	}
 	if status != http.StatusOK {
 		return nil, fmt.Errorf("zcode quota status=%d", status)
 	}
+	if info := parseBalanceLedger(body, cred); info != nil {
+		return info, nil
+	}
+	// A pay-as-you-go key has no plans; fall back to the flat balance shape
+	// so an API-key account still renders.
 	if cred.IsOAuth() {
 		if info := parsePlansQuota(body, cred); info != nil {
 			return info, nil
 		}
-		// A plan payload without a plan is still a successful probe; fall
-		// through to the balance shape so an older gateway still renders.
 	}
 	return parseBalanceQuota(body, cred), nil
 }
@@ -230,11 +239,149 @@ type planEntitlement struct {
 	Capabilities  []string `json:"capabilities"`
 }
 
-// parsePlansQuota converts the billing/current payload into QuotaInfo: the
-// served plan plus one window per entitlement. The payload reports the units
-// granted (grant_units) but not the units consumed, so usage stays at zero and
-// only the granted total is published — inventing a used value would put a
-// fake percentage on the console card.
+// balanceLedgerBucket is one spendable bucket of the /billing/balance ledger.
+// The live shape (verified 2026-10-30) carries the real consumption:
+//
+//	{"bucket_id":"...","entitlement_id":"ent_2_0817_glm_5p3",
+//	 "show_name":"GLM-5.3","capabilities":["model:glm-5.3"],
+//	 "unit_type":"token","total_units":3000000,"used_units":1703,
+//	 "remaining_units":2998297,"expires_at":1793462399}
+type balanceLedgerBucket struct {
+	BucketID       string   `json:"bucket_id"`
+	EntitlementID  string   `json:"entitlement_id"`
+	ShowName       string   `json:"show_name"`
+	UnitType       string   `json:"unit_type"`
+	Capabilities   []string `json:"capabilities"`
+	TotalUnits     *float64 `json:"total_units"`
+	UsedUnits      *float64 `json:"used_units"`
+	RemainingUnits *float64 `json:"remaining_units"`
+	ExpiresAt      int64    `json:"expires_at"`
+}
+
+// parseBalanceLedger converts /billing/balance into QuotaInfo.
+//
+// This is the endpoint that reports used_units, so unlike the plans view it
+// can publish an honest used/total pair and a real percentage. Windows are
+// emitted per bucket, labelled by the models it serves, because that is what
+// the account actually spends: a Start Plan grants several buckets with
+// independent daily refills.
+func parseBalanceLedger(body []byte, cred Credential) *providers.QuotaInfo {
+	var payload struct {
+		Code int `json:"code"`
+		Data struct {
+			Plans    []planEntry           `json:"plans"`
+			Balances []balanceLedgerBucket `json:"balances"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil
+	}
+	if payload.Code != 0 || len(payload.Data.Balances) == 0 {
+		return nil
+	}
+	unit := ""
+	var total, used, remaining float64
+	windows := make([]providers.QuotaWindow, 0, len(payload.Data.Balances))
+	for _, bucket := range payload.Data.Balances {
+		if bucket.UnitType != "" {
+			unit = bucket.UnitType + "s"
+		}
+		// Older payloads omit remaining_units but still tell used and total.
+		bucketTotal := derefFloat(bucket.TotalUnits)
+		bucketUsed := derefFloat(bucket.UsedUnits)
+		bucketRemaining := derefFloat(bucket.RemainingUnits)
+		if bucket.RemainingUnits == nil && bucket.TotalUnits != nil && bucket.UsedUnits != nil {
+			bucketRemaining = bucketTotal - bucketUsed
+		}
+		if bucket.UsedUnits == nil && bucket.TotalUnits != nil && bucket.RemainingUnits != nil {
+			bucketUsed = bucketTotal - bucketRemaining
+		}
+		total += bucketTotal
+		used += bucketUsed
+		remaining += bucketRemaining
+		label := strings.TrimSpace(bucket.ShowName)
+		if label == "" {
+			label = bucketLabel(bucket)
+		}
+		percentage := 0.0
+		if bucketTotal > 0 {
+			percentage = bucketUsed / bucketTotal * 100
+		}
+		window := providers.QuotaWindow{
+			ID:         firstNonEmptyString(bucket.BucketID, bucket.EntitlementID, label),
+			Label:      label,
+			Total:      bucketTotal,
+			Used:       bucketUsed,
+			Remaining:  bucketRemaining,
+			Percentage: percentage,
+			Unit:       unit,
+		}
+		if bucket.ExpiresAt > 0 {
+			window.ResetAt = time.Unix(bucket.ExpiresAt, 0).UTC().Format(time.RFC3339)
+		}
+		windows = append(windows, window)
+	}
+	if unit == "" {
+		unit = "units"
+	}
+	plan := pickActivePlan(payload.Data.Plans)
+	info := &providers.QuotaInfo{
+		FetchedAt:  time.Now().UTC().Format(time.RFC3339),
+		Unit:       unit,
+		ProviderID: "zcode",
+		Total:      total,
+		Used:       used,
+		Remaining:  remaining,
+		Windows:    windows,
+	}
+	if total > 0 {
+		info.Percentage = used / total * 100
+	}
+	if plan != nil {
+		info.Plan = strings.TrimSpace(firstNonEmptyString(plan.Name, plan.PlanID, cred.Plan))
+		if plan.EndsAt > 0 {
+			info.ExpiresAt = plan.EndsAt
+			info.ExpiringRemain = remaining
+		}
+	} else {
+		info.Plan = strings.TrimSpace(cred.Plan)
+	}
+	// Every bucket spent is a real exhaustion signal for routing.
+	if remaining <= 0 {
+		info.Exceeded = true
+	}
+	return info
+}
+
+// bucketLabel names a bucket by the models it serves when the upstream did
+// not send a show_name.
+func bucketLabel(bucket balanceLedgerBucket) string {
+	for _, capability := range bucket.Capabilities {
+		if name, ok := strings.CutPrefix(capability, "model:"); ok {
+			if trimmed := strings.TrimSpace(name); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	return firstNonEmptyString(bucket.EntitlementID, bucket.BucketID, "额度")
+}
+
+// derefFloat reads an optional JSON number, treating a missing value as zero.
+func derefFloat(value *float64) float64 {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+// parsePlansQuota converts the billing/current payload into QuotaInfo.
+//
+// The plans view reports the units granted (grant_units) but not the units
+// consumed, so usage stays at zero and only the granted total is published -
+// inventing a used value would put a fake percentage on the console card.
+// /billing/balance (parseBalanceLedger) is preferred because it carries the
+// real consumption; this shape remains as the fallback for gateways that
+// answer only the plans view.
 func parsePlansQuota(body []byte, cred Credential) *providers.QuotaInfo {
 	var payload struct {
 		Code int `json:"code"`

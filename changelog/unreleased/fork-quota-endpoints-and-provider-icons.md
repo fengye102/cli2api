@@ -1,0 +1,15 @@
+### English
+
+- **Fix AutoClaw quota never appearing.** The wallet reader called `/userapi/v1/wallets/v2`, which still answers HTTP 200 but with a business-level `{"code":404,"msg":"未找到资源"}` envelope. The reader treated HTTP 200 as success and parsed the empty data as a zero balance, so every account rendered "no quota" while the wallet itself was full. The reader now calls the asset-manager endpoint `/agent-assetmgr/api/v2/wallets?biz_app_id=autoclaw`, which returns the real `total_balance`, and a non-zero business code is now an error instead of a silent zero.
+- The wallet request also sends the headers that endpoint's WAF fingerprints: `X-Trace-Id`, `Origin` and `Referer`. Without them a valid token is rejected.
+- AutoClaw quota now publishes one window per funded credit bucket (奖励积分 / 每日积分 / 订阅积分). The runtime drops a snapshot that carries no windows as "not fetched yet", so the previous bare `Remaining` was discarded even when the balance read succeeded.
+- **Fix ZCode quota never appearing.** The quota reader used `/billing/current`, which answers `200 {"code":0}` with no `data` for a Start-Plan account — so every such account showed "no quota" while its gift was being spent normally (the same account answered `1005 exceed quota limit` on chat). It now reads `/billing/balance`, which returns `plans[]` plus `balances[]` carrying `total_units` / `used_units` / `remaining_units`, and publishes a real used/total pair with a per-bucket window. Readiness probes use the same endpoint so an account can no longer be "ready" on one view and blank on the other.
+- **Fix 码道 (CodeArts) and AutoClaw icons.** `ProviderMark` had no branch for `codearts`, `autoclaw` or `autoclaw-intl`, so all three fell through to the Qoder logo — a 码道 account looked like a Qoder account and the two AutoClaw builds were indistinguishable. Each now has its own mark; the two AutoClaw builds share one glyph with a different accent, matching the console's 国内版 / 国际版 labels.
+
+### 中文
+
+- **修复 AutoClaw 额度一直不显示。** 额度读取用的是 `/userapi/v1/wallets/v2`，这个接口仍然返回 HTTP 200，但业务层是 `{"code":404,"msg":"未找到资源"}`。读取逻辑把 HTTP 200 当成成功，于是把空的 data 解析成 0 积分——钱包里明明有钱，卡片却一直显示「无额度」。现在改调资产服务接口 `/agent-assetmgr/api/v2/wallets?biz_app_id=autoclaw`，能拿到真实的 `total_balance`；业务码非 0 现在会如实报错，不再静默变成 0。
+- 额度请求同时补上该接口 WAF 校验的请求头 `X-Trace-Id`、`Origin`、`Referer`：缺了这几个，即使 token 有效也会被拒。
+- AutoClaw 额度现在按每个有钱的钱包分项（奖励积分 / 每日积分 / 订阅积分）上报窗口。运行时会把「不含窗口的快照」当成「尚未获取」丢弃，所以之前只填 `Remaining` 的写法即使读取成功也会被扔掉。
+- **修复 ZCode 额度一直不显示。** 额度读取用的是 `/billing/current`，对 Start-Plan 账号返回 `200 {"code":0}` 且没有 `data` —— 于是这类账号全部显示「无额度」，而它的赠送额度其实一直在正常消耗（同一个账号在对话里会返回 `1005 exceed quota limit`）。现在改读 `/billing/balance`，它返回 `plans[]` 和 `balances[]`，带 `total_units` / `used_units` / `remaining_units`，能给出真实的已用/总量和按桶拆分的窗口。健康探针也走同一个接口，不再出现「一个接口说健康、另一个接口说没数据」。
+- **修复码道（CodeArts）和 AutoClaw 图标错误。** `ProviderMark` 没有 `codearts`、`autoclaw`、`autoclaw-intl` 的分支，三者全部落到最后的 Qoder 图标——码道账号看起来像 Qoder 账号，AutoClaw 国内版和国际版也分不出来。现在各有自己的图标；AutoClaw 两个版本共用一个字形、用不同的强调色区分，与控制台的「国内版 / 国际版」标签对应。

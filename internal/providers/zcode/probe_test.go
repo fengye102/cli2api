@@ -58,7 +58,7 @@ func TestProbe_Plans200_OAuth(t *testing.T) {
 	var sawAuth, sawAPIKey, sawVersion, sawPath string
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawPath = r.URL.Path
-		if !strings.HasPrefix(r.URL.Path, "/api/v1/zcode-plan/billing/current") {
+		if !strings.HasPrefix(r.URL.Path, "/api/v1/zcode-plan/billing/balance") {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -71,7 +71,10 @@ func TestProbe_Plans200_OAuth(t *testing.T) {
 			`"name":"ZCode Trust Build","status":"active","priority":110,"ends_at":1790956800,` +
 			`"entitlements":[{"entitlement_id":"zcode-v3-start-plan-trust-1002",` +
 			`"show_name":"GLM-5.3-Flash","meter":"model_usage","unit_type":"token",` +
-			`"grant_units":100000000,"period":"one_time"}]}]}}`))
+			`"grant_units":100000000,"period":"one_time"}]}],` +
+			`"balances":[{"bucket_id":"bucket_1","entitlement_id":"zcode-v3-start-plan-trust-1002",` +
+			`"show_name":"GLM-5.3-Flash","unit_type":"token","capabilities":["model:glm-5.3-flash"],` +
+			`"total_units":100000000,"used_units":0,"remaining_units":100000000,"expires_at":1790956800}]}}`))
 	})
 	store := &observeStore{memStore: memStore{items: map[string][]byte{
 		"acc1": []byte(`{"format":"zcode-credential-v1","auth_mode":"oauth","provider":"zai","zcode_jwt_token":"jwt-abc","email":"u@example.com"}`),
@@ -88,8 +91,8 @@ func TestProbe_Plans200_OAuth(t *testing.T) {
 	if health.UID != "u@example.com" {
 		t.Errorf("UID=%q", health.UID)
 	}
-	if sawPath != "/api/v1/zcode-plan/billing/current" {
-		t.Errorf("probe path=%q want /api/v1/zcode-plan/billing/current", sawPath)
+	if sawPath != "/api/v1/zcode-plan/billing/balance" {
+		t.Errorf("probe path=%q want /api/v1/zcode-plan/billing/balance", sawPath)
 	}
 	if sawAuth != "Bearer jwt-abc" {
 		t.Errorf("Authorization=%q", sawAuth)
@@ -135,6 +138,100 @@ func TestProbe_Plans200_OAuth(t *testing.T) {
 	}
 	if info.Exceeded {
 		t.Errorf("Exceeded=true on a granted plan")
+	}
+}
+
+// TestQuota_BalanceLedgerReportsRealUsage pins the endpoint swap that made
+// quota blank: /billing/current answers 200 {"code":0} with no data for a
+// Start-Plan account, so every such account rendered "no quota" while its
+// gift was being spent. /billing/balance carries total_units/used_units, and
+// that is what the card must show.
+func TestQuota_BalanceLedgerReportsRealUsage(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/v1/zcode-plan/billing/balance") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"msg":"","data":{"server_time":1793380502,"plans":[` +
+			`{"user_plan_id":"upl_1","plan_id":"zcode-v3-start-plan-0817","name":"ZCode Start Plan",` +
+			`"status":"active","priority":90,"ends_at":1793721599,"entitlements":[]}],` +
+			`"balances":[` +
+			`{"bucket_id":"b1","entitlement_id":"ent_glm53","show_name":"GLM-5.3","unit_type":"token",` +
+			`"capabilities":["model:glm-5.3"],"total_units":3000000,"used_units":1703,` +
+			`"remaining_units":2998297,"expires_at":1793462399},` +
+			`{"bucket_id":"b2","entitlement_id":"ent_glm53f","show_name":"GLM-5.3-Flash","unit_type":"token",` +
+			`"capabilities":["model:glm-5.3-flash"],"total_units":5000000,"used_units":5000000,` +
+			`"remaining_units":0,"expires_at":1793462399}]}}`))
+	})
+	store := &observeStore{memStore: memStore{items: map[string][]byte{
+		"acc1": []byte(`{"format":"zcode-credential-v1","auth_mode":"oauth","provider":"zai","zcode_jwt_token":"jwt-abc","email":"u@example.com"}`),
+	}}}
+	client := newProbeClient(t, handler, store)
+
+	info, err := client.Quota(context.Background(), "acc1")
+	if err != nil {
+		t.Fatalf("Quota: %v", err)
+	}
+	if info == nil {
+		t.Fatal("Quota returned nil: the ledger has real usage")
+	}
+	if info.Plan != "ZCode Start Plan" {
+		t.Errorf("Plan=%q", info.Plan)
+	}
+	// 3,000,000 + 5,000,000 granted; 1,703 + 5,000,000 spent.
+	if info.Total != 8000000 {
+		t.Errorf("Total=%v want 8000000", info.Total)
+	}
+	if info.Used != 5001703 {
+		t.Errorf("Used=%v want 5001703", info.Used)
+	}
+	if info.Remaining != 2998297 {
+		t.Errorf("Remaining=%v want 2998297", info.Remaining)
+	}
+	if info.Unit != "tokens" {
+		t.Errorf("Unit=%q", info.Unit)
+	}
+	if len(info.Windows) != 2 {
+		t.Fatalf("Windows=%d want 2", len(info.Windows))
+	}
+	if info.Windows[0].Label != "GLM-5.3" || info.Windows[0].Remaining != 2998297 {
+		t.Errorf("window[0]=%+v", info.Windows[0])
+	}
+	// The Flash bucket is fully spent: that is exactly the 1005 the chat
+	// path returns, so the card must show it spent rather than absent.
+	if info.Windows[1].Label != "GLM-5.3-Flash" || info.Windows[1].Remaining != 0 {
+		t.Errorf("window[1]=%+v", info.Windows[1])
+	}
+	if info.Windows[1].Percentage != 100 {
+		t.Errorf("window[1] percentage=%v want 100", info.Windows[1].Percentage)
+	}
+}
+
+// TestQuota_EmptyLedgerReportsNoWindows pins the old failure mode: a payload
+// with no plans and no balances must not invent a healthy-looking reading.
+// parseBalanceQuota returns nil for such a body, so the runtime drops the
+// snapshot instead of rendering a 0/0 card.
+func TestQuota_EmptyLedgerReportsNoWindows(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/v1/zcode-plan/billing/balance") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"msg":"","logid":"x"}`))
+	})
+	store := &observeStore{memStore: memStore{items: map[string][]byte{
+		"acc1": []byte(`{"format":"zcode-credential-v1","auth_mode":"oauth","provider":"zai","zcode_jwt_token":"jwt-abc","email":"u@example.com"}`),
+	}}}
+	client := newProbeClient(t, handler, store)
+
+	info, err := client.Quota(context.Background(), "acc1")
+	if err != nil {
+		t.Fatalf("Quota: %v", err)
+	}
+	if info != nil {
+		t.Fatalf("Quota=%+v want nil for a payload with no ledger and no balance", info)
 	}
 }
 

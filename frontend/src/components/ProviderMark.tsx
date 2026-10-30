@@ -11,6 +11,8 @@ import { ZCodeMark } from '@/components/ZCodeMark'
 import { ZhipuMark } from '@/components/ZhipuMark'
 import { RaccoonMark } from '@/components/RaccoonMark'
 import { AntigravityMark } from '@/components/AntigravityMark'
+import { AutoClawMark } from '@/components/AutoClawMark'
+import { CodeArtsMark } from '@/components/CodeArtsMark'
 
 type Props = {
   provider?: string
@@ -21,6 +23,18 @@ type Props = {
 /** Brand mark for an account provider; unknown values fall back to Qoder. */
 export function ProviderMark({ provider, size = 16, className = '' }: Props) {
   const id = String(provider || '').toLowerCase()
+  // AutoClaw is two providers sharing one protocol: CN keeps the historical
+  // id, the overseas build is autoclaw-intl. Both used to fall through to the
+  // Qoder logo, so a 国内版 account was indistinguishable from a Qoder one.
+  if (id === 'autoclaw') {
+    return <AutoClawMark size={size} className={className} />
+  }
+  if (id === 'autoclaw-intl') {
+    return <AutoClawMark size={size} className={className} intl />
+  }
+  if (id === 'codearts') {
+    return <CodeArtsMark size={size} className={className} />
+  }
   if (id === 'workbuddy') {
     return <WorkBuddyMark size={size} className={className} />
   }
