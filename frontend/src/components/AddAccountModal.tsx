@@ -68,6 +68,7 @@ const labelKeys: Record<string, string> = {
   'qwenwork-global': 'accountTypeQwenworkGlobal',
   'qwenwork-cn': 'accountTypeQwenworkCN',
   'kimi-cn': 'accountTypeKimiCN',
+  'codearts-cn-north-4': 'accountTypeCodeArtsCN',
   'meta-global': 'accountTypeMetaGlobal',
 }
 
@@ -87,6 +88,7 @@ const hintKeys: Record<string, string> = {
   'qwenwork-global': 'accountTypeQwenworkGlobalHint',
   'qwenwork-cn': 'accountTypeQwenworkCNHint',
   'kimi-cn': 'accountTypeKimiCNHint',
+  'codearts-cn-north-4': 'accountTypeCodeArtsCNHint',
   'meta-global': 'accountTypeMetaGlobalHint',
 }
 
@@ -216,16 +218,19 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
   // Command Code has no browser login (a pasted user_… key is the only auth),
   // so the wizard opens on the PAT tab instead of the browser tab.
   const hasBrowserLogin = activeOption?.descriptor.capabilities?.browser_login !== false
-  const showDropSystem = activeOption?.provider === 'workbuddy'
+  const showDropSystem =
+    activeOption?.provider === 'workbuddy' || activeOption?.provider === 'trae'
   // Providers whose callback redirect can never reach this process need the
-  // pasted callback URL: the desktop clients (trae / devin / codex / zcode)
-  // register a custom scheme, and Antigravity's loopback port lives inside the
-  // container, so a browser running on another machine cannot hit it either.
+  // pasted callback URL: the desktop clients (trae / devin / codex / zcode /
+  // codearts) register a custom scheme, and Antigravity's loopback port lives
+  // inside the container, so a browser running on another machine cannot hit
+  // it either.
   const showCallbackPaste =
     activeOption?.provider === 'trae' ||
     activeOption?.provider === 'devin' ||
     activeOption?.provider === 'codex' ||
     activeOption?.provider === 'zcode' ||
+    activeOption?.provider === 'codearts' ||
     activeOption?.provider === 'raccoon' ||
     activeOption?.provider === 'antigravity'
   const busy = phase === 'busy' || phase === 'polling'
@@ -261,10 +266,13 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
       max_inflight: parsedMaxInFlight(),
       priority: parsedPriority(),
       // WorkBuddy exposes the switch because upstream content screening rejects
-      // third-party system prompts. Kimi Code has no such screening, so a new
-      // Kimi account keeps caller system prompts. Every other provider keeps the
-      // historical drop=true default.
-      drop_system_prompt: showDropSystem ? dropSystemPrompt : activeOption?.provider !== 'kimi',
+      // third-party system prompts. Trae, Kimi and CodeArts keep caller system
+      // prompts: clients such as MiMo Code put JSON instructions there, and
+      // those families have no equivalent screening. Every other provider keeps
+      // the historical drop=true default.
+      drop_system_prompt: showDropSystem
+        ? dropSystemPrompt
+        : activeOption?.provider !== 'kimi' && activeOption?.provider !== 'codearts',
       proxy_url: proxyUrl.trim(),
     }
   }
@@ -346,6 +354,11 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
     const option = providerOptions.find((item) => item.id === next)
     setAccountType(next)
     setTab(option?.provider === 'zhipu' ? 'pat' : 'browser')
+    setDropSystemPrompt(
+      option?.provider !== 'trae' &&
+        option?.provider !== 'kimi' &&
+        option?.provider !== 'codearts',
+    )
     setMessage('')
     setStep('login')
   }
