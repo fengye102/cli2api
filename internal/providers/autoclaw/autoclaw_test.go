@@ -568,6 +568,50 @@ func TestProbeReportsReadyOnCatalogSuccess(t *testing.T) {
 	}
 }
 
+// TestCatalogParsesFlatResponse: the live catalog endpoint returns a FLAT
+// {"models":[...]} document, not the {code,msg,data} envelope the userapi
+// endpoints use. Reading it as an envelope yields an empty Data, so every
+// account advertised only the two static models while the sync reported
+// success - a failure that looks healthy in the console.
+func TestCatalogParsesFlatResponse(t *testing.T) {
+	body := `{"models":[
+		{"id":"zai_auto","name":"Auto","reasoning":true,"input":["text"],"contextWindow":1048576,"maxTokens":393216},
+		{"id":"zai_auto-fast","name":"Auto-Fast","input":["text","image"],"contextWindow":1048576,"maxTokens":131072},
+		{"id":"zaicoding_glm-5.3","name":"GLM-5.3","reasoning":true,"input":["text"],"contextWindow":1048576,"maxTokens":307200},
+		{"id":"zai_glm-5.3-flash","name":"GLM-5.3-Flash","input":["text","image"],"contextWindow":1048576,"maxTokens":131072},
+		{"id":"zai_glm-5.3-flashx-legal","name":"GLM-5.3-FlashX-Legal","input":["text","image"],"contextWindow":1048576,"maxTokens":307200}
+	]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "model-config") {
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client, _ := newTestClient(t, server)
+	models, err := client.Models(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 5 {
+		t.Fatalf("parsed %d models from the flat catalog, want 5 (static fallback has 2)", len(models))
+	}
+	// zai_auto is the model the real desktop client uses as its primary; it
+	// only ever appears in the remote catalog, never in the static table.
+	if models[0].PublicModel != "auto" {
+		t.Fatalf("first public model = %q, want auto", models[0].PublicModel)
+	}
+	if models[0].Capabilities.MaxOutput != 393216 {
+		t.Fatalf("zai_auto max output = %d, want 393216", models[0].Capabilities.MaxOutput)
+	}
+	// Image capability is expressed as {"input":["text","image"]}.
+	if !models[1].Capabilities.Images {
+		t.Fatal("zai_auto-fast must report image support from input[]")
+	}
+}
+
 // TestCatalogParsesRouteIds: the remote catalog advertises prefixed route ids,
 // and the public name must be the stripped form.
 func TestCatalogParsesRouteIds(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -83,12 +84,27 @@ func (c *Client) fetchRemoteCatalog(ctx context.Context, accountID string) ([]pr
 	if resp.StatusCode >= 400 {
 		return nil, newProviderError(resp.StatusCode, "")
 	}
+	// The catalog response is NOT the {code,msg,data} envelope the userapi
+	// endpoints use: it is a flat {"models":[...]} document. Decoding it as an
+	// envelope yields code=0 (absent reads as zero) and an empty Data, so the
+	// parser silently returns nothing and the caller falls back to the two
+	// static models - the catalog looks "successful" while advertising almost
+	// nothing. Read the raw body and let parseCatalog try the envelope shape
+	// only as a secondary possibility.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read autoclaw catalog: %w", err)
+	}
+	if models := parseCatalog(raw); len(models) > 0 {
+		return models, nil
+	}
+	// Envelope shape, in case a future gateway wraps it.
 	var envelope struct {
 		Code int             `json:"code"`
 		Msg  string          `json:"msg"`
 		Data json.RawMessage `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return nil, fmt.Errorf("parse autoclaw catalog: %w", err)
 	}
 	if envelope.Code != 0 {
