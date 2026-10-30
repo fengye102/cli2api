@@ -23,6 +23,7 @@ import (
 	applogs "github.com/caigee-cmd/cli2api/internal/logs"
 	"github.com/caigee-cmd/cli2api/internal/providers"
 	"github.com/caigee-cmd/cli2api/internal/providers/antigravity"
+	"github.com/caigee-cmd/cli2api/internal/providers/autoclaw"
 	"github.com/caigee-cmd/cli2api/internal/providers/codearts"
 	"github.com/caigee-cmd/cli2api/internal/providers/codex"
 	"github.com/caigee-cmd/cli2api/internal/providers/command"
@@ -132,6 +133,10 @@ func New(cfg config.Config) *App {
 	providerReg.Register(kimi.NewClient(store).Adapter())
 	providerReg.Register(codearts.NewClient(store).Adapter())
 	providerReg.Register(meta.NewClient(store).Adapter())
+	// AutoClaw is two providers, not one with a region: the CN and overseas
+	// builds have different hosts and different credential formats.
+	providerReg.Register(autoclaw.NewClient(store, autoclaw.RegionCN).Adapter())
+	providerReg.Register(autoclaw.NewClient(store, autoclaw.RegionIntl).Adapter())
 	qoderClient := qoder.NewClient()
 	qoderClient.Bind(manager.AccountURL, manager.ProxyAPIKey)
 	qoderClient.SetDirect(qoder.NewDirect(store, func(ctx context.Context, accountID string) (string, error) {

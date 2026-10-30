@@ -116,7 +116,7 @@ func (s *Settings) ReadModelSetting(ctx context.Context, provider, modelID strin
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	out := ModelSetting{Provider: provider, Model: modelID}
 	switch provider {
-	case "trae", "workbuddy", "kimi", "codearts":
+	case "trae", "workbuddy", "kimi", "codearts", "autoclaw", "autoclaw-intl":
 		setting, err := s.GetProviderModelSetting(ctx, provider, modelID)
 		if err != nil {
 			return ModelSetting{}, operationError("model_setting_failed", err.Error())
@@ -164,7 +164,7 @@ func (s *Settings) UpdateModelSetting(ctx context.Context, provider, modelID str
 	modelID = ModelContextKey(modelID)
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	switch provider {
-	case "trae", "workbuddy", "kimi", "codearts":
+	case "trae", "workbuddy", "kimi", "codearts", "autoclaw", "autoclaw-intl":
 		setting, err := s.UpdateProviderModelSetting(ctx, provider, modelID, patch)
 		if err != nil {
 			return ModelSetting{}, err
@@ -217,6 +217,11 @@ func (s *Settings) UpdateProviderModelSetting(ctx context.Context, provider, mod
 	// CodeArts exposes reasoning strengths, not a max-context toggle.
 	if provider == "codearts" && patch.MaxMode != nil {
 		return accounts.ProviderModelSetting{}, operationError("invalid_request", "codearts has no max-mode switch")
+	}
+	// AutoClaw has a single context tier per model; only reasoning effort is
+	// settable.
+	if (provider == "autoclaw" || provider == "autoclaw-intl") && patch.MaxMode != nil {
+		return accounts.ProviderModelSetting{}, operationError("invalid_request", provider+" has no max-mode switch")
 	}
 	setting, err := s.GetProviderModelSetting(ctx, provider, modelID)
 	if err != nil {

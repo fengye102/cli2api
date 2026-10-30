@@ -472,21 +472,81 @@ var Meta = ProviderDescriptor{
 	DefaultRegion: "global",
 }
 
+// AutoClaw descriptor (智谱 autoglm / OpenClaw desktop client). Two builds
+// share one protocol but live on different hosts, so each is its own provider
+// family rather than one provider with a region field: the region is a channel,
+// and an account's region must be visible in the list (same reasoning as Cline
+// and Raccoon). CN keeps the historical id "autoclaw"; the overseas build is
+// "autoclaw-intl".
+//
+// No Login capability: the desktop OAuth round needs a real desktop (a loopback
+// listener on one of four whitelisted ports plus an Aliyun captcha in a
+// browser), which a server cannot provide. Accounts are added by pasting the
+// desktop credential JSON, which is what the client's own auth.json contains.
+var AutoClaw = ProviderDescriptor{
+	ID:                "autoclaw",
+	Label:             "AutoClaw 国内版",
+	Runtime:           RuntimeInProcess,
+	AuthTypes:         []AuthType{AuthPAT},
+	CredentialFormats: []string{"autoclaw-credential-v1"},
+	Capabilities: ProviderCapabilities{
+		Chat: true, Stream: true, Tools: true, Images: true, Reasoning: true,
+		ModelCatalog: true, Usage: true, Login: false, BrowserLogin: false,
+		PATLogin: true, ImportExport: true,
+	},
+	Regions: []RegionDescriptor{
+		{
+			ID: "cn-north-4", Label: "CN",
+			ChatBase:      "https://autoglm-acceleration-api.zhipuai.cn/autoclaw-proxy/proxy/autoclaw",
+			AuthBase:      "https://autoglm-acceleration-api.zhipuai.cn",
+			DefaultDomain: "zhipuai.cn",
+		},
+	},
+	DefaultRegion: "cn-north-4",
+}
+
+// AutoClawIntl descriptor: the overseas build (autoglm.ai). Its chat path
+// carries a /v1 segment the CN build does not, and the site is reachable from
+// networks the CN gateway rejects.
+var AutoClawIntl = ProviderDescriptor{
+	ID:                "autoclaw-intl",
+	Label:             "AutoClaw 国际版",
+	Runtime:           RuntimeInProcess,
+	AuthTypes:         []AuthType{AuthPAT},
+	CredentialFormats: []string{"autoclaw-intl-credential-v1"},
+	Capabilities: ProviderCapabilities{
+		Chat: true, Stream: true, Tools: true, Images: true, Reasoning: true,
+		ModelCatalog: true, Usage: true, Login: false, BrowserLogin: false,
+		PATLogin: true, ImportExport: true,
+	},
+	Regions: []RegionDescriptor{
+		{
+			ID: "global", Label: "Global",
+			ChatBase:      "https://autoglm-api.autoglm.ai/autoclaw-proxy/proxy/autoclaw",
+			AuthBase:      "https://autoglm-api.autoglm.ai",
+			DefaultDomain: "autoglm.ai",
+		},
+	},
+	DefaultRegion: "global",
+}
+
 var registry = map[string]ProviderDescriptor{
-	Qoder.ID:       Qoder,
-	WorkBuddy.ID:   WorkBuddy,
-	Trae.ID:        Trae,
-	Devin.ID:       Devin,
-	Command.ID:     Command,
-	Codex.ID:       Codex,
-	Zhipu.ID:       Zhipu,
-	QwenWork.ID:    QwenWork,
-	ZCode.ID:       ZCode,
-	Raccoon.ID:     Raccoon,
-	Antigravity.ID: Antigravity,
-	Kimi.ID:        Kimi,
-	CodeArts.ID:    CodeArts,
-	Meta.ID:        Meta,
+	Qoder.ID:        Qoder,
+	WorkBuddy.ID:    WorkBuddy,
+	Trae.ID:         Trae,
+	Devin.ID:        Devin,
+	Command.ID:      Command,
+	Codex.ID:        Codex,
+	Zhipu.ID:        Zhipu,
+	QwenWork.ID:     QwenWork,
+	ZCode.ID:        ZCode,
+	Raccoon.ID:      Raccoon,
+	Antigravity.ID:  Antigravity,
+	Kimi.ID:         Kimi,
+	CodeArts.ID:     CodeArts,
+	Meta.ID:         Meta,
+	AutoClaw.ID:     AutoClaw,
+	AutoClawIntl.ID: AutoClawIntl,
 }
 
 func Get(id string) (ProviderDescriptor, bool) {
@@ -499,7 +559,7 @@ func Get(id string) (ProviderDescriptor, bool) {
 }
 
 func List() []ProviderDescriptor {
-	return []ProviderDescriptor{Qoder, WorkBuddy, Trae, Devin, Command, Codex, Zhipu, QwenWork, ZCode, Raccoon, Antigravity, Kimi, CodeArts, Meta}
+	return []ProviderDescriptor{Qoder, WorkBuddy, Trae, Devin, Command, Codex, Zhipu, QwenWork, ZCode, Raccoon, Antigravity, Kimi, CodeArts, Meta, AutoClaw, AutoClawIntl}
 }
 
 // Resolve validates a provider/region pair. Empty values fall back to the

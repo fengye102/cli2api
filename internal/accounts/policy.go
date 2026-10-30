@@ -37,7 +37,7 @@ func DefaultDropSystemPrompt(provider string, value *bool) bool {
 		return *value
 	}
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "trae", "kimi", "codearts":
+	case "trae", "kimi", "codearts", "autoclaw", "autoclaw-intl":
 		return false
 	default:
 		return true
