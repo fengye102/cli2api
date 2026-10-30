@@ -162,8 +162,13 @@ func (c *Client) Quota(ctx context.Context, accountID string) (*providers.QuotaI
 // gatewayGet issues an authenticated GET against a plan-gateway path. The
 // endpoint takes app_version as a query parameter; the pinned ZCode client
 // version goes there.
+//
+// X-Device-Mid is mandatory, not decorative: /billing/balance answers
+// 400 {"code":3001,"msg":"parameter error"} without it and 200 with it, for
+// the same token and the same query string (measured 2026-10-30). The claim
+// path already sent it; the quota path did not, which is why quota read blank
+// while readiness still passed.
 func (c *Client) gatewayGet(ctx context.Context, accountID string, cred Credential, path string) ([]byte, int, error) {
-	_ = accountID
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	if strings.TrimSpace(path) == "" {
@@ -183,6 +188,9 @@ func (c *Client) gatewayGet(ctx context.Context, accountID string, cred Credenti
 		req.Header.Set(k, v)
 	}
 	req.Header.Set("Accept", "application/json")
+	if mid := deviceMid(accountID); mid != "" {
+		req.Header.Set("X-Device-Mid", mid)
+	}
 	if cred.IsOAuth() {
 		token := strings.TrimSpace(cred.ZCodeJWT)
 		if token == "" {

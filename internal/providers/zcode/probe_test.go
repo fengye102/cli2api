@@ -55,9 +55,10 @@ func newProbeClient(t *testing.T, handler http.Handler, store *observeStore) *Cl
 }
 
 func TestProbe_Plans200_OAuth(t *testing.T) {
-	var sawAuth, sawAPIKey, sawVersion, sawPath string
+	var sawAuth, sawAPIKey, sawVersion, sawPath, sawDeviceMid string
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawPath = r.URL.Path
+		sawDeviceMid = r.Header.Get("X-Device-Mid")
 		if !strings.HasPrefix(r.URL.Path, "/api/v1/zcode-plan/billing/balance") {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -102,6 +103,11 @@ func TestProbe_Plans200_OAuth(t *testing.T) {
 	}
 	if sawVersion != Version {
 		t.Errorf("app_version=%q want %q", sawVersion, Version)
+	}
+	// /billing/balance answers 400 parameter error without this header, for
+	// the same token and query string. Its absence is what blanked the card.
+	if sawDeviceMid == "" {
+		t.Error("X-Device-Mid missing: the gateway rejects the quota read with 400")
 	}
 
 	// Quota should report the served plan and its granted entitlement.
