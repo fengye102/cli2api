@@ -36,9 +36,11 @@ import { FilterToggle } from '@/components/ui/FilterToggle'
 import { ListPager, type PageSize } from '@/components/ui/ListPager'
 import { PageAlert } from '@/components/ui/PageAlert'
 import { LogsPageSkeleton, LogsRequestListSkeleton, LogsRuntimeListSkeleton, SkeletonBlock } from '@/components/ui/PageSkeletons'
+import { LatencyStats } from '@/components/ui/LatencyStats'
 import { SearchBar } from '@/components/ui/SearchBar'
 import { dateValueToISO, isoToDateValue, TimeRangePicker, type DateRangeValue } from '@/components/ui/TimeRangePicker'
 import { useI18n } from '@/hooks/useI18n'
+import { useApiKeyOptions } from '@/hooks/useApiKeyOptions'
 import { accountProviderFamilyLabel, accountProviderLabel } from '@/lib/provider'
 
 type PageTab = 'requests' | 'runtime'
@@ -149,12 +151,6 @@ function RequestDetailSkeleton() {
   )
 }
 
-function formatLatency(ms?: number | null) {
-  if (ms == null) return '—'
-  if (ms < 1000) return `${ms}ms`
-  return `${(ms / 1000).toFixed(1)}s`
-}
-
 function formatCredit(value?: number | null) {
   if (value == null || !Number.isFinite(value)) return '—'
   return String(Math.round(value * 10000) / 10000)
@@ -168,6 +164,7 @@ type UrlFilters = {
   requestFilter: RequestFilter
   requestId: string
   accountFilter: string
+  apiKeyFilter: string
   modelFilter: string
   providerFilter: string
   streamFilter: StreamFilter
@@ -176,7 +173,7 @@ type UrlFilters = {
   customRange: DateRangeValue | null
 }
 
-/** Request-log filters from the URL (?status=&account=&model=&error_kind=&stream=&id=&range=&from=&to=). */
+/** Request-log filters from the URL (?status=&account=&api_key=&model=&error_kind=&stream=&id=&range=&from=&to=). */
 function parseLogsUrl(params: URLSearchParams): UrlFilters {
   const pick = <T extends string>(value: string | null, allowed: T[], fallback: T) =>
     (allowed as string[]).includes(value ?? '') ? (value as T) : fallback
@@ -188,6 +185,7 @@ function parseLogsUrl(params: URLSearchParams): UrlFilters {
     requestFilter: pick(params.get('status'), REQUEST_FILTERS, 'all'),
     requestId: params.get('id') ?? '',
     accountFilter: params.get('account') ?? '',
+    apiKeyFilter: params.get('api_key') ?? '',
     modelFilter: params.get('model') ?? '',
     providerFilter: params.get('provider') ?? '',
     streamFilter: stream === 'stream' || stream === 'true' ? 'stream' : stream === 'sync' || stream === 'false' ? 'sync' : 'all',
@@ -202,6 +200,7 @@ function buildLogsUrl(filters: UrlFilters) {
   if (filters.requestFilter !== 'all') params.set('status', filters.requestFilter)
   if (filters.requestId) params.set('id', filters.requestId)
   if (filters.accountFilter) params.set('account', filters.accountFilter)
+  if (filters.apiKeyFilter) params.set('api_key', filters.apiKeyFilter)
   if (filters.modelFilter) params.set('model', filters.modelFilter)
   if (filters.providerFilter) params.set('provider', filters.providerFilter)
   if (filters.streamFilter !== 'all') params.set('stream', filters.streamFilter)
@@ -242,6 +241,7 @@ export function LogsPage() {
   const [requestId, setRequestId] = useState(initialUrl.requestId)
   const [runtimeQuery, setRuntimeQuery] = useState('')
   const [accountFilter, setAccountFilter] = useState(initialUrl.accountFilter)
+  const [apiKeyFilter, setApiKeyFilter] = useState(initialUrl.apiKeyFilter)
   const [runtimeAccount, setRuntimeAccount] = useState('')
   const [modelFilter, setModelFilter] = useState(initialUrl.modelFilter)
   const [providerFilter, setProviderFilter] = useState(initialUrl.providerFilter)
@@ -270,7 +270,7 @@ export function LogsPage() {
   // URL <-> filter controls. External URL changes (back/forward, drill-down
   // links) are applied to the controls; control changes replace the URL.
   const searchString = searchParams.toString()
-  const urlString = buildLogsUrl({ requestFilter, requestId, accountFilter, modelFilter, providerFilter, streamFilter, errorKind, timeRange, customRange })
+  const urlString = buildLogsUrl({ requestFilter, requestId, accountFilter, apiKeyFilter, modelFilter, providerFilter, streamFilter, errorKind, timeRange, customRange })
   const lastUrlRef = useRef(searchString)
   useEffect(() => {
     if (searchString === lastUrlRef.current) return
@@ -279,6 +279,7 @@ export function LogsPage() {
     setRequestFilter(next.requestFilter)
     setRequestId(next.requestId)
     setAccountFilter(next.accountFilter)
+    setApiKeyFilter(next.apiKeyFilter)
     setModelFilter(next.modelFilter)
     setProviderFilter(next.providerFilter)
     setStreamFilter(next.streamFilter)
@@ -336,6 +337,15 @@ export function LogsPage() {
     () => (accounts || []).map((account) => ({ id: account.id, label: account.name || account.id })),
     [accounts],
   )
+  const { nameById: apiKeyNameById, options: apiKeyOptions } = useApiKeyOptions()
+
+  /** Name of the API key that issued the request; "—" for console traffic. */
+  function apiKeyLabel(item: { api_key_id?: string }) {
+    const id = item.api_key_id?.trim()
+    if (!id) return '—'
+    return apiKeyNameById.get(id) || id
+  }
+
   const providerOptions = useMemo(() => {
     const ids = new Set<string>()
     for (const account of accounts || []) if (account.provider) ids.add(account.provider)
@@ -366,6 +376,7 @@ export function LogsPage() {
     requestId
     || requestFilter !== 'all'
     || accountFilter
+    || apiKeyFilter
     || modelFilter
     || providerFilter
     || streamFilter !== 'all'
@@ -377,6 +388,7 @@ export function LogsPage() {
     requestFilter,
     requestId,
     accountFilter,
+    apiKeyFilter,
     modelFilter,
     providerFilter,
     streamFilter,
@@ -423,6 +435,7 @@ export function LogsPage() {
         status: requestFilter === 'all' ? undefined : requestFilter,
         id: requestId || undefined,
         account: accountFilter || undefined,
+        api_key: apiKeyFilter || undefined,
         model: modelFilter || undefined,
         provider: providerFilter || undefined,
         stream: streamFilter === 'all' ? undefined : streamFilter === 'stream',
@@ -443,7 +456,7 @@ export function LogsPage() {
         setBooted(true)
       }
     }
-  }, [requestFilter, requestId, accountFilter, modelFilter, providerFilter, streamFilter, errorKind, timeRange, customRange, currentPage, pageSize])
+  }, [requestFilter, requestId, accountFilter, apiKeyFilter, modelFilter, providerFilter, streamFilter, errorKind, timeRange, customRange, currentPage, pageSize])
 
   const loadRuntime = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true)
@@ -505,6 +518,7 @@ export function LogsPage() {
     setRequestId('')
     setRequestFilter('all')
     setAccountFilter('')
+    setApiKeyFilter('')
     setModelFilter('')
     setProviderFilter('')
     setStreamFilter('all')
@@ -628,6 +642,15 @@ export function LogsPage() {
                 emptyLabel={t('logsNoFilterOptions')}
               />
               <FilterSearchSelect
+                ariaLabel={t('logsColApiKey')}
+                value={apiKeyFilter}
+                onChange={setApiKeyFilter}
+                options={apiKeyOptions}
+                allLabel={t('logsFilterApiKeyAll')}
+                searchPlaceholder={t('logsSearchApiKey')}
+                emptyLabel={t('logsNoFilterOptions')}
+              />
+              <FilterSearchSelect
                 ariaLabel={t('logsColModel')}
                 value={modelFilter}
                 onChange={setModelFilter}
@@ -726,10 +749,10 @@ export function LogsPage() {
                       <Table.Column>{t('logsColReasoning')}</Table.Column>
                       <Table.Column>{t('logsColProvider')}</Table.Column>
                       <Table.Column>{t('logsColAccount')}</Table.Column>
+                      <Table.Column>{t('logsColApiKey')}</Table.Column>
                       <Table.Column>{t('logsColStatus')}</Table.Column>
                       <Table.Column>{t('logsColStream')}</Table.Column>
                       <Table.Column>{t('logsColLatency')}</Table.Column>
-                      <Table.Column>{t('logsColTTFT')}</Table.Column>
                       <Table.Column>{t('logsColTokens')}</Table.Column>
                     </Table.Header>
                     <Table.Body>
@@ -760,12 +783,26 @@ export function LogsPage() {
                             ) : null}
                           </Table.Cell>
                           <Table.Cell>
+                            <span className="text-xs">{apiKeyLabel(item)}</span>
+                          </Table.Cell>
+                          <Table.Cell>
                             <Chip size="sm" variant="soft" color={statusColor(item.status)}>{item.status}</Chip>
                             {item.error_kind ? <div className="mono mt-1 text-caption text-muted">{item.error_kind}</div> : null}
                           </Table.Cell>
                           <Table.Cell><span className="text-xs text-muted">{item.stream ? t('logsStreamYes') : t('logsStreamNo')}</span></Table.Cell>
-                          <Table.Cell><span className="mono text-xs">{formatLatency(item.latency_ms)}</span></Table.Cell>
-                          <Table.Cell><span className="mono text-xs">{formatLatency(item.ttfb_ms)}</span></Table.Cell>
+                          <Table.Cell>
+                            <LatencyStats
+                              latencyMs={item.latency_ms}
+                              ttfbMs={item.ttfb_ms}
+                              completionTokens={item.completion_tokens}
+                              stream={item.stream}
+                              labels={{
+                                ttft: t('logsColTTFT'),
+                                total: t('logsLatencyTotal'),
+                                tps: t('logsOutputTPS'),
+                              }}
+                            />
+                          </Table.Cell>
                           <Table.Cell>
                             <TokenSplit
                               log={item}
@@ -975,8 +1012,7 @@ export function LogsPage() {
                     [t('logsColReasoning'), selected ? (reasoningLabel(selected) || '—') : '—'],
                     [t('logsColProvider'), selected ? providerLabel(selected) : '—'],
                     [t('logsColAccount'), selected?.account_id ? (accountNameById.get(selected.account_id) || selected.account_id) : '—'],
-                    [t('logsColLatency'), formatLatency(selected?.latency_ms)],
-                    [t('logsColTTFT'), formatLatency(selected?.ttfb_ms)],
+                    [t('logsColApiKey'), selected ? apiKeyLabel(selected) : '—'],
                     [t('logsColStream'), selected?.stream ? t('logsStreamYes') : t('logsStreamNo')],
                     [t('logsRouting'), selected ? routingLabel(selected.routing) : '—'],
                   ].map(([label, value]) => (
@@ -997,6 +1033,20 @@ export function LogsPage() {
                         />
                       ) : '—'}
                     </dd>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <LatencyStats
+                      latencyMs={selected?.latency_ms}
+                      ttfbMs={selected?.ttfb_ms}
+                      completionTokens={selected?.completion_tokens}
+                      stream={selected?.stream}
+                      labels={{
+                        heading: t('logsColLatency'),
+                        ttft: t('logsColTTFT'),
+                        total: t('logsLatencyTotal'),
+                        tps: t('logsOutputTPS'),
+                      }}
+                    />
                   </div>
                 </dl>
                 {selected && selected.message_count ? (

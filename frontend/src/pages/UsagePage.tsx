@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Card, Tab, Table, Tabs, type TableSortDirection } from '@heroui/react'
 import { ChartBar, Cube, Stack, UsersThree } from '@phosphor-icons/react'
 import { fetchRequestStats, type RequestStats, type RequestStatsDim, type RequestStatsNamed } from '@/api/logs'
@@ -8,10 +8,12 @@ import type { Overview } from '@/api/types'
 import { StatsWindowControls } from '@/components/overview/StatsWindowControls'
 import { STATS_WINDOW_LABEL, statsQuery, type StatsWindow } from '@/lib/statsWindow'
 import { ProviderMark } from '@/components/ProviderMark'
+import { FilterSearchSelect } from '@/components/ui/FilterSearchSelect'
 import { PageAlert } from '@/components/ui/PageAlert'
 import { SkeletonBlock } from '@/components/ui/PageSkeletons'
 import type { DateRangeValue } from '@/components/ui/TimeRangePicker'
 import { useI18n } from '@/hooks/useI18n'
+import { useApiKeyOptions } from '@/hooks/useApiKeyOptions'
 import { formatCompact, formatLatency, formatPercent } from '@/lib/format'
 import { logsHref } from '@/lib/logsLink'
 import { accountProviderFamilyLabel } from '@/lib/provider'
@@ -85,6 +87,7 @@ function formatCredits(value: number) {
 export function UsagePage() {
   const { t } = useI18n()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [pageTab, setPageTab] = useState<PageTab>('stats')
   const [dim, setDim] = useState<RequestStatsDim>('model')
   const [statsWindow, setStatsWindow] = useState<StatsWindow>('24')
@@ -95,7 +98,25 @@ export function UsagePage() {
   const [accounts, setAccounts] = useState<NonNullable<Overview['accounts']>>([])
   const [sortKey, setSortKey] = useState<UsageSortKey>('count')
   const [sortDirection, setSortDirection] = useState<TableSortDirection>('descending')
+  const [apiKeyFilter, setApiKeyFilter] = useState(() => new URLSearchParams(window.location.search).get('api_key') ?? '')
+  const { options: apiKeyOptions } = useApiKeyOptions()
   const requestRef = useRef(0)
+
+  // The key filter lives in the URL so a refresh or a shared link keeps it.
+  // Only api_key is mirrored; the window and dimension stay page state.
+  const searchString = searchParams.toString()
+  const lastKeyUrlRef = useRef(searchString)
+  useEffect(() => {
+    if (searchString === lastKeyUrlRef.current) return
+    lastKeyUrlRef.current = searchString
+    setApiKeyFilter(new URLSearchParams(searchString).get('api_key') ?? '')
+  }, [searchString])
+  const desiredKeyUrl = apiKeyFilter ? `api_key=${encodeURIComponent(apiKeyFilter)}` : ''
+  useEffect(() => {
+    if (desiredKeyUrl === lastKeyUrlRef.current) return
+    lastKeyUrlRef.current = desiredKeyUrl
+    setSearchParams(desiredKeyUrl, { replace: true })
+  }, [desiredKeyUrl, setSearchParams])
 
   useEffect(() => {
     let cancelled = false
@@ -112,7 +133,7 @@ export function UsagePage() {
       return
     }
     const version = ++requestRef.current
-    void fetchRequestStats({ ...query, dim: [dim], limit: USAGE_LIMIT })
+    void fetchRequestStats({ ...query, dim: [dim], limit: USAGE_LIMIT, api_key: apiKeyFilter || undefined })
       .then((data) => {
         if (version !== requestRef.current) return
         setStats(data)
@@ -126,7 +147,7 @@ export function UsagePage() {
       .finally(() => { if (version === requestRef.current) setLoading(false) })
     // customRange is tracked through its string form.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dim, statsWindow, customFrom, customTo])
+  }, [dim, statsWindow, customFrom, customTo, apiKeyFilter])
 
   const rows = useMemo(() => {
     const names = new Map(accounts.map((account) => [account.id, account.name || account.id]))
@@ -144,6 +165,17 @@ export function UsagePage() {
 
   const totals = stats?.totals
   const tokens = stats?.tokens
+
+  /**
+   * Drill-down from a usage row to the logs list for the same window. The
+   * current key filter rides along, otherwise the logs page would show every
+   * key's requests under numbers that were computed for one key.
+   */
+  function openLogsFor(row: UsageRow) {
+    if (!stats || !row.filter) return
+    const filters: Record<string, string | undefined> = { ...row.filter, api_key: apiKeyFilter || undefined }
+    navigate(logsHref(filters, stats.window.from, stats.window.to))
+  }
   const columns: Array<{ id: UsageSortKey; label: string; numeric?: boolean }> = [
     { id: 'label', label: t(dim === 'model' ? 'logsColModel' : dim === 'account' ? 'logsColAccount' : 'logsColProvider') },
     { id: 'count', label: t('usageColRequests'), numeric: true },
@@ -157,6 +189,15 @@ export function UsagePage() {
   const statsBody = (
     <>
       <section className="flex flex-wrap items-center justify-end gap-3 pb-1">
+        <FilterSearchSelect
+          ariaLabel={t('logsColApiKey')}
+          value={apiKeyFilter}
+          onChange={setApiKeyFilter}
+          options={apiKeyOptions}
+          allLabel={t('logsFilterApiKeyAll')}
+          searchPlaceholder={t('logsSearchApiKey')}
+          emptyLabel={t('logsNoFilterOptions')}
+        />
         <StatsWindowControls
           value={statsWindow}
           onChange={setStatsWindow}
@@ -244,11 +285,11 @@ export function UsagePage() {
                   <article
                     key={row.key}
                     className={`space-y-3 px-5 py-4 ${clickable ? 'cursor-pointer' : ''}`}
-                    onClick={clickable ? () => navigate(logsHref(row.filter ?? {}, stats!.window.from, stats!.window.to)) : undefined}
+                    onClick={clickable ? () => openLogsFor(row) : undefined}
                     onKeyDown={clickable ? (event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault()
-                        navigate(logsHref(row.filter ?? {}, stats!.window.from, stats!.window.to))
+                        openLogsFor(row)
                       }
                     } : undefined}
                     role={clickable ? 'button' : undefined}
@@ -300,7 +341,7 @@ export function UsagePage() {
                         key={row.key}
                         id={row.key}
                         className={row.filter && stats ? 'cursor-pointer' : undefined}
-                        onAction={row.filter && stats ? () => navigate(logsHref(row.filter ?? {}, stats.window.from, stats.window.to)) : undefined}
+                        onAction={row.filter && stats ? () => openLogsFor(row) : undefined}
                       >
                         <Table.Cell>
                           <div className="flex min-w-0 items-center gap-2">
@@ -359,7 +400,7 @@ export function UsagePage() {
           {statsBody}
         </Tabs.Panel>
         <Tabs.Panel id="cost" className="pt-5">
-          <UsageCostPanel />
+          <UsageCostPanel apiKeyFilter={apiKeyFilter} />
         </Tabs.Panel>
       </Tabs>
     </div>

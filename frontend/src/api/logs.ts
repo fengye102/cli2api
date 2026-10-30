@@ -52,6 +52,8 @@ export type RequestLog = {
   requested_reasoning?: string
   resolved_reasoning?: string
   account_id?: string
+  /** Console API key that issued the request; empty for console-key traffic. */
+  api_key_id?: string
   provider?: string
   routing?: string
   prompt_tokens?: number | null
@@ -238,6 +240,7 @@ export type RequestLogQuery = {
   status?: string
   stream?: boolean
   error_kind?: string
+  api_key?: string
   model?: string
   provider?: string
   id?: string
@@ -253,13 +256,14 @@ export type RequestLogQuery = {
  * contract (all three grouped lists, top 6 each). dim picks the grouped
  * lists to compute; limit caps their rows (server max 500).
  */
-export function fetchRequestStats(query: { hours?: number; from?: string; to?: string; dim?: RequestStatsDim[]; limit?: number } = {}) {
+export function fetchRequestStats(query: { hours?: number; from?: string; to?: string; dim?: RequestStatsDim[]; limit?: number; api_key?: string } = {}) {
   const params = new URLSearchParams()
   if (query.dim?.length) params.set('dim', query.dim.join(','))
   if (query.limit != null) params.set('limit', String(query.limit))
   if (query.hours != null) params.set('hours', String(query.hours))
   if (query.from) params.set('from', query.from)
   if (query.to) params.set('to', query.to)
+  if (query.api_key) params.set('api_key', query.api_key)
   const suffix = params.toString() ? `?${params}` : ''
   return api<RequestStats>(`/api/logs/stats${suffix}`)
 }
@@ -279,6 +283,7 @@ export function fetchRequestLogs(query: RequestLogQuery = {}) {
   if (query.status) params.set('status', query.status)
   if (query.stream != null) params.set('stream', query.stream ? '1' : '0')
   if (query.error_kind) params.set('error_kind', query.error_kind)
+  if (query.api_key) params.set('api_key', query.api_key)
   if (query.model) params.set('model', query.model)
   if (query.provider) params.set('provider', query.provider)
   if (query.id) params.set('id', query.id)
