@@ -160,6 +160,7 @@ func TestForeignIdentitiesAreRewritten(t *testing.T) {
 		"You are Claude Code, Anthropic's official CLI tool for Claude.",
 		"You are ZCode, an interactive coding agent",
 		"You are an AI agent powered by DeepSeek Harness",
+		"You are Hermes Agent, built by Nous Research. Be direct.",
 	}
 	for _, input := range cases {
 		body := map[string]any{
@@ -169,10 +170,44 @@ func TestForeignIdentitiesAreRewritten(t *testing.T) {
 		}
 		normalizePrompt(body)
 		content := body["messages"].([]any)[0].(map[string]any)["content"].(string)
-		for _, blocked := range []string{"You are Codex", "You are Claude Code", "You are ZCode", "DeepSeek Harness"} {
+		for _, blocked := range []string{"You are Codex", "You are Claude Code", "You are ZCode", "DeepSeek Harness", "You are Hermes Agent, built by Nous Research"} {
 			if strings.Contains(strings.ToLower(content), strings.ToLower(blocked)) {
 				t.Fatalf("blocked identity %q survived rewriting: %q", blocked, content)
 			}
+		}
+	}
+}
+
+// TestHermesIdentityIsRewritten pins the identity that made every Hermes
+// request fail. Measured 2026-10-30 against the domestic chat endpoint: the
+// gate blocks "You are Hermes Agent, built by Nous Research" verbatim and
+// case-insensitively, and that sentence is the FIRST line of every Hermes
+// system prompt - so the console's plain test request returned 200 while every
+// real Hermes turn returned an empty-body 406. Dropping just the company
+// attribution is enough ("You are Hermes Agent" alone and "built by Nous
+// Research" alone both pass), but the whole phrase is replaced so the rewritten
+// prompt stays grammatical.
+func TestHermesIdentityIsRewritten(t *testing.T) {
+	cases := []struct{ input, banned string }{
+		{"You are Hermes Agent, built by Nous Research. Be direct.", "hermes agent, built by nous research"},
+		{"You are Hermes Agent, built by Nous Research\n## Tools", "hermes agent, built by nous research"},
+		{"YOU ARE HERMES AGENT, BUILT BY NOUS RESEARCH.", "hermes agent, built by nous research"},
+	}
+	for _, c := range cases {
+		body := map[string]any{
+			"messages": []any{
+				map[string]any{"role": "system", "content": c.input},
+			},
+		}
+		normalizePrompt(body)
+		content := body["messages"].([]any)[0].(map[string]any)["content"].(string)
+		if strings.Contains(strings.ToLower(content), c.banned) {
+			t.Fatalf("Hermes identity survived rewriting: %q", content)
+		}
+		// The prefix must still be there: rewriting the caller's identity
+		// sentence must not disturb the OpenClaw opening the gate requires.
+		if !strings.HasPrefix(strings.TrimSpace(content), identityLine) {
+			t.Fatalf("prefix missing after rewrite: %q", content)
 		}
 	}
 }
