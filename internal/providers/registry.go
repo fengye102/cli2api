@@ -325,6 +325,11 @@ var ZCode = ProviderDescriptor{
 			PlanChatBase: "https://zcode.z.ai/api/v1/zcode-plan/anthropic",
 			AuthBase:     "https://zcode.z.ai/api/v1/oauth/token",
 			BillingBase:  "https://api.z.ai",
+			// The weekend-grab sweep gates on the AutoCheckin opt-in and runs
+			// on Beijing calendar edges (the promo window is Beijing Friday
+			// 18:00 through Sunday), so the policy zone is Asia/Shanghai even
+			// though zcode has no daily check-in of its own.
+			Checkin: &CheckinPolicy{Timezone: "Asia/Shanghai"},
 		},
 	},
 	DefaultRegion: "zai",
