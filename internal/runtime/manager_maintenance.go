@@ -414,6 +414,7 @@ func (manager *Manager) RunMaintenanceLoop(stop <-chan struct{}) {
 		}
 		now := time.Now()
 		manager.runScheduledCheckins(ctx, now)
+		manager.runWeekendClaims(ctx, now)
 		day := now.Format("2006-01-02")
 		if day != keepaliveProgressDay {
 			keepaliveProgressDay = day
