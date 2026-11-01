@@ -2,6 +2,7 @@ package zcode
 
 import (
 	"context"
+	"crypto/tls"
 	"net/http"
 	"runtime"
 	"strings"
@@ -98,6 +99,41 @@ type Client struct {
 	pending map[string]*loginPending
 }
 
+// newUpstreamTransport builds the transport every ZCode request goes over. It
+// speaks HTTP/1.1 only.
+//
+// The stock Go transport offers h2 in the TLS ALPN extension wherever the
+// server suggests it, and zcode.z.ai does. Every real ZCode client speaks
+// HTTP/1.1 instead: ZCode itself (Node's fetch), its OpenCode plugin (Bun's
+// fetch) and zcode2api-plus (Go with h2 turned off). Alibaba Cloud's firewall
+// can read that field, and it does: the same Start Plan request -- same path,
+// same headers, same auth, same body -- was answered 405 / code 3012 "network
+// firewall blocked" over h2 while a plugin run of the same account on the same
+// machine at the same moment got through over h1. Nothing here needs h2 anyway:
+// one turn is one stream, so there is no multiplexing to give up.
+func newUpstreamTransport() *http.Transport {
+	if base, ok := http.DefaultTransport.(*http.Transport); ok {
+		return http1Only(base.Clone())
+	}
+	return http1Only(&http.Transport{Proxy: http.ProxyFromEnvironment})
+}
+
+// http1Only strips HTTP/2 from a transport: it neither offers h2 in ALPN nor
+// accepts an h2 upgrade.
+func http1Only(transport *http.Transport) *http.Transport {
+	transport.ForceAttemptHTTP2 = false
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	} else {
+		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+	}
+	transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
+	// A non-nil empty map stops net/http from wiring HTTP/2 back in through the
+	// TLSNextProto upgrade path.
+	transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	return transport
+}
+
 // NewClient builds the adapter. The http client has no global timeout so
 // streaming responses can stay open; per-request timeouts are set by the
 // caller.
@@ -105,6 +141,7 @@ func NewClient(store Store) *Client {
 	client := &Client{
 		store: store,
 		http: &http.Client{
+			Transport: newUpstreamTransport(),
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
