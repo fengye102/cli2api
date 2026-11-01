@@ -21,6 +21,13 @@ type LoginInput struct {
 	// Captcha is an already-solved Aliyun verification proof. Empty means the
 	// provider must do without it.
 	Captcha string
+	// SkipEgressProbe waives a provider's own reachability pre-flight. A
+	// pre-flight exists to replace a thirty-second silent hang with an
+	// immediate explanation, but the operator can measure the route better
+	// than we can - a blocked egress may lift, or the probe may be looking at
+	// the wrong host. This is the way to say "I know, go anyway" without
+	// disabling the check for everyone.
+	SkipEgressProbe bool
 }
 
 type loginInputKey struct{}

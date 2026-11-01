@@ -281,18 +281,23 @@ type AccountAdminAction struct {
 	// proof. They reach the provider through providers.WithLoginInput.
 	LoginPhone   string
 	LoginCaptcha string
+	// SkipEgressProbe waives a provider's reachability pre-flight for this
+	// call only. Operators reach for it when the probe is wrong for their
+	// network; it is passed through untouched, like the answers above.
+	SkipEgressProbe bool
 }
 
 // loginContext attaches the operator's answers for a login round.
 func (input AccountAdminAction) loginContext(ctx context.Context) context.Context {
 	if strings.TrimSpace(input.LoginMethod) == "" && strings.TrimSpace(input.LoginPhone) == "" &&
-		strings.TrimSpace(input.LoginCaptcha) == "" {
+		strings.TrimSpace(input.LoginCaptcha) == "" && !input.SkipEgressProbe {
 		return ctx
 	}
 	return providers.WithLoginInput(ctx, providers.LoginInput{
-		Method:  input.LoginMethod,
-		Phone:   input.LoginPhone,
-		Captcha: input.LoginCaptcha,
+		Method:          input.LoginMethod,
+		Phone:           input.LoginPhone,
+		Captcha:         input.LoginCaptcha,
+		SkipEgressProbe: input.SkipEgressProbe,
 	})
 }
 

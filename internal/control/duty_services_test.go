@@ -79,10 +79,14 @@ type stubLogin struct {
 	started   int
 	polled    int
 	completed int
+	// input is what rode the context into StartLogin. Recording it is how a
+	// test proves the operator's answers reached the provider at all.
+	input providers.LoginInput
 }
 
-func (s *stubLogin) StartLogin(context.Context, string) (providers.LoginSession, error) {
+func (s *stubLogin) StartLogin(ctx context.Context, _ string) (providers.LoginSession, error) {
 	s.started++
+	s.input = providers.LoginInputFromContext(ctx)
 	return s.session, s.startErr
 }
 func (s *stubLogin) PollLogin(context.Context, string) (bool, string, error) {
@@ -326,6 +330,27 @@ func TestAccountsAdminStoresCodexLoginMethod(t *testing.T) {
 		AccountID: "acc-1", Action: "login/device", Method: "POST", LoginMethod: "web",
 	}); err == nil {
 		t.Fatal("expected invalid login method")
+	}
+}
+
+// TestAccountsAdminForwardsSkipEgressProbe: the console's skip switch is a
+// provider-facing answer like phone/captcha, so it has to ride the same
+// context. Losing it here would silently reinstate the pre-flight the operator
+// just waived.
+func TestAccountsAdminForwardsSkipEgressProbe(t *testing.T) {
+	svc, _, store, _ := newTestServices()
+	store.accounts["acc-1"] = accounts.Account{ID: "acc-1", Provider: "raccoon"}
+	login := &stubLogin{session: providers.LoginSession{AuthURL: "https://xiaohuanxiong.com/authorize"}}
+	svc.Accounts.Providers = providers.NewRegistry()
+	svc.Accounts.Providers.Register(providers.Adapter{ID: "raccoon", Login: login})
+
+	if _, err := svc.Accounts.Admin(context.Background(), AccountAdminAction{
+		AccountID: "acc-1", Action: "login/device", Method: "POST", SkipEgressProbe: true,
+	}); err != nil {
+		t.Fatalf("login/device: %v", err)
+	}
+	if got := login.input.SkipEgressProbe; !got {
+		t.Fatalf("skip_egress_probe did not reach the provider: login.input=%+v", login.input)
 	}
 }
 

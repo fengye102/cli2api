@@ -221,6 +221,7 @@ func (h *Handler) HandleAccountByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var callbackURL, loginMethod, loginPhone, loginCaptcha string
+	var skipEgressProbe bool
 	if action == "login/device" || action == "login/callback" {
 		var input struct {
 			CallbackURL string `json:"callback_url"`
@@ -230,6 +231,11 @@ func (h *Handler) HandleAccountByID(w http.ResponseWriter, r *http.Request) {
 			// untouched; whether they mean anything is the provider's call.
 			Phone   string `json:"phone"`
 			Captcha string `json:"captcha"`
+			// SkipEgressProbe waives a provider's reachability pre-flight.
+			// `force` is the same switch under the name an operator is more
+			// likely to try first.
+			SkipEgressProbe bool `json:"skip_egress_probe"`
+			Force           bool `json:"force"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxConsoleBodyBytes)).Decode(&input); err != nil && err != io.EOF {
 			writeErr(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -239,6 +245,7 @@ func (h *Handler) HandleAccountByID(w http.ResponseWriter, r *http.Request) {
 		loginMethod = input.LoginMethod
 		loginPhone = input.Phone
 		loginCaptcha = input.Captcha
+		skipEgressProbe = input.SkipEgressProbe || input.Force
 	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -247,7 +254,7 @@ func (h *Handler) HandleAccountByID(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.Control.Accounts.Admin(r.Context(), control.AccountAdminAction{
 		AccountID: accountID, Action: action, Method: r.Method, ContentType: r.Header.Get("Content-Type"), Body: body, CallbackURL: callbackURL, LoginMethod: loginMethod,
-		LoginPhone: loginPhone, LoginCaptcha: loginCaptcha,
+		LoginPhone: loginPhone, LoginCaptcha: loginCaptcha, SkipEgressProbe: skipEgressProbe,
 	})
 	if err != nil {
 		writeOperationError(w, err)

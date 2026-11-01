@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/caigee-cmd/cli2api/internal/providers"
 )
 
 // stubConn is a successful dial's result; only Close is used.
@@ -42,10 +44,42 @@ func TestEgressPreflightNamesTheMissingProxy(t *testing.T) {
 	if err == nil {
 		t.Fatal("a direct round with no proxy must be refused")
 	}
-	for _, want := range []string{"proxy_url", "xiaohuanxiong.com", "全局代理"} {
+	for _, want := range []string{"proxy_url", "xiaohuanxiong.com", "全局代理", "skip_egress_probe"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal should mention %q: %s", want, err)
 		}
+	}
+	// The refusal must not claim the site refuses every direct connection:
+	// other egresses reach it, and an operator who knows that would stop
+	// trusting the check. Name the source-address block instead.
+	if !strings.Contains(err.Error(), "出口 IP") {
+		t.Errorf("the refusal should name the blocked egress IP as the cause: %s", err)
+	}
+	if strings.Contains(err.Error(), "这个站只接受代理出口") {
+		t.Errorf("the refusal must not present a site policy that does not exist: %s", err)
+	}
+}
+
+// TestEgressPreflightHonoursSkipEgressProbe: the pre-flight replaces a silent
+// thirty-second hang with an explanation, but it is not a gate. An operator who
+// has measured the route - or is waiting out a block that may lift - can wave it
+// away and get the round they asked for.
+func TestEgressPreflightHonoursSkipEgressProbe(t *testing.T) {
+	client, _ := loginTestClient(t, func(http.ResponseWriter, *http.Request) {})
+	client.authBase = "https://xiaohuanxiong.com/api/web/auth/v1"
+	client.dial = func(context.Context, string, string) (net.Conn, error) {
+		t.Fatal("a waived pre-flight must not dial at all")
+		return nil, nil
+	}
+	ctx := providers.WithLoginInput(context.Background(), providers.LoginInput{SkipEgressProbe: true})
+	session, err := client.StartLogin(ctx, "acc1")
+	if err != nil {
+		t.Fatalf("a waived pre-flight must let the round start: %v", err)
+	}
+	// The test client's site base is its own loopback server, so the round is
+	// proven by the authorize path and a state, not by the host name.
+	if !strings.Contains(session.AuthURL, "/authorize?appname=") || session.State == "" {
+		t.Fatalf("the round should still hand out a real authorize URL, got %q", session.AuthURL)
 	}
 }
 

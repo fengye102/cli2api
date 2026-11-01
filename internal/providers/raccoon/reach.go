@@ -7,18 +7,21 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/caigee-cmd/cli2api/internal/providers"
 )
 
 // Egress reachability.
 //
-// xiaohuanxiong.com sits behind a WAF that refuses this server's own address:
-// from the VPS, TCP 443 to it never completes, while the same request through
-// the socks egress the accounts carry answers at once. That is a property of the
-// deployment, not a bug in the flow, and it used to surface in the worst
-// possible place: the operator finished the browser authorization, pasted the
-// 127.0.0.1 callback, and then the exchange sat there for thirty seconds before
-// failing with "context deadline exceeded" - which says nothing about a missing
-// proxy.
+// xiaohuanxiong.com sits behind a WAF that drops TCP from this deployment's own
+// egress IP: from the VPS the connect never completes, while ICMP still answers
+// and the very same address over the socks egress the accounts carry returns
+// 200 at once. It is a block on one source address, not a policy of the site -
+// another egress reaches it - but from this host it is a fact, and it used to
+// surface in the worst possible place: the operator finished the browser
+// authorization, pasted the 127.0.0.1 callback, and then the exchange sat there
+// for thirty seconds before failing with "context deadline exceeded" - which
+// says nothing about the route.
 //
 // So a round started with no proxy configured pre-flights the dial: four
 // seconds, and the answer is either "go ahead" or a message that names the
@@ -35,6 +38,12 @@ const (
 // egressReachable reports whether a direct connection to the auth host is
 // possible, or explains what to do about it.
 func (c *Client) egressReachable(ctx context.Context, accountID string) error {
+	// The probe is advice, not a gate: an operator who has measured the route
+	// themselves - or who is waiting out a block that may lift - says so and
+	// proceeds.
+	if providers.LoginInputFromContext(ctx).SkipEgressProbe {
+		return nil
+	}
 	proxy, err := c.effectiveProxy(ctx, accountID)
 	if err != nil {
 		return err
@@ -60,10 +69,18 @@ func (c *Client) egressReachable(ctx context.Context, accountID string) error {
 		if known := c.knownEgress(ctx); known != "" {
 			hint = fmt.Sprintf("（这个部署上已经在用 %s 作为出口）", known)
 		}
+		// Say what was measured, not what it might mean: this deployment's
+		// egress address is blocked, and the evidence is that the site is
+		// reachable from elsewhere. Claiming the site refuses all direct
+		// connections would be wrong, and an operator who knows it works from
+		// their own machine would rightly stop trusting the check.
 		return fmt.Errorf(
-			"本机直连 %s 连不上（%v）：这个站只接受代理出口，而当前账号既没有配 proxy_url，也没有全局代理。"+
-				"给账号填上 proxy_url%s，或在设置里配置全局代理，然后重新发起登录",
-			host, err, hint)
+			"本机直连 %s:%s 的 TCP 握手被丢弃（%v）：这台机器当前的出口 IP 被站点 WAF 拦了，"+
+				"换个出口就正常（同一地址从香港出口是 200，从本机 ICMP 也通、只有 TCP 不通），"+
+				"所以不是站点「只接受代理」。当前账号既没有配 proxy_url，也没有全局代理。"+
+				"给账号填上 proxy_url%s，或在设置里配置全局代理，然后重新发起登录；"+
+				"如果你确认这台机器现在能直连，重新发起时带上 skip_egress_probe 跳过这次探测",
+			host, port, err, hint)
 	}
 	_ = conn.Close()
 	c.markReached(host)
