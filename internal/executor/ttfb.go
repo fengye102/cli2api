@@ -50,6 +50,12 @@ const (
 	// hiccup. A sustained slowdown still climbs, because the ceiling moves up
 	// with the estimate on every sample.
 	ttfbOutlierMult = 3.0
+	// stickyEscapeGapMs is the absolute first-byte gap that justifies breaking
+	// session affinity. A pinned account is worth keeping for its cache
+	// locality and its stable behaviour, so a merely slower one must not churn
+	// the session; only a gap this large (seconds, not milliseconds) buys back
+	// more than the move costs.
+	stickyEscapeGapMs = 2000.0
 )
 
 // ttfbSample is one account's smoothed first-byte estimate.
@@ -123,6 +129,64 @@ func (p *Pool) ttfbPrior(now time.Time) float64 {
 	}
 	sort.Float64s(values)
 	return values[len(values)/2]
+}
+
+// StickyTooSlow reports whether a session's bound account has drifted far
+// enough behind a ready alternative to justify dropping the binding.
+//
+// This is the gap the latency band cannot close on its own: a session is pinned
+// before selection runs, so a bound account that goes slow keeps the whole
+// conversation for the affinity TTL - on a real deployment that was 92% of all
+// traffic, with one 19s account holding 128 requests an hour. Escaping here
+// costs nothing upstream; the next successful attempt re-binds the session.
+//
+// Both the bound account and the alternative need a fresh sample. An account we
+// know nothing about is not evidence of slowness, and guessing would move
+// sessions on noise.
+func (p *Pool) StickyTooSlow(accountID, publicModel string) bool {
+	if p == nil || accountID == "" {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	// Only the latency-aware strategy may move sessions on latency. The other
+	// strategies keep the promise that enabling them changes nothing else, so a
+	// deployment on round-robin must not start reshuffling conversations just
+	// because samples happen to exist.
+	if p.routingStrategy != RoutingStrategyLowestTTFB {
+		return false
+	}
+	now := time.Now()
+	bound, ok := p.ttfb[accountID]
+	if !ok || now.Sub(bound.at) > ttfbTTL {
+		return false
+	}
+	// The alternative has to be a candidate the picker would accept, not just a
+	// fast account: escaping towards an account that cannot serve the model
+	// would trade a slow answer for no answer.
+	q := RouteQuery{PublicModel: publicModel}
+	best := math.Inf(1)
+	found := false
+	for i := range p.items {
+		item := p.items[i]
+		if item.ID == accountID || !routeMatches(item, q) {
+			continue
+		}
+		if itemDown(item, now) || itemModelDown(item, q, now) || itemSaturated(item) {
+			continue
+		}
+		sample, ok := p.ttfb[item.ID]
+		if !ok || now.Sub(sample.at) > ttfbTTL {
+			continue
+		}
+		if sample.ms < best {
+			best, found = sample.ms, true
+		}
+	}
+	if !found {
+		return false
+	}
+	return bound.ms > best+stickyEscapeGapMs
 }
 
 // ttfbCandidates narrows the ready set to the accounts that have been answering

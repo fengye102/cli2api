@@ -278,6 +278,17 @@ func (e ChatExecutor) prepareRouting(ctx context.Context, prefer, providerFilter
 		e.SessionAffinity.RecordEscape("model_unavailable")
 		return "", providerFilter, "", plan
 	}
+	// A bound account that has gone slow is the one case the latency band cannot
+	// handle by itself: the pin is taken here, before selection runs. Escape the
+	// binding so this request competes normally, and let the successful attempt
+	// re-bind the session to whatever actually answered.
+	if e.Pool.StickyTooSlow(item.ID, publicModel) {
+		e.SessionAffinity.RecordEscape("slow_first_byte")
+		return "", providerFilter, "", routingPlan{
+			Source: routingStickyEscape, SessionKey: plan.SessionKey,
+			BoundAccount: item.ID, PublicModel: publicModel,
+		}
+	}
 	return item.ID, itemProvider(item), accounts.NormalizeRegion(item.Region), routingPlan{
 		Source: routingSticky, SessionKey: plan.SessionKey, BoundAccount: item.ID, PublicModel: publicModel,
 	}
