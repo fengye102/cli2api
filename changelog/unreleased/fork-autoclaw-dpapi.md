@@ -1,0 +1,7 @@
+### English
+
+- autoclaw: importing a Windows `auth.json` used to store the DPAPI blob as if it were a token — the account was created, then answered 401 to everything, and looked like an expired login. The importer now recognizes a DPAPI blob (its provider GUID, master key id, scope and cipher are all in the header) and refuses it with a reason. There is no way around the refusal on a Linux server and it is worth saying plainly: a DPAPI blob is encrypted with a key the operating system derives from the Windows profile that wrote it (or, for machine scope, from an LSA secret only that machine holds), so the key is not in the file and no amount of parsing will produce it. The message therefore names the master key it would have needed and gives both real ways forward: log in from the console (the domestic build takes a phone number and an SMS code, the overseas build the desktop OAuth round — both mint the tokens here, which then refresh themselves), or decrypt the blob on that Windows machine with the included one-liner and paste the output.
+
+### 中文
+
+- autoclaw：以前把 Windows 的 `auth.json` 直接导入时，DPAPI 密文被当成 token 存了下来——账号建出来了，之后每个请求都 401，看起来像「token 过期」。现在导入器认得出这是 DPAPI 密文（头部里就写着 provider GUID、主密钥 id、作用域和分组算法），并给出拒绝的理由。在 Linux 服务器上这个拒绝没有绕过去的办法，也不该假装有：DPAPI 密文的密钥由操作系统从写它的那个 Windows 用户配置派生（机器作用域则是那台机器独有的 LSA 秘密），密钥根本不在文件里，解析再多也变不出来。所以报错会写明它需要哪把主密钥，并给出两条真正可行的路：直接在控制台登录（国内版手机号+验证码，国际版走桌面端那套 OAuth，两条都会在这里签发 token 并自行续期），或者在那台 Windows 上用附带的 PowerShell 一行把它解开、把结果粘回来。

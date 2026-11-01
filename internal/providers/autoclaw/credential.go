@@ -63,6 +63,9 @@ func DecodeCredential(payload []byte) (Credential, error) {
 		// an access token. The console's "paste a token" path produces exactly
 		// that shape, so it must not be an error.
 		if bare, ok := bareToken(payload); ok {
+			if blob, isBlob := LooksLikeDPAPI(bare); isBlob {
+				return Credential{}, dpapiImportError(blob)
+			}
 			return Credential{Format: CredentialFormat, AccessToken: bare}, nil
 		}
 		return Credential{}, fmt.Errorf("autoclaw credential: %w", err)
@@ -83,6 +86,16 @@ func DecodeCredential(payload []byte) (Credential, error) {
 	cred.RefreshToken = trimBearer(cred.RefreshToken)
 	cred.DeviceID = strings.TrimSpace(cred.DeviceID)
 	cred.UserID = strings.TrimSpace(cred.UserID)
+	// A Windows desktop install writes a DPAPI blob where the token goes. It
+	// must not be stored as if it were a token: the account then answers 401 to
+	// everything and looks like an expired login, which is a much worse thing
+	// to debug than a refused import. See dpapi.go for why it cannot be opened
+	// here and what to do instead.
+	for _, token := range []string{cred.AccessToken, cred.RefreshToken} {
+		if blob, isBlob := LooksLikeDPAPI(token); isBlob {
+			return Credential{}, dpapiImportError(blob)
+		}
+	}
 	return cred, nil
 }
 
