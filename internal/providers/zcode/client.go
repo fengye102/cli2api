@@ -114,6 +114,12 @@ type Client struct {
 	// id (see login.go).
 	mu      sync.Mutex
 	pending map[string]*loginPending
+
+	// mappings / mappingInFlight hold the upstream's endpoint-mapping tables per
+	// origin and the origins currently being fetched (see endpoint_mapping.go).
+	mapMu           sync.Mutex
+	mappings        map[string]mappingSnapshot
+	mappingInFlight map[string]bool
 }
 
 // newUpstreamTransport builds the transport every ZCode request goes over. It

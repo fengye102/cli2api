@@ -39,6 +39,9 @@ services:
       ZCODE_IDENTITY_CLIENT_LANGUAGE: "${ZCODE_IDENTITY_CLIENT_LANGUAGE:-}"
       ZCODE_IDENTITY_CLIENT_TIMEZONE: "${ZCODE_IDENTITY_CLIENT_TIMEZONE:-}"
       ZCODE_DEVICE_MID: "${ZCODE_DEVICE_MID:-}"
+      # Set to any value to stop following the upstream's endpoint mapping
+      # table (the escape hatch when a published table misbehaves).
+      ZCODE_DISABLE_ENDPOINT_MAPPING: "${ZCODE_DISABLE_ENDPOINT_MAPPING:-}"
     volumes:
       - qoder-data:/data
       - "${CLI2API_UPDATER_SOCKET_DIR:-/tmp/cli2api-updater}:/run/cli2api-updater:ro"

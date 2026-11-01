@@ -107,7 +107,14 @@ func (c *Client) chatRequest(ctx context.Context, accountID string, cred Credent
 	if err != nil {
 		return nil, providers.ResolvedChat{}, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, chatURL(cred), bytes.NewReader(payload))
+	// Follow the upstream's own endpoint table: it is how the vendor moves
+	// inference between planes without shipping a client. The refresh is kicked
+	// off here but runs off this request's path, and the rewrite below is a pure
+	// table lookup, so a missing or stale table changes nothing.
+	endpoint := chatURL(cred)
+	c.refreshEndpointMapping(ctx, accountID, cred, endpoint)
+	endpoint = c.mapEndpoint(endpoint)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return nil, providers.ResolvedChat{}, err
 	}
