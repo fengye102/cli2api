@@ -44,6 +44,14 @@ type WeekendClaimer interface {
 	AutoClaimWeekend(ctx context.Context, accountID string) (providers.ClaimResult, error)
 }
 
+// weekendWindow is the optional companion a WeekendClaimer may implement: the
+// adapter knows when the promo window is open, the sweep does not. Without it
+// the sweep would post a claim every ten minutes all week, which upstream
+// answers with 1005 and, once they pile up, with a 429 carrying no body.
+type weekendWindow interface {
+	WeekendClaimWindowOpen(now time.Time) bool
+}
+
 // weekendClaimedAt tracks the last grab attempt per account so the 30-second
 // tick does not hammer billing/claim with 1005s between rounds. Guarded by
 // the maintenance loop being single-goroutine.
@@ -70,6 +78,11 @@ func (manager *Manager) runWeekendClaims(ctx context.Context, now time.Time) {
 		if last, ok := weekendClaimedAt[account.ID]; ok && now.Sub(last) < weekendClaimInterval {
 			continue
 		}
+		// Checked before the throttle is stamped: the first tick inside the
+		// window must fire at once, not ten minutes after it opened.
+		if !manager.weekendWindowOpen(ctx, account.ID, now) {
+			continue
+		}
 		weekendClaimedAt[account.ID] = now
 
 		result, err := manager.weekendClaimAccount(ctx, account.ID)
@@ -89,6 +102,24 @@ func (manager *Manager) runWeekendClaims(ctx context.Context, now time.Time) {
 			log.Printf("weekend claim account=%s: %s", account.ID, result.Message)
 		}
 	}
+}
+
+// weekendWindowOpen asks the adapter whether the promo window is open. An
+// adapter that cannot say keeps the old behaviour.
+func (manager *Manager) weekendWindowOpen(ctx context.Context, accountID string, now time.Time) bool {
+	account, err := manager.store.Get(ctx, accountID)
+	if err != nil {
+		return false
+	}
+	adapter, registered := manager.providers.Get(account.Provider)
+	if !registered || adapter.Claim == nil {
+		return false
+	}
+	window, ok := adapter.Claim.(weekendWindow)
+	if !ok {
+		return true
+	}
+	return window.WeekendClaimWindowOpen(now)
 }
 
 // weekendClaimAccount runs one grab round through the registered adapter's

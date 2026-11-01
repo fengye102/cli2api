@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/caigee-cmd/cli2api/internal/providers"
@@ -84,6 +86,146 @@ func WeekendClaimOpen(now time.Time) bool {
 // too (Date.now() + 8h on UTC getters).
 func beijingLocation() *time.Location {
 	return time.FixedZone("UTC+8", 8*3600)
+}
+
+// The promo's plan id used to be predictable (`zcode-v3-start-plan-<MMDD>-wk`),
+// which let the sweep guess it and beat the crowd. It is not predictable any
+// more: ZCode hands out gift plans through the app's own claim banners, whose
+// plan ids live in the marketing feed and in neither billing list while the
+// banner is up (a "ZCODE WEEKEND BUILD" banner on 10-30 was in no billing view
+// at all). The feed ships each banner's claim button as
+//
+//	{"type":"claim_zcode_plan","args":{"plan_id":"..."}}
+//
+// with the display name in the banner's `zcode_plan.name`, so the sweep asks the
+// feed first and keeps the date-encoded guesses as a fallback for the rounds
+// where the feed is down or already drained.
+const (
+	// marketingTouchPath is the app's banner feed, outside the plan gateway's
+	// /zcode-plan prefix.
+	marketingTouchPath = "/marketing/touch"
+	// claimBannerAction is the banner button action that carries a plan id.
+	claimBannerAction = "claim_zcode_plan"
+	// bannerWalkDepth bounds the search for a claim action inside one delivery:
+	// the capture nests it about five levels down, and a bound keeps a
+	// pathological feed from turning into a stack.
+	bannerWalkDepth = 12
+)
+
+// marketingTouchSeq counts feed reads the way the app does (from 0 per
+// process). The upstream uses it to tell a fresh poll from a replay.
+var marketingTouchSeq atomic.Int64
+
+// clientLanguage is the X-Client-Language the app sends the feed: the system
+// locale, POSIX form and without the encoding suffix.
+func clientLanguage() string {
+	for _, key := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
+		value := strings.TrimSpace(os.Getenv(key))
+		if value == "" || value == "C" || value == "POSIX" {
+			continue
+		}
+		if idx := strings.IndexAny(value, ".@"); idx >= 0 {
+			value = value[:idx]
+		}
+		return strings.ReplaceAll(value, "_", "-")
+	}
+	return "en-US"
+}
+
+// marketingTouchURL builds the feed URL. It hangs off /api/v1, not the plan
+// gateway's /api/v1/zcode-plan, so the test override is applied to the host.
+func (c *Client) marketingTouchURL(seq int) string {
+	base := strings.TrimSuffix(gatewayBaseURL, "/zcode-plan")
+	if override := strings.TrimSpace(c.catalogURL); override != "" {
+		base = strings.TrimRight(override, "/") + strings.TrimSuffix(gatewayPathPrefix, "/zcode-plan")
+	}
+	return fmt.Sprintf("%s%s?seq=%d", base, marketingTouchPath, seq)
+}
+
+// bannerPlanIDs reads the account's banner feed and returns the plan ids its
+// claim buttons carry, in feed order, each once.
+func (c *Client) bannerPlanIDs(ctx context.Context, accountID string, cred Credential) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.marketingTouchURL(int(marketingTouchSeq.Add(1)-1)), nil)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range defaultHeaders() {
+		req.Header.Set(k, v)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Client-Language", clientLanguage())
+	if token := zcodeJWT(cred); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if mid := deviceMid(accountID); mid != "" {
+		req.Header.Set("X-Device-Mid", mid)
+	}
+	body, status, err := doRaw(c.http, req)
+	if err != nil {
+		return nil, err
+	}
+	if status < 200 || status >= 300 {
+		return nil, fmt.Errorf("zcode marketing feed status=%d", status)
+	}
+	return parseBannerPlanIDs(body)
+}
+
+// parseBannerPlanIDs walks the feed for claim buttons. An unreadable feed is an
+// error, never an empty list: "the feed lists nothing" and "the feed did not
+// answer" must not read the same.
+func parseBannerPlanIDs(body []byte) ([]string, error) {
+	var payload struct {
+		Code int `json:"code"`
+		Data struct {
+			Deliveries []any `json:"deliveries"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("zcode marketing feed is not json: %w", err)
+	}
+	if payload.Code != 0 {
+		return nil, fmt.Errorf("zcode marketing feed code=%d", payload.Code)
+	}
+	out := make([]string, 0, len(payload.Data.Deliveries))
+	seen := map[string]bool{}
+	for _, delivery := range payload.Data.Deliveries {
+		walkClaimBanners(delivery, 0, func(planID string) {
+			if !seen[planID] {
+				seen[planID] = true
+				out = append(out, planID)
+			}
+		})
+	}
+	return out, nil
+}
+
+// walkClaimBanners calls visit for every claim action inside v, wherever the
+// banner keeps it.
+func walkClaimBanners(v any, depth int, visit func(string)) {
+	if depth > bannerWalkDepth {
+		return
+	}
+	switch node := v.(type) {
+	case []any:
+		for _, item := range node {
+			walkClaimBanners(item, depth+1, visit)
+		}
+	case map[string]any:
+		if node["type"] == claimBannerAction {
+			if args, ok := node["args"].(map[string]any); ok {
+				if planID, ok := args["plan_id"].(string); ok {
+					if trimmed := strings.TrimSpace(planID); trimmed != "" {
+						visit(trimmed)
+					}
+				}
+			}
+		}
+		for _, child := range node {
+			walkClaimBanners(child, depth+1, visit)
+		}
+	}
 }
 
 // weekendPlanCandidates builds the promo plan ids to try for a claim round:
@@ -182,8 +324,26 @@ func (c *Client) AutoClaimWeekend(ctx context.Context, accountID string) (provid
 		}
 	}
 
+	// The feed's own ids come first: they are what the app would claim, and a
+	// banner plan often has an id the date scheme cannot predict. A feed that
+	// does not read is noted and the date guesses carry the round.
+	feedNote := ""
+	candidates := weekendPlanCandidates(time.Now())
+	var feedIDs []string
+	if cred, err := c.resolvedCredential(ctx, accountID); err == nil {
+		if ids, feedErr := c.bannerPlanIDs(ctx, accountID, cred); feedErr != nil {
+			feedNote = feedErr.Error()
+		} else {
+			feedIDs = ids
+		}
+	}
+	if len(feedIDs) > 0 {
+		candidates = append(feedIDs, candidates...)
+		candidates = dedupePlanIDs(candidates)
+	}
+
 	var last autoClaimResult
-	for _, planID := range weekendPlanCandidates(time.Now()) {
+	for _, planID := range candidates {
 		result, err := c.claimPlan(ctx, accountID, planID, captchaParam)
 		if err != nil {
 			return result, err
@@ -220,13 +380,42 @@ func (c *Client) AutoClaimWeekend(ctx context.Context, accountID string) (provid
 		}
 	}
 	if last.PlanID != "" {
+		message := fmt.Sprintf("no weekend plan claimed this round (last code %d on %s)", last.Code, last.PlanID)
+		if feedNote != "" {
+			message += "; banner feed unread: " + feedNote
+		}
 		return providers.ClaimResult{
 			PlanID:  last.PlanID,
-			Message: fmt.Sprintf("no weekend plan claimed this round (last code %d on %s)", last.Code, last.PlanID),
+			Message: message,
 			ResetAt: fmt.Sprintf("code=%d", last.Code),
 		}, nil
 	}
-	return providers.ClaimResult{Message: "no weekend plan claimed this round", ResetAt: "code=1005"}, nil
+	message := "no weekend plan claimed this round"
+	if feedNote != "" {
+		message += "; banner feed unread: " + feedNote
+	}
+	return providers.ClaimResult{Message: message, ResetAt: "code=1005"}, nil
+}
+
+// dedupePlanIDs keeps the first appearance of each id, feed order first.
+func dedupePlanIDs(ids []string) []string {
+	seen := make(map[string]bool, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
+// WeekendClaimWindowOpen lets the maintenance sweep stay quiet outside the
+// promo window instead of posting a claim every ten minutes all week: upstream
+// answers those with 1005 and, once they pile up, a 429 with no body at all.
+func (c *Client) WeekendClaimWindowOpen(now time.Time) bool {
+	return WeekendClaimOpen(now)
 }
 
 // claimPlan is the raw billing/claim POST shared by the manual Claim flow and
@@ -299,6 +488,15 @@ func (c *Client) claimPlan(ctx context.Context, accountID, planID, captchaParam 
 		return providers.ClaimResult{Claimed: true, PlanID: planID, Message: firstNonEmptyString(payload.Msg, "claimed")}, nil
 	case payload.Code == weekendClaimCodeDup || strings.Contains(strings.ToLower(payload.Msg), "already claimed"):
 		return providers.ClaimResult{AlreadyClaimed: true, PlanID: planID, Message: firstNonEmptyString(payload.Msg, "already claimed")}, nil
+	case status == http.StatusTooManyRequests:
+		// Upstream pushes back when claims arrive faster than it likes (it
+		// answers with no body at all). Name it, stop the round, and let the
+		// next sweep — ten minutes on — come back.
+		return providers.ClaimResult{
+			PlanID:  planID,
+			Message: "claim rate limited by upstream (status=429); waiting for the next round",
+			ResetAt: "code=429",
+		}, nil
 	case payload.Code == 3007 || strings.Contains(strings.ToLower(payload.Msg), "captcha"):
 		return providers.ClaimResult{}, fmt.Errorf("zcode claim captcha failed: %s", firstNonEmptyString(payload.Msg, "captcha required"))
 	default:
