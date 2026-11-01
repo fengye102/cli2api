@@ -117,12 +117,18 @@ data: [DONE]
 
 // memStore implements Store for tests.
 type memStore struct {
-	items map[string][]byte
-	acc   map[string]string // accountID -> proxy
+	items   map[string][]byte
+	acc     map[string]string // accountID -> proxy
+	secrets map[string]string
 	// formats/observed record what the login path wrote, so tests can assert on
 	// the stored format and the reported status.
 	formats  map[string]string
 	observed map[string]string
+}
+
+func (s *memStore) GetSecret(_ context.Context, name string) (string, bool, error) {
+	value, found := s.secrets[name]
+	return value, found, nil
 }
 
 func (s *memStore) Get(ctx context.Context, id string) (accounts.Account, error) {

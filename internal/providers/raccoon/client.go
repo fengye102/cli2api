@@ -57,6 +57,13 @@ type Client struct {
 	// listener is the loopback callback listener, bound once and kept for the
 	// process lifetime so the redirect_uri stays stable (login.go).
 	listener net.Listener
+
+	// dial and reachedAt back the egress pre-flight in reach.go: the deployment
+	// cannot reach the site directly, so a round with no proxy has to say so
+	// before the operator spends a browser authorization on it.
+	dial      func(context.Context, string, string) (net.Conn, error)
+	reachMu   sync.Mutex
+	reachedAt map[string]time.Time
 }
 
 func NewClient(store Store) *Client {

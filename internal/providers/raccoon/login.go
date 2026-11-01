@@ -186,6 +186,12 @@ func (c *Client) buildAuthorizeURL(state, redirect string) string {
 
 // StartLogin opens a round and returns the URL the console opens.
 func (c *Client) StartLogin(ctx context.Context, accountID string) (providers.LoginSession, error) {
+	// Refuse before the operator authorizes anything: with no proxy configured
+	// the exchange could never complete, and finding that out after the browser
+	// round wastes the one thing an SMS-free login costs - their time.
+	if err := c.egressReachable(ctx, accountID); err != nil {
+		return providers.LoginSession{}, err
+	}
 	state, err := newLoginState()
 	if err != nil {
 		return providers.LoginSession{}, err
@@ -241,6 +247,12 @@ func (c *Client) CompleteLogin(ctx context.Context, accountID, callbackURL strin
 	}
 	code, err := parseCallbackCode(callbackURL, round.state)
 	if err != nil {
+		return err
+	}
+	// Same check as StartLogin, for a round that was started before the route
+	// was fixed: without it the exchange would spend thirty seconds learning
+	// that the host is unreachable.
+	if err := c.egressReachable(ctx, accountID); err != nil {
 		return err
 	}
 	credential, err := c.exchangeAuthorizationCode(ctx, accountID, code)
