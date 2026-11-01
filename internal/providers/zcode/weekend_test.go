@@ -183,6 +183,44 @@ func TestAutoClaimWeekendTriesCandidatesUntilClaim(t *testing.T) {
 	}
 }
 
+// TestAutoClaimWeekendEmptyBodyIsNotAClaim covers the refusal shape the live
+// sweep hit: a 2xx with an empty body. It unmarshals to code 0, which is also
+// the success code, so without an evidence check the sweep would report a claim
+// it never got and stop for the whole weekend. The message must also say what
+// happened instead of leaving the log line ending in a bare colon.
+func TestAutoClaimWeekendEmptyBodyIsNotAClaim(t *testing.T) {
+	var claims int
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/billing/balance"):
+			_, _ = w.Write([]byte(`{"code":0,"data":{"plans":[],"balances":[]}}`))
+		case strings.HasSuffix(r.URL.Path, "/billing/claim"):
+			claims++
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	c := weekendTestClient(t, handler)
+
+	result, err := c.AutoClaimWeekend(context.Background(), "acc1")
+	if err != nil {
+		t.Fatalf("AutoClaimWeekend: %v", err)
+	}
+	if result.Claimed {
+		t.Fatalf("an empty 2xx body must not read as a claim: %+v", result)
+	}
+	if claims != 1 {
+		t.Fatalf("claims=%d want 1 (the round stops on an unlisted code)", claims)
+	}
+	if strings.TrimSpace(result.Message) == "" {
+		t.Fatal("empty message would leave the sweep log line ending in a colon")
+	}
+	if !strings.Contains(result.Message, "empty upstream body") {
+		t.Fatalf("message=%q want it to name the empty body", result.Message)
+	}
+}
+
 // TestAutoClaimWeekendStopsOnAlreadyClaimed covers 1003 on the first
 // candidate: the sweep must report AlreadyClaimed and not try the remaining
 // ids.

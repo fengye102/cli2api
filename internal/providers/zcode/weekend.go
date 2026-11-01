@@ -211,10 +211,21 @@ func (c *Client) AutoClaimWeekend(ctx context.Context, accountID string) (provid
 		case weekendClaimCodeDup:
 			return providers.ClaimResult{AlreadyClaimed: true, PlanID: planID, Message: result.Message}, nil
 		default:
+			// Unknown or unlisted code: surface it rather than loop, and never
+			// log an empty message.
+			if strings.TrimSpace(result.Message) == "" {
+				result.Message = fmt.Sprintf("plan %s refused (code=%d)", planID, last.Code)
+			}
 			return result, nil
 		}
 	}
-	_ = last
+	if last.PlanID != "" {
+		return providers.ClaimResult{
+			PlanID:  last.PlanID,
+			Message: fmt.Sprintf("no weekend plan claimed this round (last code %d on %s)", last.Code, last.PlanID),
+			ResetAt: fmt.Sprintf("code=%d", last.Code),
+		}, nil
+	}
 	return providers.ClaimResult{Message: "no weekend plan claimed this round", ResetAt: "code=1005"}, nil
 }
 
@@ -276,18 +287,32 @@ func (c *Client) claimPlan(ctx context.Context, accountID, planID, captchaParam 
 	}
 	_ = json.Unmarshal(respBody, &payload)
 
+	// An empty 2xx body unmarshals to code 0, which is also the success code: a
+	// gateway hiccup would then read as "claimed" and the sweep would stop for
+	// the whole weekend believing the account holds a plan it never got. A real
+	// success names the plan (or at least says something), so require evidence.
+	claimedWithEvidence := payload.Code == weekendClaimCodeClaimed &&
+		(payload.Data.Plan.PlanID != "" || strings.TrimSpace(payload.Msg) != "")
+
 	switch {
-	case status >= 200 && status < 300 && payload.Code == weekendClaimCodeClaimed:
+	case status >= 200 && status < 300 && claimedWithEvidence:
 		return providers.ClaimResult{Claimed: true, PlanID: planID, Message: firstNonEmptyString(payload.Msg, "claimed")}, nil
 	case payload.Code == weekendClaimCodeDup || strings.Contains(strings.ToLower(payload.Msg), "already claimed"):
 		return providers.ClaimResult{AlreadyClaimed: true, PlanID: planID, Message: firstNonEmptyString(payload.Msg, "already claimed")}, nil
 	case payload.Code == 3007 || strings.Contains(strings.ToLower(payload.Msg), "captcha"):
 		return providers.ClaimResult{}, fmt.Errorf("zcode claim captcha failed: %s", firstNonEmptyString(payload.Msg, "captcha required"))
 	default:
-		// Business failure with the raw code embedded for the sweep.
+		// Business failure with the raw code embedded for the sweep. An empty
+		// body is a real answer here (upstream sometimes refuses a claim with
+		// nothing at all), so the message names the status instead of leaving
+		// the sweep's log line ending in a bare colon.
+		message := firstNonEmptyString(payload.Msg, strings.TrimSpace(string(respBody)))
+		if message == "" {
+			message = fmt.Sprintf("empty upstream body (status=%d)", status)
+		}
 		return providers.ClaimResult{
 			PlanID:  planID,
-			Message: firstNonEmptyString(payload.Msg, strings.TrimSpace(string(respBody))),
+			Message: message,
 			ResetAt: fmt.Sprintf("code=%d", payload.Code),
 		}, nil
 	}
