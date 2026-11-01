@@ -212,41 +212,50 @@ func (c *Client) ChatNonStream(ctx context.Context, accountID string, req transl
 	if err != nil {
 		return providers.ChatOutcome{}, err
 	}
-	httpReq, resolved, err := c.chatRequest(ctx, accountID, cred, req)
-	if err != nil {
-		return providers.ChatOutcome{}, err
-	}
-	resp, err := c.http.Do(httpReq)
-	if err != nil {
-		return providers.ChatOutcome{}, err
-	}
-	defer resp.Body.Close()
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
-	if readErr != nil {
-		return providers.ChatOutcome{}, fmt.Errorf("read zcode stream: %w", readErr)
-	}
-	if resp.StatusCode >= 300 || resp.StatusCode < 200 {
-		c.noteRiskResponse(resp.StatusCode, body)
-		return providers.ChatOutcome{}, classifiedHTTPError(resp.StatusCode, body)
-	}
-	if classified, ok := zcodeEnvelopeError(resp.StatusCode, body); ok {
-		c.noteRiskResponse(classified.Status, body)
-		return providers.ChatOutcome{}, &providers.Error{
-			Kind:    classified.Kind,
-			Status:  classified.Status,
-			Message: classified.Message,
+	for attempt := 0; ; attempt++ {
+		httpReq, resolved, err := c.chatRequest(ctx, accountID, cred, req)
+		if err != nil {
+			return providers.ChatOutcome{}, err
 		}
+		resp, err := c.http.Do(httpReq)
+		if err != nil {
+			return providers.ChatOutcome{}, err
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+		resp.Body.Close()
+		if readErr != nil {
+			return providers.ChatOutcome{}, fmt.Errorf("read zcode stream: %w", readErr)
+		}
+		// A queued turn is re-sent on the same account: the credential, the
+		// captcha and the plan are all fine, the egress is just busy.
+		if retry, rerr := c.retryQueuedTurn(ctx, attempt, resp.StatusCode, body); rerr != nil {
+			return providers.ChatOutcome{}, rerr
+		} else if retry {
+			continue
+		}
+		if resp.StatusCode >= 300 || resp.StatusCode < 200 {
+			c.noteRiskResponse(resp.StatusCode, body)
+			return providers.ChatOutcome{}, classifiedHTTPError(resp.StatusCode, body)
+		}
+		if classified, ok := zcodeEnvelopeError(resp.StatusCode, body); ok {
+			c.noteRiskResponse(classified.Status, body)
+			return providers.ChatOutcome{}, &providers.Error{
+				Kind:    classified.Kind,
+				Status:  classified.Status,
+				Message: classified.Message,
+			}
+		}
+		aggregate, err := Aggregate(bytes.NewReader(body))
+		if err != nil {
+			return providers.ChatOutcome{}, err
+		}
+		outcome, err := outcomeFromAggregate(aggregate)
+		if err != nil {
+			return providers.ChatOutcome{}, err
+		}
+		outcome.ReasoningLevel = resolved.ReasoningLevel
+		return outcome, nil
 	}
-	aggregate, err := Aggregate(bytes.NewReader(body))
-	if err != nil {
-		return providers.ChatOutcome{}, err
-	}
-	outcome, err := outcomeFromAggregate(aggregate)
-	if err != nil {
-		return providers.ChatOutcome{}, err
-	}
-	outcome.ReasoningLevel = resolved.ReasoningLevel
-	return outcome, nil
 }
 
 // ChatStream issues the request and returns the rewritten OpenAI SSE body.
@@ -257,41 +266,53 @@ func (c *Client) ChatStream(ctx context.Context, accountID string, req translate
 	if err != nil {
 		return nil, providers.ResolvedChat{}, err
 	}
-	httpReq, resolved, err := c.chatRequest(ctx, accountID, cred, req)
-	if err != nil {
-		return nil, providers.ResolvedChat{}, err
-	}
-	resp, err := c.http.Do(httpReq)
-	if err != nil {
-		return nil, providers.ResolvedChat{}, err
-	}
-	if resp.StatusCode >= 300 || resp.StatusCode < 200 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		resp.Body.Close()
-		c.noteRiskResponse(resp.StatusCode, body)
-		return nil, providers.ResolvedChat{}, classifiedHTTPError(resp.StatusCode, body)
-	}
-	// The plan gateway reports a spent entitlement or a risk block as a 2xx
-	// {"code":N,"msg":...} JSON body rather than as a status code. It also
-	// labels it application/json, while a real turn streams text/event-stream,
-	// so the content type alone decides whether a body is worth reading: a
-	// JSON-labelled 2xx is an error envelope, never a stream. Returning it as
-	// a stream would hand the caller an empty turn that no account cooldown
-	// ever sees — the agent then reports "returned no output".
-	if !streamIsEventStream(resp.Header) {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		resp.Body.Close()
-		if classified, ok := zcodeEnvelopeError(resp.StatusCode, body); ok {
-			c.noteRiskResponse(classified.Status, body)
-			return nil, providers.ResolvedChat{}, &providers.Error{
-				Kind:    classified.Kind,
-				Status:  classified.Status,
-				Message: classified.Message,
-			}
+	for attempt := 0; ; attempt++ {
+		httpReq, resolved, err := c.chatRequest(ctx, accountID, cred, req)
+		if err != nil {
+			return nil, providers.ResolvedChat{}, err
 		}
-		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp, err := c.http.Do(httpReq)
+		if err != nil {
+			return nil, providers.ResolvedChat{}, err
+		}
+		if resp.StatusCode >= 300 || resp.StatusCode < 200 {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
+			if retry, rerr := c.retryQueuedTurn(ctx, attempt, resp.StatusCode, body); rerr != nil {
+				return nil, providers.ResolvedChat{}, rerr
+			} else if retry {
+				continue
+			}
+			c.noteRiskResponse(resp.StatusCode, body)
+			return nil, providers.ResolvedChat{}, classifiedHTTPError(resp.StatusCode, body)
+		}
+		// The plan gateway reports a spent entitlement or a risk block as a 2xx
+		// {"code":N,"msg":...} JSON body rather than as a status code. It also
+		// labels it application/json, while a real turn streams text/event-stream,
+		// so the content type alone decides whether a body is worth reading: a
+		// JSON-labelled 2xx is an error envelope, never a stream. Returning it as
+		// a stream would hand the caller an empty turn that no account cooldown
+		// ever sees — the agent then reports "returned no output".
+		if !streamIsEventStream(resp.Header) {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
+			if classified, ok := zcodeEnvelopeError(resp.StatusCode, body); ok {
+				if retry, rerr := c.retryQueuedTurn(ctx, attempt, classified.Status, body); rerr != nil {
+					return nil, providers.ResolvedChat{}, rerr
+				} else if retry {
+					continue
+				}
+				c.noteRiskResponse(classified.Status, body)
+				return nil, providers.ResolvedChat{}, &providers.Error{
+					Kind:    classified.Kind,
+					Status:  classified.Status,
+					Message: classified.Message,
+				}
+			}
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		return rewriteChatStream(resp), resolved, nil
 	}
-	return rewriteChatStream(resp), resolved, nil
 }
 
 func outcomeFromAggregate(aggregate map[string]any) (providers.ChatOutcome, error) {
@@ -477,6 +498,12 @@ func Classify(status int, body string) providers.ClassifiedError {
 	}
 	if zcodeQuotaText(text) {
 		return providers.ClassifiedError{Kind: accounts.KindQuota, Status: firstNonEmptyStatus(status, 402), Message: message}
+	}
+	// The retry loop already re-sends a queued turn; if it still lands here the
+	// queue outlasted its attempts, and the message must say "busy egress"
+	// rather than leave the operator guessing between quota and auth.
+	if queueNoticeBody([]byte(body)) {
+		return queueClassified(status, body)
 	}
 	// Anthropic error envelope.
 	var anthropicErr struct {
