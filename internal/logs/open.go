@@ -105,27 +105,37 @@ func (r *RequestRecorder) BindRequest(requestID, accountID string) {
 	item.BoundAt = now
 }
 
-// trackFinish drops the request and queues a completion for the panel.
+// trackFinish records how a request ended — and does nothing to the in-flight
+// set when it has not ended. A streaming request is written twice: once as
+// "streaming" the moment the upstream head arrives (so the console can show a
+// request in progress) and once with its terminal status when the relay is
+// done. The first of those must not take the request off the panel, or a
+// long stream would look idle for its whole duration.
 func (r *RequestRecorder) trackFinish(log accounts.RequestLog) {
 	if r == nil {
 		return
 	}
 	now := time.Now()
-	r.openMu.Lock()
-	defer r.openMu.Unlock()
-	accountID := log.AccountID
-	if item, ok := r.open[log.ID]; ok {
-		if item.AccountID != "" {
-			accountID = item.AccountID
-		}
-		delete(r.open, log.ID)
-	}
 	status := log.Status
 	if status == "" {
 		// A finished request whose status never got set: report it as done
 		// rather than leave the panel waiting for a resolution.
 		status = accounts.RequestStatusOK
 	}
+	r.openMu.Lock()
+	defer r.openMu.Unlock()
+	item, tracked := r.open[log.ID]
+	accountID := log.AccountID
+	if tracked && item.AccountID != "" {
+		accountID = item.AccountID
+	}
+	if status == accounts.RequestStatusStarted || status == accounts.RequestStatusStreaming {
+		if tracked {
+			item.Status = status
+		}
+		return
+	}
+	delete(r.open, log.ID)
 	if len(r.completions) >= maxPendingCompletions {
 		r.completions = r.completions[1:]
 	}

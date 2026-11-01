@@ -82,6 +82,35 @@ func TestLiveTracksSelectingThenBoundThenDone(t *testing.T) {
 	}
 }
 
+// TestLiveKeepsAStreamingRequestOnThePanel is the bug this projection first
+// shipped with: a stream is written twice, the first time as "streaming" when
+// the upstream head arrives. Treating that as a finish erased every long stream
+// from the panel for exactly the time it was running.
+func TestLiveKeepsAStreamingRequestOnThePanel(t *testing.T) {
+	recorder := newTestRecorder(t)
+	recorder.Start(accounts.RequestLog{ID: "s1", RequestedModel: "GLM-5.3-Flash"})
+	recorder.BindRequest("s1", "acc_a")
+	recorder.Finish(accounts.RequestLog{ID: "s1", AccountID: "acc_a", Status: accounts.RequestStatusStreaming})
+	if got := recorder.OpenRequests(); got != 1 {
+		t.Fatalf("a streaming request must stay on the panel, open=%d", got)
+	}
+	bound := recorder.BoundRequests()
+	if len(bound) != 1 || bound[0].Status != accounts.RequestStatusStreaming {
+		t.Fatalf("bound = %+v", bound)
+	}
+	if done := recorder.DrainRecentCompletions(); done != nil {
+		t.Fatalf("a stream that is still running is not a completion: %+v", done)
+	}
+	// The terminal write is what takes it off.
+	recorder.Finish(accounts.RequestLog{ID: "s1", AccountID: "acc_a", Status: accounts.RequestStatusOK})
+	if got := recorder.OpenRequests(); got != 0 {
+		t.Fatalf("terminal finish left the request open: %d", got)
+	}
+	if done := recorder.DrainRecentCompletions(); len(done) != 1 || done[0].Status != accounts.RequestStatusOK {
+		t.Fatalf("completions = %+v", done)
+	}
+}
+
 // TestLiveBindWithoutStartIsIgnored keeps a stray bind from inventing work.
 func TestLiveBindWithoutStartIsIgnored(t *testing.T) {
 	recorder := newTestRecorder(t)
