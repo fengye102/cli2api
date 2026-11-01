@@ -220,11 +220,16 @@ func (h *Handler) HandleAccountByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, payload)
 		return
 	}
-	var callbackURL, loginMethod string
+	var callbackURL, loginMethod, loginPhone, loginCaptcha string
 	if action == "login/device" || action == "login/callback" {
 		var input struct {
 			CallbackURL string `json:"callback_url"`
 			LoginMethod string `json:"login_method"`
+			// Phone and Captcha are the optional answers some login rounds
+			// need (domestic SMS login, an Aliyun proof). They are forwarded
+			// untouched; whether they mean anything is the provider's call.
+			Phone   string `json:"phone"`
+			Captcha string `json:"captcha"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxConsoleBodyBytes)).Decode(&input); err != nil && err != io.EOF {
 			writeErr(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -232,6 +237,8 @@ func (h *Handler) HandleAccountByID(w http.ResponseWriter, r *http.Request) {
 		}
 		callbackURL = input.CallbackURL
 		loginMethod = input.LoginMethod
+		loginPhone = input.Phone
+		loginCaptcha = input.Captcha
 	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -240,6 +247,7 @@ func (h *Handler) HandleAccountByID(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.Control.Accounts.Admin(r.Context(), control.AccountAdminAction{
 		AccountID: accountID, Action: action, Method: r.Method, ContentType: r.Header.Get("Content-Type"), Body: body, CallbackURL: callbackURL, LoginMethod: loginMethod,
+		LoginPhone: loginPhone, LoginCaptcha: loginCaptcha,
 	})
 	if err != nil {
 		writeOperationError(w, err)

@@ -232,7 +232,12 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
     activeOption?.provider === 'zcode' ||
     activeOption?.provider === 'codearts' ||
     activeOption?.provider === 'raccoon' ||
-    activeOption?.provider === 'antigravity'
+    activeOption?.provider === 'antigravity' ||
+    // AutoClaw signs in on the account plane: the domestic build collects a
+    // phone number and an SMS code here, the overseas build returns a callback
+    // URL. Both end with a paste.
+    activeOption?.provider === 'autoclaw' ||
+    activeOption?.provider === 'autoclaw-intl'
   const busy = phase === 'busy' || phase === 'polling'
   const settingsLocked = Boolean(createdId.current) || busy
   const isDone = phase === 'done'
@@ -416,7 +421,17 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
       setPhase('busy')
       const id = await ensureAccount()
       stopPolling()
-      await completeLoginCallback(id, pasted)
+      const output = await completeLoginCallback(id, pasted)
+      const login = output?.login || {}
+      if (login.status && login.status !== 'ok') {
+        // The round is not finished yet (the domestic SMS login asks for the
+        // phone number and then the code in this same box). Stay open and show
+        // what the provider wants next instead of claiming the account is ready.
+        setPhase('idle')
+        setMessage(login.message || t('wizardWaitingBrowser'))
+        setCallbackUrl('')
+        return
+      }
       setPhase('done')
       setMessage(t('wizardAccountReady'))
       onAdded()

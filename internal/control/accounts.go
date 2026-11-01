@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/caigee-cmd/cli2api/internal/accounts"
 	"github.com/caigee-cmd/cli2api/internal/providers"
@@ -275,6 +276,24 @@ type AccountAdminAction struct {
 	Body        []byte
 	CallbackURL string
 	LoginMethod string
+	// LoginPhone / LoginCaptcha are the extra answers a login round may need:
+	// a phone number for a domestic SMS login, or an already-solved captcha
+	// proof. They reach the provider through providers.WithLoginInput.
+	LoginPhone   string
+	LoginCaptcha string
+}
+
+// loginContext attaches the operator's answers for a login round.
+func (input AccountAdminAction) loginContext(ctx context.Context) context.Context {
+	if strings.TrimSpace(input.LoginMethod) == "" && strings.TrimSpace(input.LoginPhone) == "" &&
+		strings.TrimSpace(input.LoginCaptcha) == "" {
+		return ctx
+	}
+	return providers.WithLoginInput(ctx, providers.LoginInput{
+		Method:  input.LoginMethod,
+		Phone:   input.LoginPhone,
+		Captcha: input.LoginCaptcha,
+	})
 }
 
 type AccountAdminResult struct {
@@ -321,7 +340,10 @@ func (a *Accounts) Admin(ctx context.Context, input AccountAdminAction) (Account
 			if err := a.prepareLogin(ctx, account, input.LoginMethod); err != nil {
 				return AccountAdminResult{}, err
 			}
-			session, err := a.StartLogin(ctx, input.AccountID)
+			// The phone/captcha answers ride on the context: the login
+			// interface stays provider-neutral, and a provider package cannot
+			// import this one to receive them any other way.
+			session, err := a.StartLogin(input.loginContext(ctx), input.AccountID)
 			if err != nil {
 				return AccountAdminResult{}, err
 			}
@@ -345,8 +367,17 @@ func (a *Accounts) Admin(ctx context.Context, input AccountAdminAction) (Account
 		if !inProcess {
 			return AccountAdminResult{}, operationError("not_found", "unknown account action")
 		}
+		ctx = input.loginContext(ctx)
 		if err := a.CompleteLogin(ctx, input.AccountID, input.CallbackURL); err != nil {
 			return AccountAdminResult{}, err
+		}
+		// A pasted value does not always finish the round: the domestic SMS
+		// login takes the phone first and the code second, so ask the provider
+		// whether it is done before telling the console the account is ready.
+		// A provider that keeps no round state answers (false, "") - that is a
+		// completed login, not a pending one.
+		if done, message, err := a.PollLogin(ctx, input.AccountID); err == nil && !done && message != "" {
+			return AccountAdminResult{Kind: "login_complete", LoginStatus: "pending", LoginMsg: message}, nil
 		}
 		return AccountAdminResult{Kind: "login_complete", LoginStatus: "ok", LoginMsg: "login complete"}, nil
 	case "login/pat":

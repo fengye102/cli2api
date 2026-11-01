@@ -27,12 +27,19 @@ export function fetchLoginStatus(accountId?: string) {
   return api<{ login?: any }>(`/api/accounts/${encodeURIComponent(accountId)}/login/status`)
 }
 
+// completeLoginCallback hands the pasted value to the provider. The answer says
+// whether that finished the round: a domestic AutoClaw login takes the phone
+// number first and the SMS code second, so "pending" is a normal answer here and
+// the caller must keep the dialog open.
 export function completeLoginCallback(accountId: string, callbackUrl: string) {
   if (!accountId) throw new Error('account id required')
-  return api(`/api/accounts/${encodeURIComponent(accountId)}/login/callback`, {
-    method: 'POST',
-    body: JSON.stringify({ callback_url: callbackUrl }),
-  })
+  return api<{ login?: { status?: string; message?: string } }>(
+    `/api/accounts/${encodeURIComponent(accountId)}/login/callback`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ callback_url: callbackUrl }),
+    },
+  )
 }
 
 export function loginWithPat(pat: string, accountId?: string) {

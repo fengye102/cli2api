@@ -484,10 +484,12 @@ var Meta = ProviderDescriptor{
 // and Raccoon). CN keeps the historical id "autoclaw"; the overseas build is
 // "autoclaw-intl".
 //
-// No Login capability: the desktop OAuth round needs a real desktop (a loopback
-// listener on one of four whitelisted ports plus an Aliyun captcha in a
-// browser), which a server cannot provide. Accounts are added by pasting the
-// desktop credential JSON, which is what the client's own auth.json contains.
+// Login is the account plane's own round, not the desktop client's: CN signs in
+// with a phone number and an SMS code, Intl with the OAuth redirect the desktop
+// client uses. Neither finishes on a socket here (the operator's browser is not
+// on this machine), so the round is closed with a pasted callback URL / code.
+// This is also the only way in for a Windows install whose auth.json holds a
+// DPAPI blob, which cannot be opened off that machine.
 var AutoClaw = ProviderDescriptor{
 	ID:                "autoclaw",
 	Label:             "AutoClaw 国内版",
@@ -496,7 +498,7 @@ var AutoClaw = ProviderDescriptor{
 	CredentialFormats: []string{"autoclaw-credential-v1"},
 	Capabilities: ProviderCapabilities{
 		Chat: true, Stream: true, Tools: true, Images: true, Reasoning: true,
-		ModelCatalog: true, Usage: true, Login: false, BrowserLogin: false,
+		ModelCatalog: true, Usage: true, Login: true, BrowserLogin: true,
 		PATLogin: true, ImportExport: true,
 	},
 	Regions: []RegionDescriptor{
@@ -521,7 +523,7 @@ var AutoClawIntl = ProviderDescriptor{
 	CredentialFormats: []string{"autoclaw-intl-credential-v1"},
 	Capabilities: ProviderCapabilities{
 		Chat: true, Stream: true, Tools: true, Images: true, Reasoning: true,
-		ModelCatalog: true, Usage: true, Login: false, BrowserLogin: false,
+		ModelCatalog: true, Usage: true, Login: true, BrowserLogin: true,
 		PATLogin: true, ImportExport: true,
 	},
 	Regions: []RegionDescriptor{

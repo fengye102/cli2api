@@ -255,14 +255,29 @@ export function AccountsPage() {
       setNoteById((current) => ({ ...current, [id]: t('wizardCallbackPh') }))
       return
     }
+    let pendingNote = ''
     const ok = await run(id, 'callback', async () => {
       setNoteById((current) => ({ ...current, [id]: t('wizardStartingSession') }))
-      await completeLoginCallback(id, pasted)
+      const output = await completeLoginCallback(id, pasted)
+      const login = output?.login || {}
+      if (login.status && login.status !== 'ok') {
+        // A round that needs a second answer (domestic SMS login: phone, then
+        // code) is not a failure - show the next step and keep the row open.
+        pendingNote = login.message || ''
+        return
+      }
       setCallbackById((current) => ({ ...current, [id]: '' }))
       await reloadAccounts(false)
       await refreshAccountsInBatches([id])
     })
     if (ok) {
+      if (pendingNote) {
+        // Keep the panel and the paste box open: the provider is waiting for
+        // the next answer (phone number, then SMS code).
+        setCallbackById((current) => ({ ...current, [id]: '' }))
+        setNoteById((current) => ({ ...current, [id]: pendingNote }))
+        return
+      }
       setAuthPanelId((current) => (current === id ? null : current))
       setNoteById((current) => ({ ...current, [id]: '' }))
     }

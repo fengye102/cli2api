@@ -57,6 +57,12 @@ type Client struct {
 	refreshMu sync.Mutex
 	refreshed map[string]time.Time
 
+	// logins holds the in-memory state of interactive login rounds. It is
+	// deliberately not persisted: a half-finished round is worth nothing after
+	// a restart, and the operator starts over.
+	loginMu sync.Mutex
+	logins  map[string]loginAttempt
+
 	nowFn func() time.Time
 }
 

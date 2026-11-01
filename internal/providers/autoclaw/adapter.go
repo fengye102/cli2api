@@ -10,10 +10,12 @@ import (
 
 // Adapter wires the capability surface for this region.
 //
-// There is no browser login: the desktop client's OAuth round needs a real
-// desktop environment (a loopback listener on one of four whitelisted ports
-// plus an Aliyun captcha in the browser), which a server cannot provide. Accounts
-// are added by pasting the desktop credential JSON, so Login stays nil.
+// Login is wired for both builds. Neither round finishes on a loopback socket
+// here - the operator's browser is not on this machine - so the console shows
+// the authorize URL (Intl) or collects the phone and code (CN) and the round is
+// closed with a pasted value. That is exactly what LoginCompleter is for, and
+// it is why an account no longer has to be created by importing the desktop
+// client's auth.json.
 func (c *Client) Adapter() providers.Adapter {
 	return providers.Adapter{
 		ID:           c.region.ProviderID(),
@@ -23,6 +25,7 @@ func (c *Client) Adapter() providers.Adapter {
 		Classifier:   classifier{},
 		ImportExport: importer{region: c.region},
 		Prober:       c,
+		Login:        loginFlow{client: c},
 	}
 }
 

@@ -986,21 +986,29 @@ func TestNewlineOnlyChunksAreDropped(t *testing.T) {
 	}
 }
 
-// TestAdapterSurface pins the capability set: no Login, because the desktop
-// OAuth round cannot run on a server.
+// TestAdapterSurface pins the capability set. Login is advertised now that the
+// account plane's own round is implemented; what matters is that the same object
+// satisfies both halves of it, or the console would offer a login it cannot
+// finish (StartLogin without CompleteLogin is a dead end when the operator's
+// browser is not on this machine).
 func TestAdapterSurface(t *testing.T) {
-	client := NewClient(&memoryStore{}, RegionCN)
-	adapter := client.Adapter()
-	if adapter.ID != ProviderID {
-		t.Fatalf("adapter id = %q", adapter.ID)
-	}
-	for _, capability := range []string{"credential", "chat", "models", "classifier", "import_export", "prober"} {
-		if !adapter.Supports(capability) {
-			t.Fatalf("adapter missing capability %q", capability)
+	for _, region := range []Region{RegionCN, RegionIntl} {
+		client := NewClient(&memoryStore{}, region)
+		adapter := client.Adapter()
+		if adapter.ID != region.ProviderID() {
+			t.Fatalf("adapter id = %q, want %q", adapter.ID, region.ProviderID())
 		}
-	}
-	if adapter.Supports("login") {
-		t.Fatal("autoclaw must not advertise a server-side login flow")
+		for _, capability := range []string{"credential", "chat", "models", "classifier", "import_export", "prober", "login"} {
+			if !adapter.Supports(capability) {
+				t.Fatalf("%s: adapter missing capability %q", region, capability)
+			}
+		}
+		if adapter.Login == nil {
+			t.Fatalf("%s: login capability has no implementation", region)
+		}
+		if _, ok := adapter.Login.(providers.LoginCompleter); !ok {
+			t.Fatalf("%s: login must also accept a pasted answer", region)
+		}
 	}
 }
 
