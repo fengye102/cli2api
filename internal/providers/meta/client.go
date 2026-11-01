@@ -2,6 +2,7 @@ package meta
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -85,10 +86,20 @@ func (c *Client) httpClient(ctx context.Context, accountID string) (*http.Client
 		return nil, err
 	}
 	if accountID != "" {
-		if account, accErr := c.store.Get(ctx, accountID); accErr == nil {
+		account, accErr := c.store.Get(ctx, accountID)
+		switch {
+		case accErr == nil:
 			if p := strings.TrimSpace(account.ProxyURL); p != "" {
 				proxyURL = p
 			}
+		case errors.Is(accErr, accounts.ErrAccountNotFound):
+			// A login can start before the account's saved row is readable
+			// here; there is nothing to prefer over the global proxy.
+		default:
+			// A store failure is not "no proxy": falling back to the global
+			// one would quietly send this account's traffic out of the wrong
+			// egress. Say so instead.
+			return nil, fmt.Errorf("meta: resolve proxy for account %s: %w", accountID, accErr)
 		}
 	}
 	transport, err := c.transports.Get(proxyURL)
