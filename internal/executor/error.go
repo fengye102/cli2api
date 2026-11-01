@@ -148,6 +148,11 @@ func ClassifyError(err error) Classified {
 	if providerErr.Message != "" {
 		classified.Message = providerErr.Message
 	}
+	if providerErr.Model != "" {
+		// The provider narrowed the failure to one model: cool that model and
+		// leave the rest of the account serving.
+		classified.Model = providerErr.Model
+	}
 	switch providerErr.Code {
 	case providers.CodeUpstreamQueued:
 		// Model-level queue: the account is fine and another account would

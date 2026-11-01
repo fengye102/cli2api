@@ -156,6 +156,9 @@ type ClassifiedError struct {
 	Kind    string `json:"kind"`
 	Status  int    `json:"status"`
 	Message string `json:"message"`
+	// Model narrows the reading to one model where the provider can tell (a
+	// per-model bucket, a single model's queue). Empty means account-wide.
+	Model string `json:"model,omitempty"`
 }
 
 // ImportExporter validates and exports provider-specific credential JSON.
@@ -243,6 +246,11 @@ type Error struct {
 	Code       string
 	Type       string
 	RetryAfter time.Duration
+	// Model narrows the failure to one model, so the executor cools that model
+	// instead of the whole account. Set it only when the upstream's refusal is
+	// about that model alone — a per-model bucket or a single model's queue;
+	// leaving it empty keeps the account-wide reading.
+	Model string
 }
 
 func (e *Error) Error() string {

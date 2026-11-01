@@ -235,14 +235,15 @@ func (c *Client) ChatNonStream(ctx context.Context, accountID string, req transl
 		}
 		if resp.StatusCode >= 300 || resp.StatusCode < 200 {
 			c.noteRiskResponse(resp.StatusCode, body)
-			return providers.ChatOutcome{}, classifiedHTTPError(resp.StatusCode, body)
+			return providers.ChatOutcome{}, classifiedHTTPError(req.Model, resp.StatusCode, body)
 		}
-		if classified, ok := zcodeEnvelopeError(resp.StatusCode, body); ok {
+		if classified, ok := zcodeEnvelopeError(req.Model, resp.StatusCode, body); ok {
 			c.noteRiskResponse(classified.Status, body)
 			return providers.ChatOutcome{}, &providers.Error{
 				Kind:    classified.Kind,
 				Status:  classified.Status,
 				Message: classified.Message,
+				Model:   classified.Model,
 			}
 		}
 		aggregate, err := Aggregate(bytes.NewReader(body))
@@ -284,7 +285,7 @@ func (c *Client) ChatStream(ctx context.Context, accountID string, req translate
 				continue
 			}
 			c.noteRiskResponse(resp.StatusCode, body)
-			return nil, providers.ResolvedChat{}, classifiedHTTPError(resp.StatusCode, body)
+			return nil, providers.ResolvedChat{}, classifiedHTTPError(req.Model, resp.StatusCode, body)
 		}
 		// The plan gateway reports a spent entitlement or a risk block as a 2xx
 		// {"code":N,"msg":...} JSON body rather than as a status code. It also
@@ -296,7 +297,7 @@ func (c *Client) ChatStream(ctx context.Context, accountID string, req translate
 		if !streamIsEventStream(resp.Header) {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 			resp.Body.Close()
-			if classified, ok := zcodeEnvelopeError(resp.StatusCode, body); ok {
+			if classified, ok := zcodeEnvelopeError(req.Model, resp.StatusCode, body); ok {
 				if retry, rerr := c.retryQueuedTurn(ctx, attempt, classified.Status, body); rerr != nil {
 					return nil, providers.ResolvedChat{}, rerr
 				} else if retry {
@@ -307,6 +308,7 @@ func (c *Client) ChatStream(ctx context.Context, accountID string, req translate
 					Kind:    classified.Kind,
 					Status:  classified.Status,
 					Message: classified.Message,
+					Model:   classified.Model,
 				}
 			}
 			resp.Body = io.NopCloser(bytes.NewReader(body))
@@ -360,8 +362,9 @@ func outcomeFromAggregate(aggregate map[string]any) (providers.ChatOutcome, erro
 
 // classifiedHTTPError maps an upstream non-2xx to a providers.Error using
 // the shared taxonomy. The body is passed through verbatim in Message so
-// operators can see the upstream's actual reason (per spec §1.2).
-func classifiedHTTPError(status int, body []byte) error {
+// operators can see the upstream's actual reason (per spec §1.2). model is the
+// model the turn asked for; it only widens the reading, never overrides it.
+func classifiedHTTPError(model string, status int, body []byte) error {
 	classified := Classify(status, string(body))
 	if classified.Kind == "" {
 		// Unknown body shape: still surface a usable error so callers do not
@@ -372,11 +375,69 @@ func classifiedHTTPError(status int, body []byte) error {
 			Message: strings.TrimSpace(string(body)),
 		}
 	}
+	classified.Model = trialQuotaModel(model, classified.Kind, string(body))
 	return &providers.Error{
 		Kind:    classified.Kind,
 		Status:  classified.Status,
 		Message: classified.Message,
+		Model:   classified.Model,
 	}
+}
+
+// trialQuotaModel narrows a quota refusal to the Start Plan trial entry it
+// names, so the cooldown lands on that entry instead of the account.
+//
+// A trial appears in the catalogue as its own entry, <model>-Trial, with its own
+// spend. When it ends or its bucket is spent the gateway refuses that entry
+// alone, in one of two wordings:
+//
+//	"ZCode has no active limited quota for GLM-5.3-Trial"              (trial ended)
+//	"ZCode's limited quota for GLM-5.3 is exhausted or temporarily …"  (bucket spent)
+//
+// The second names the bucket, which is the entry less "-Trial". Read as plain
+// quota, either one cooled the whole account until local midnight — a spent
+// trial paused the plan's paid GLM-5.3 for the rest of the day. Anything else
+// (another model's bucket, an account-level balance, a non-trial request) keeps
+// the account-wide reading.
+func trialQuotaModel(requested, kind, body string) string {
+	if kind != accounts.KindQuota {
+		return ""
+	}
+	model := strings.TrimSpace(requested)
+	lower := strings.ToLower(model)
+	if !strings.HasSuffix(lower, "-trial") {
+		return ""
+	}
+	bucket := strings.TrimSuffix(lower, "-trial")
+	if named := quotaNamedModel(body, "no active limited quota for "); named == lower {
+		return model
+	}
+	if named := quotaNamedModel(body, "limited quota for "); named == bucket {
+		return model
+	}
+	return ""
+}
+
+// quotaNamedModel reads the identifier that follows marker in body, up to the
+// first character that cannot be part of a model id. Matching is
+// case-insensitive; the identifier comes back lowercased.
+func quotaNamedModel(body, marker string) string {
+	text := strings.ToLower(body)
+	idx := strings.Index(text, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := text[idx+len(marker):]
+	end := 0
+	for end < len(rest) {
+		ch := rest[end]
+		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '.' || ch == '_' {
+			end++
+			continue
+		}
+		break
+	}
+	return rest[:end]
 }
 
 // zcodeRiskText reports the plan gateway's risk-control block. The gateway
@@ -401,6 +462,11 @@ func zcodeQuotaText(text string) bool {
 		"insufficient balance", "no resource package", "insufficient_quota",
 		"quota exceeded", "余额不足", "no available quota", "resource package",
 		"exceed quota limit", "exceed_quota", "quota limit",
+		// A Start Plan trial spent or ended says "limited quota", which the
+		// list above misses: without these two the 400 read as a client error
+		// (no cooldown at all) and the 429 as a plain rate limit (60s, then the
+		// same refusal), instead of resting the trial entry for the day.
+		"no active limited quota", "limited quota for",
 	} {
 		if strings.Contains(text, signal) {
 			return true
@@ -433,7 +499,7 @@ func streamIsEventStream(header http.Header) bool {
 // It returns the classified error and true only when the body is that envelope
 // and carries a non-zero code; anything else (an Anthropic SSE frame, a normal
 // aggregate, empty bytes) is left to the caller.
-func zcodeEnvelopeError(status int, body []byte) (providers.ClassifiedError, bool) {
+func zcodeEnvelopeError(model string, status int, body []byte) (providers.ClassifiedError, bool) {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
 		return providers.ClassifiedError{}, false
@@ -453,6 +519,7 @@ func zcodeEnvelopeError(status int, body []byte) (providers.ClassifiedError, boo
 		return providers.ClassifiedError{}, false
 	}
 	classified := Classify(status, string(trimmed))
+	classified.Model = trialQuotaModel(model, classified.Kind, string(trimmed))
 	if classified.Kind == "" {
 		// An envelope the taxonomy does not recognise is still a failure;
 		// never let it read as success.

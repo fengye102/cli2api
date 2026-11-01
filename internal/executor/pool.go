@@ -925,7 +925,12 @@ func (p *Pool) MarkClassified(id string, c Classified) {
 		// on model-B must not make a later auth on model-A look like a
 		// repeat. Account-wide LastKind covers non-model-scoped failures.
 		model := routeModel(c.Model)
-		if c.Kind != KindRateLimit {
+		// Two kinds can be about one model alone: a rate limit (the model's
+		// queue is full) and a quota refusal the provider scoped to a model
+		// (a per-model bucket such as a ZCode Start Plan trial). Every other
+		// kind is the account's own state — a dead credential, a blocked
+		// egress — and stays account-wide.
+		if c.Kind != KindRateLimit && c.Kind != KindQuota {
 			model = ""
 		}
 		var prevKind string
