@@ -256,6 +256,7 @@ export function SystemPage() {
                       <ListBox.Item id="weighted-round-robin" textValue="weighted-round-robin"><Label>{t('routingWeightedRoundRobin')}</Label><ListBox.ItemIndicator /></ListBox.Item>
                       <ListBox.Item id="fill-first" textValue="fill-first"><Label>{t('routingFillFirst')}</Label><ListBox.ItemIndicator /></ListBox.Item>
                       <ListBox.Item id="fefo" textValue="fefo"><Label>{t('routingFEFO')}</Label><ListBox.ItemIndicator /></ListBox.Item>
+                      <ListBox.Item id="lowest-ttfb" textValue="lowest-ttfb"><Label>{t('routingLowestTTFB')}</Label><ListBox.ItemIndicator /></ListBox.Item>
                     </ListBox>
                   </Select.Popover>
                 </Select>

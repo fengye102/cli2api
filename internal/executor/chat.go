@@ -1166,6 +1166,7 @@ func (e ChatExecutor) chatInProcessStreamAttempt(ctx context.Context, item Item,
 	}
 	e.markOK(item.ID, req.Model)
 	ttfb := int(time.Since(started).Milliseconds())
+	e.observeTTFB(item.ID, ttfb)
 	headerAt := time.Now().UTC()
 	e.recordAttempt(ctx, accounts.RequestAttempt{
 		AttemptIndex: attemptIndex, AccountID: item.ID, StartedAt: started, FinishedAt: &headerAt,
@@ -1175,6 +1176,16 @@ func (e ChatExecutor) chatInProcessStreamAttempt(ctx context.Context, item Item,
 }
 
 func (e ChatExecutor) classifyInProcessError(err error) Classified { return ClassifyError(err) }
+
+// observeTTFB feeds the latency window the lowest-ttfb strategy routes on. It
+// is called with first-byte time only - the moment the upstream answered, not
+// when the stream finished - because that is what the scheduler can act on.
+func (e ChatExecutor) observeTTFB(id string, ms int) {
+	if e.Pool == nil {
+		return
+	}
+	e.Pool.ObserveTTFB(id, ms)
+}
 
 func lastAccountID(excluded map[string]struct{}) string {
 	for id := range excluded {
@@ -1451,6 +1462,7 @@ func (e ChatExecutor) chatStreamProxy(ctx context.Context, req translate.ChatReq
 		}
 		e.markOK(item.ID, req.Model)
 		ttfb := int(time.Since(startedAll).Milliseconds())
+		e.observeTTFB(item.ID, ttfb)
 		headerAt := time.Now().UTC()
 		e.recordAttempt(ctx, accounts.RequestAttempt{
 			AttemptIndex: i, AccountID: item.ID, StartedAt: started, FinishedAt: &headerAt,

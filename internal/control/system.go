@@ -80,8 +80,8 @@ func (h *System) Patch(ctx context.Context, input SystemSettingsPatch) error {
 	var strategy string
 	if input.RoutingStrategy != nil {
 		rawStrategy := strings.ToLower(strings.TrimSpace(*input.RoutingStrategy))
-		if rawStrategy != accounts.RoutingStrategyRoundRobin && rawStrategy != accounts.RoutingStrategyWeightedRoundRobin && rawStrategy != accounts.RoutingStrategyFillFirst && rawStrategy != accounts.RoutingStrategyFEFO {
-			return operationError("invalid_routing_strategy", "routing_strategy must be round-robin, weighted-round-robin, fill-first, or fefo")
+		if rawStrategy != accounts.RoutingStrategyRoundRobin && rawStrategy != accounts.RoutingStrategyWeightedRoundRobin && rawStrategy != accounts.RoutingStrategyFillFirst && rawStrategy != accounts.RoutingStrategyFEFO && rawStrategy != accounts.RoutingStrategyLowestTTFB {
+			return operationError("invalid_routing_strategy", "routing_strategy must be round-robin, weighted-round-robin, fill-first, fefo, or lowest-ttfb")
 		}
 		strategy = accounts.NormalizeRoutingStrategy(rawStrategy)
 	}

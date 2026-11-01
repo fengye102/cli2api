@@ -13,6 +13,13 @@ const (
 	// ranks accounts inside one provider family by the nearest credit-package
 	// expiry and leaves cross-provider rotation untouched.
 	RoutingStrategyFEFO = "fefo"
+	// RoutingStrategyLowestTTFB is the opt-in latency-aware strategy. It
+	// narrows a route to the accounts whose recent first-byte latency is
+	// close to the pool's best and rotates inside that band, so a route stops
+	// being handed evenly to an account that answers in ten seconds while a
+	// sibling answers in three hundred milliseconds. Unlike hedged requests it
+	// never sends a request twice, so it spends no extra upstream credit.
+	RoutingStrategyLowestTTFB = "lowest-ttfb"
 )
 
 func NormalizeRoutingStrategy(strategy string) string {
@@ -23,6 +30,8 @@ func NormalizeRoutingStrategy(strategy string) string {
 		return RoutingStrategyWeightedRoundRobin
 	case RoutingStrategyFEFO:
 		return RoutingStrategyFEFO
+	case RoutingStrategyLowestTTFB:
+		return RoutingStrategyLowestTTFB
 	default:
 		return RoutingStrategyRoundRobin
 	}

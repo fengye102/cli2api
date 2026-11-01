@@ -397,7 +397,11 @@ type Pool struct {
 	lastRegion map[string]string
 	// weightCounter holds smooth-WRR running counters per route, keyed like
 	// lastPicked and then by account ID. Only used when weights differ.
-	weightCounter   map[string]map[string]int64
+	weightCounter map[string]map[string]int64
+	// ttfb remembers each account's smoothed first-byte latency, feeding the
+	// lowest-ttfb strategy. Nil until the first observation, so a pool that
+	// never enables the strategy allocates nothing.
+	ttfb            map[string]ttfbSample
 	routingStrategy string
 	// stateCounter is the monotonic source for Item.StateVersion. Bumped
 	// under p.mu on every persistable mutation, so the version stamped onto
@@ -454,6 +458,9 @@ func (p *Pool) SetRoutingStrategy(strategy string) {
 	p.lastPicked = make(map[string]string)
 	p.lastRegion = make(map[string]string)
 	p.weightCounter = make(map[string]map[string]int64)
+	// p.ttfb is deliberately kept: a latency sample describes the account,
+	// not the strategy, and dropping it would make every strategy switch
+	// restart the warm-up.
 	p.mu.Unlock()
 }
 
@@ -664,6 +671,9 @@ func (p *Pool) PickRoute(q RouteQuery) (Item, bool) {
 		}
 	} else {
 		p.lastRegion[key] = itemRegion(available[0])
+	}
+	if p.routingStrategy == RoutingStrategyLowestTTFB {
+		available = p.ttfbCandidates(available, now)
 	}
 	if p.routingStrategy == RoutingStrategyFEFO {
 		available = fefoCandidates(available, q.PublicModel, now)

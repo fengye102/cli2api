@@ -109,6 +109,29 @@ func TestSystemSettingsRoutePersistsFEFORoutingStrategy(t *testing.T) {
 	}
 }
 
+func TestSystemSettingsRoutePersistsLowestTTFBRoutingStrategy(t *testing.T) {
+	srv := New(config.Config{
+		Host: "127.0.0.1", Port: 3010, ProxyAPIKey: "secret",
+		QoderHome: t.TempDir(), DataDir: t.TempDir(),
+	})
+	defer srv.Close()
+
+	request := httptest.NewRequest(http.MethodPatch, "/api/system/settings", bytes.NewBufferString(`{"routing_strategy":"lowest-ttfb"}`))
+	request.Header.Set("Authorization", "Bearer secret")
+	response := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"routing_strategy":"lowest-ttfb"`)) {
+		t.Fatalf("updated settings: %d %s", response.Code, response.Body.String())
+	}
+	if got := srv.Pool.RoutingStrategy(); got != accounts.RoutingStrategyLowestTTFB {
+		t.Fatalf("runtime strategy = %q", got)
+	}
+	value, ok, err := srv.Manager.Store().GetSecret(context.Background(), routingStrategySecret)
+	if err != nil || !ok || value != accounts.RoutingStrategyLowestTTFB {
+		t.Fatalf("persisted strategy=%q ok=%v err=%v", value, ok, err)
+	}
+}
+
 func TestEnsureWorkBuddyCheckinTimeDefaultsToNine(t *testing.T) {
 	store, err := sqlstore.OpenStore(filepath.Join(t.TempDir(), "qoder.db"))
 	if err != nil {

@@ -24,6 +24,7 @@ const (
 	RoutingStrategyRoundRobin         = accounts.RoutingStrategyRoundRobin
 	RoutingStrategyWeightedRoundRobin = accounts.RoutingStrategyWeightedRoundRobin
 	RoutingStrategyFillFirst          = accounts.RoutingStrategyFillFirst
+	RoutingStrategyLowestTTFB         = accounts.RoutingStrategyLowestTTFB
 	RoutingStrategyFEFO               = accounts.RoutingStrategyFEFO
 )
 
