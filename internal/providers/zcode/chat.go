@@ -462,6 +462,19 @@ func Classify(status int, body string) providers.ClassifiedError {
 			Message: firstNonEmptyString(message, "request has been blocked due to unusual activity"),
 		}
 	}
+	// An HTML/WAF page is not an API answer. It arrives with 403 or 405 from
+	// Aliyun's edge as often as with 5xx, so reading the status first would
+	// mark a perfectly good credential dead ("登录失败") because its egress
+	// was blocked. Classified as unavailable, with a message that tells the
+	// operator what to actually change.
+	if zcodeEdgeBlockText(text, body) {
+		return providers.ClassifiedError{
+			Kind:   accounts.KindUnavailable,
+			Status: firstNonEmptyStatus(status, 502),
+			Message: "ZCode edge blocked this egress with an HTML/WAF page (not an API answer): " +
+				"change the account's proxy or retry later; body=" + edgeSnippet(body),
+		}
+	}
 	if zcodeQuotaText(text) {
 		return providers.ClassifiedError{Kind: accounts.KindQuota, Status: firstNonEmptyStatus(status, 402), Message: message}
 	}
@@ -508,6 +521,58 @@ func firstNonEmptyStatus(status, fallback int) int {
 		return status
 	}
 	return fallback
+}
+
+// zcodeEdgeBlockText reports an edge/CDN/WAF block page instead of an API
+// answer. Two readings count, in this order:
+//
+//  1. a marker only an Aliyun block or interstitial page carries;
+//  2. a body that is markup rather than JSON/text — the renderer page a WAF,
+//     a CDN, or a captive gateway serves when it refuses the request outright.
+//
+// Body must already be lowercased by the caller.
+func zcodeEdgeBlockText(lower, body string) bool {
+	for _, marker := range zcodeEdgeBlockMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	trimmed := strings.TrimSpace(lower)
+	if trimmed == "" {
+		return false
+	}
+	// A JSON or plain-text error keeps its own reading; only markup is an edge
+	// page. '<?xml' is deliberately included: S3/OSS-style 403s arrive as XML.
+	for _, opener := range []string{"<", "<!doctype", "<?xml"} {
+		if strings.HasPrefix(trimmed, opener) {
+			return true
+		}
+	}
+	return false
+}
+
+var zcodeEdgeBlockMarkers = []string{
+	"errors.aliyun.com",
+	"aliyun_waf",
+	"acw_sc__v2",
+	"arg1_missing",
+	"the requested url was rejected",
+	"your request was blocked",
+	"request blocked by waf",
+	"site is temporarily unavailable",
+	"访问被拦截",
+}
+
+// edgeSnippet collapses an edge page into a short one-line excerpt for the log
+// row, so an operator can tell "Aliyun block page" from "captive portal" without
+// storing kilobytes of markup.
+func edgeSnippet(body string) string {
+	const limit = 120
+	collapsed := strings.Join(strings.Fields(body), " ")
+	if len(collapsed) <= limit {
+		return collapsed
+	}
+	return collapsed[:limit] + "…"
 }
 
 // classifier implements providers.ErrorClassifier for the adapter.

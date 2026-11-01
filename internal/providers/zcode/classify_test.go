@@ -32,3 +32,60 @@ func TestClassify_RiskControlAndQuota(t *testing.T) {
 		t.Errorf("401 kind=%q want %q", got.Kind, accounts.KindAuth)
 	}
 }
+
+// TestClassify_EdgeBlockPageIsNotAuth pins the P0 fix: Aliyun's edge answers a
+// blocked egress with an HTML (or XML) page under 403/405/502. Reading the
+// status first flipped a healthy credential to auth ("登录失败") — the operator
+// then deleted a working account instead of changing its proxy.
+func TestClassify_EdgeBlockPageIsNotAuth(t *testing.T) {
+	aliyunPage := "<html><head><title>405</title></head><body>\n" +
+		"<h1>Sorry, your request was blocked</h1>\n" +
+		"<p>Reference: errors.aliyun.com/?q=abc</p></body></html>"
+
+	for _, status := range []int{403, 405, 502} {
+		got := Classify(status, aliyunPage)
+		if got.Kind != accounts.KindUnavailable {
+			t.Errorf("status=%d kind=%q want %q", status, got.Kind, accounts.KindUnavailable)
+		}
+		if !strings.Contains(got.Message, "edge blocked this egress") {
+			t.Errorf("status=%d message=%q", status, got.Message)
+		}
+		if strings.Contains(got.Message, "\n") {
+			t.Errorf("status=%d message kept raw newlines: %q", status, got.Message)
+		}
+		if len(got.Message) > 300 {
+			t.Errorf("status=%d message too long (%d): %q", status, len(got.Message), got.Message)
+		}
+	}
+
+	// A WAF interstitial without any visible markup still carries its own
+	// markers, and an OSS-style XML 403 is an edge page too.
+	if got := Classify(405, "acw_sc__v2 challenge required"); got.Kind != accounts.KindUnavailable {
+		t.Errorf("acw kind=%q", got.Kind)
+	}
+	xmlErr := `<?xml version="1.0"?><Error><Code>AccessDenied</Code></Error>`
+	if got := Classify(403, xmlErr); got.Kind != accounts.KindUnavailable {
+		t.Errorf("xml kind=%q want %q", got.Kind, accounts.KindUnavailable)
+	}
+
+	// JSON refusals keep their own reading: an API 403 is still auth, and a
+	// 3012 risk block still takes the captcha path even though it can arrive
+	// wrapped in a page-like body.
+	if got := Classify(403, `{"error":{"type":"permission_error","message":"no access"}}`); got.Kind != accounts.KindAuth {
+		t.Errorf("json 403 kind=%q want %q", got.Kind, accounts.KindAuth)
+	}
+	if got := Classify(405, `<html>unusual activity, captcha required</html>`); got.Kind != accounts.KindRateLimit {
+		t.Errorf("captcha page kind=%q want %q", got.Kind, accounts.KindRateLimit)
+	}
+}
+
+func TestEdgeSnippetCollapsesMarkup(t *testing.T) {
+	got := edgeSnippet("<html>\n  <body>  blocked\n</body></html>")
+	if got != "<html> <body> blocked </body></html>" {
+		t.Fatalf("snippet=%q", got)
+	}
+	long := strings.Repeat("x", 400)
+	if got := edgeSnippet(long); len([]rune(got)) != 121 {
+		t.Fatalf("len=%d want 121", len([]rune(got)))
+	}
+}
