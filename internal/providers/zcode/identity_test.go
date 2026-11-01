@@ -64,7 +64,7 @@ func TestApplyPlanIdentity(t *testing.T) {
 		"messages": []map[string]any{{"role": "user", "content": "hi"}},
 		"system":   "be terse",
 	}
-	if !applyPlanIdentity(body, "GLM-5.3-Flash", "user-1") {
+	if !applyPlanIdentity(body, "GLM-5.3-Flash", "user-1", "6b1f8f3c-1111-4222-8333-444455556666") {
 		t.Fatal("identity blocks were not injected")
 	}
 	// Exactly three blocks: a fourth is refused upstream with 405/3012.
@@ -108,7 +108,9 @@ func TestApplyPlanIdentity(t *testing.T) {
 	}
 	metadata, _ := body["metadata"].(map[string]any)
 	// Field order is part of the contract: device_id, account_uuid, session_id.
-	want := `{"device_id":"user-1","account_uuid":"","session_id":""}`
+	// The session is the conversation, not a constant: the vendor's prompt
+	// cache follows it.
+	want := `{"device_id":"user-1","account_uuid":"","session_id":"6b1f8f3c-1111-4222-8333-444455556666"}`
 	if metadata["user_id"] != want {
 		t.Errorf("metadata.user_id=%v want %s", metadata["user_id"], want)
 	}
@@ -145,7 +147,7 @@ func TestApplyPlanIdentity(t *testing.T) {
 		t.Error("last content block of the last turn must carry cache_control")
 	}
 	// Idempotent: a body that already carries the official prefix is untouched.
-	if applyPlanIdentity(body, "GLM-5.3-Flash", "user-1") {
+	if applyPlanIdentity(body, "GLM-5.3-Flash", "user-1", "") {
 		t.Error("second call must be a no-op")
 	}
 	if count := countSystemReminders(body); count != 1 {

@@ -1,0 +1,7 @@
+### English
+
+- zcode: every request now names its conversation in `metadata.user_id`, as ZCode's client does, and coding-plan (api-key) credentials send that field at all. The vendor keeps its prompt cache per conversation: magpie's plugins#387 measured a cache hit on 1 request in 19 when a coding plan's traffic named no session, and ZCode never sends `session_id` empty. The gateway's session key — the client's `X-CLI2API-Session`, or a fingerprint of the conversation's opening turns — is handed to providers through the shared provider context and rendered the way the client renders it: a bare lowercase UUID, derived deterministically when the key is not one already, so a conversation keeps one session id across turns and across restarts with no state to store. The plan gateway keeps its three identity blocks and gains the session; coding-plan requests gain the metadata field and keep their own body shape. A caller that already names its own device keeps it.
+
+### 中文
+
+- zcode：每个请求现在都在 `metadata.user_id` 里带上所属会话（ZCode 客户端本来的做法），API-key（coding plan）凭据也开始发这个字段了。上游的 prompt cache 是按会话保存的：magpie plugins#387 实测，coding plan 的请求不带会话时，19 次里只有 1 次命中缓存，而 ZCode 客户端从不把 `session_id` 留空。现在网关的会话键（客户端传的 `X-CLI2API-Session`，或对话开头几轮算出的指纹）通过共享的 provider context 交给渠道，并按客户端的格式渲染成一个裸的小写 UUID；会话键本身不是 UUID 时按确定性哈希派生，所以同一个对话跨轮次、跨进程重启都是同一个 session id，且无需落盘任何状态。plan 网关侧保持三段身份块不变、只补上会话；coding plan 侧只加 metadata 字段、body 形状不动。调用方自己已经声明了 device 的，原样保留。

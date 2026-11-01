@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/caigee-cmd/cli2api/internal/providers"
 	"github.com/caigee-cmd/cli2api/internal/translate"
 )
 
@@ -20,10 +21,14 @@ const (
 type sessionKeyContextKey struct{}
 
 func WithSessionKey(ctx context.Context, key string) context.Context {
-	if strings.TrimSpace(key) == "" {
+	trimmed := strings.TrimSpace(key)
+	if trimmed == "" {
 		return ctx
 	}
-	return context.WithValue(ctx, sessionKeyContextKey{}, strings.TrimSpace(key))
+	// Providers that talk to an upstream keeping a per-conversation prompt
+	// cache need the same conversation on the wire, and they cannot import
+	// this package: hand them the key through the shared provider context.
+	return providers.WithSessionHint(context.WithValue(ctx, sessionKeyContextKey{}, trimmed), trimmed)
 }
 
 func sessionKeyFromContext(ctx context.Context) string {

@@ -406,8 +406,20 @@ func TestChatStream_HeadersAndBody(t *testing.T) {
 	if sawQuerySource != "main_turn" {
 		t.Errorf("x-zcode-query-source=%q want main_turn", sawQuerySource)
 	}
-	if want := planUserID(sawDeviceMid); sawUserID != want {
+	// No conversation reached the client here, so the session falls back to
+	// one derived from the device — never empty, as the client sends none empty.
+	if want := planUserID(sawDeviceMid, sessionOf("", sawDeviceMid)); sawUserID != want {
 		t.Errorf("metadata.user_id=%q want %q", sawUserID, want)
+	}
+	var named struct {
+		DeviceID  string `json:"device_id"`
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal([]byte(sawUserID), &named); err != nil {
+		t.Fatalf("metadata.user_id is not the client's JSON string: %v", err)
+	}
+	if named.DeviceID != sawDeviceMid || !uuidShape.MatchString(named.SessionID) {
+		t.Errorf("metadata.user_id names device=%q session=%q", named.DeviceID, named.SessionID)
 	}
 	if sawAuth != "Bearer jwt-abc" {
 		t.Errorf("Authorization=%q", sawAuth)

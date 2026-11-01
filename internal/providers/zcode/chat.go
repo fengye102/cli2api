@@ -89,10 +89,19 @@ func (c *Client) chatRequest(ctx context.Context, accountID string, cred Credent
 	}
 	level = providers.ResolveReasoningLevel(level, caps)
 	body := anthropicBody(req, level, caps.MaxOutput)
+	// Name the device and the conversation on every request, as the desktop
+	// client does: the plan gateway rewrites the whole body shape on the JWT
+	// channel, the coding-plan endpoints (api-key credentials) get the metadata
+	// field alone. The vendor's prompt cache follows the session, so a request
+	// that names none is mostly a miss even when the device repeats.
+	device := deviceMid(accountID)
+	session := sessionOf(providers.SessionHintFromContext(ctx), device)
 	if cred.IsOAuth() {
 		// The plan gateway reviews the system prompt and rejects a request
 		// that lacks the official ZCode identity blocks with 3012.
-		applyPlanIdentity(body, req.Model, deviceMid(accountID))
+		applyPlanIdentity(body, req.Model, device, session)
+	} else {
+		markSession(body, device, session)
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {

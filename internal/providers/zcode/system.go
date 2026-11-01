@@ -55,11 +55,11 @@ var zcodePlanPrompt = func() *zcodePrompt {
 // applyPlanIdentity reshapes the body's system prompt into the three-block form
 // the desktop client sends, puts the day reminder ahead of the conversation,
 // stamps the resolved model into the environment section and the account
-// identity into metadata.user_id.
+// identity plus conversation into metadata.user_id.
 //
 // It returns true when the body was rewritten. A body that already carries the
 // official first block is left alone, which keeps the call idempotent.
-func applyPlanIdentity(body map[string]any, model, userID string) bool {
+func applyPlanIdentity(body map[string]any, model, userID, session string) bool {
 	prompt := zcodePlanPrompt
 	if prompt == nil || body == nil {
 		return false
@@ -90,9 +90,37 @@ func applyPlanIdentity(body map[string]any, model, userID string) bool {
 		if metadata == nil {
 			metadata = map[string]any{}
 		}
-		metadata["user_id"] = planUserID(id)
+		metadata["user_id"] = planUserID(id, session)
 		body["metadata"] = metadata
 	}
+	return true
+}
+
+// markSession names the device and the conversation in metadata.user_id the
+// way ZCode's client does on every Anthropic-format request, not on the plan
+// gateway's alone. It fills the field only when the caller named none of its
+// own: a client that already identifies its own device keeps its cache warm
+// across gateway restarts, which ours cannot promise.
+func markSession(body map[string]any, device, session string) bool {
+	if body == nil || strings.TrimSpace(device) == "" {
+		return false
+	}
+	// Only a Messages request carries the field; payloads that are not one (a
+	// probe, a token count) go as they are.
+	if _, ok := body["messages"]; !ok {
+		return false
+	}
+	metadata, _ := body["metadata"].(map[string]any)
+	if metadata != nil {
+		if existing, ok := metadata["user_id"].(string); ok && strings.TrimSpace(existing) != "" {
+			return false
+		}
+	}
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["user_id"] = planUserID(device, session)
+	body["metadata"] = metadata
 	return true
 }
 
@@ -126,13 +154,15 @@ func planEnvironment(prompt *zcodePrompt, model string) string {
 }
 
 // planUserID renders metadata.user_id the way the client does: a JSON object
-// encoded as a string, with the field order the gateway expects.
-func planUserID(device string) string {
+// encoded as a string, with the field order the gateway expects. session_id
+// names the conversation and is what the vendor's prompt cache follows; the
+// client never sends it empty, so neither do we when a device is known.
+func planUserID(device, session string) string {
 	encoded, err := json.Marshal(struct {
 		DeviceID    string `json:"device_id"`
 		AccountUUID string `json:"account_uuid"`
 		SessionID   string `json:"session_id"`
-	}{DeviceID: device})
+	}{DeviceID: device, SessionID: strings.TrimSpace(session)})
 	if err != nil {
 		return device
 	}

@@ -3,8 +3,11 @@ package zcode
 import (
 	"crypto/rand"
 	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -52,6 +55,60 @@ func deviceMid(accountID string) string {
 	b[6] = b[6]&0x0f | 0x40
 	b[8] = b[8]&0x3f | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// uuidShape matches a bare UUID, the form x-session-id and
+// metadata.user_id.session_id take.
+var uuidShape = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// seededUUID is a v4-shaped UUID made from a seed: the same seed gives the same
+// UUID on every process, so a conversation keeps one session id without any
+// state to persist.
+func seededUUID(seed string) string {
+	sum := sha256.Sum256([]byte(seed))
+	h := hex.EncodeToString(sum[:])
+	// Follow the client's rendering: the version nibble is 4 and the variant
+	// nibble carries 0b10, so the value is indistinguishable from a random v4.
+	variant := (hexNibble(h[16])&0x3 | 0x8)
+	return h[0:8] + "-" + h[8:12] + "-4" + h[13:16] + "-" +
+		fmt.Sprintf("%x", variant) + h[17:20] + "-" + h[20:32]
+}
+
+func hexNibble(c byte) int {
+	switch {
+	case c >= '0' && c <= '9':
+		return int(c - '0')
+	case c >= 'a' && c <= 'f':
+		return int(c-'a') + 10
+	case c >= 'A' && c <= 'F':
+		return int(c-'A') + 10
+	}
+	return 0
+}
+
+// sessionOf renders the conversation id ZCode's client names on every
+// Anthropic-format request: metadata.user_id.session_id, and x-session-id on
+// the coding-plan endpoints. It is a bare UUID, the same on every turn of a
+// conversation, and the vendor's prompt cache follows it (magpie plugins#387:
+// BigModel's plan endpoint answered Pi's sessionless requests with a cache hit
+// 1 time in 19). A caller-supplied conversation that already is a UUID goes as
+// it is; anything else the gateway names (its own hex session key, an agent's
+// session, a content fingerprint) is hashed into one, so the vendor only ever
+// sees ZCode's format. With no conversation at all the device stands in, which
+// at least keeps one process's turns together.
+func sessionOf(hint, device string) string {
+	hint = strings.TrimSpace(hint)
+	if uuidShape.MatchString(hint) {
+		return strings.ToLower(hint)
+	}
+	if hint != "" {
+		return seededUUID("zcode-session\x00" + hint)
+	}
+	device = strings.TrimSpace(device)
+	if device == "" {
+		return ""
+	}
+	return seededUUID("zcode-session-device\x00" + device)
 }
 
 // randomUUID returns a v4 UUID for the per-request trace headers.
