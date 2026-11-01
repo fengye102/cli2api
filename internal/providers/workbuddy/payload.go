@@ -356,7 +356,19 @@ var (
 		` whose URL the runtime context names\.`)
 	wafDSHGUIReplacement = `$1 whose URL is named in the runtime context.`
 
-	wafBrandRe          = regexp.MustCompile(`(?i)DeepSeek[ \t]+Harness`)
+	// DSH file-reference paragraph (upstream dc54eaa, workbuddy2api-hub
+	// #684 / v1.9.0): the official @deepseek-ai/dsh-file-reference package
+	// injects FILE_REFERENCE_PROMPT, and the full five-sentence block trips
+	// 11-128. The minimal fix inserts one word in the first sentence
+	// ("paths the user" -> "paths that the user"); the rest of the
+	// paragraph is preserved verbatim. Idempotent under RE2: after the
+	// rewrite "paths " is followed by "that ", so the pattern no longer
+	// matches.
+	wafDSHFilerefRe = regexp.MustCompile(`(?i)(Tokens prefixed with @ are paths )` +
+		`(the user explicitly referenced\.)`)
+	wafDSHFilerefReplacement = `${1}that $2`
+
+	wafBrandRe          = regexp.MustCompile(`(?i)DeepSeek[ 	]+Harness`)
 	wafBrandReplacement = "DeepSeek"
 )
 
@@ -439,6 +451,7 @@ func sanitizeFingerprintText(text string, identity bool) string {
 	if identity {
 		text = rewriteIdentitySentences(text)
 		text = wafDSHGUIRe.ReplaceAllString(text, wafDSHGUIReplacement)
+		text = wafDSHFilerefRe.ReplaceAllString(text, wafDSHFilerefReplacement)
 		text = wafBrandRe.ReplaceAllString(text, wafBrandReplacement)
 	}
 	for _, rule := range wafFingerprintReplacements {
