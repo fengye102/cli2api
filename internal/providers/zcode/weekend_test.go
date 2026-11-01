@@ -135,6 +135,15 @@ func TestAutoClaimWeekendSkipsActiveWeekend(t *testing.T) {
 // candidate and code 0 for the second, asserting the sweep moves on and stops
 // at the first claimed id.
 func TestAutoClaimWeekendTriesCandidatesUntilClaim(t *testing.T) {
+	// The candidate ids are date-encoded, so derive them from the same helper the
+	// sweep uses instead of pinning a calendar day. Pinning 1031 made this test
+	// fail the moment the wall clock rolled past midnight, which is the sort of
+	// flake that hides a real regression on the next run.
+	candidates := weekendPlanCandidates(time.Now())
+	if len(candidates) < 2 {
+		t.Fatalf("need at least two candidates, got %v", candidates)
+	}
+	first, second := candidates[0], candidates[1]
 	var claimed []string
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -147,7 +156,7 @@ func TestAutoClaimWeekendTriesCandidatesUntilClaim(t *testing.T) {
 			}
 			_ = json.Unmarshal(raw, &body)
 			claimed = append(claimed, body.PlanID)
-			if strings.Contains(body.PlanID, "1031") {
+			if body.PlanID == first {
 				// First candidate: 名额未开/已尽 -> keep going.
 				_, _ = w.Write([]byte(`{"code":1005,"msg":"名额已用完"}`))
 				return
@@ -168,6 +177,9 @@ func TestAutoClaimWeekendTriesCandidatesUntilClaim(t *testing.T) {
 	}
 	if len(claimed) != 2 {
 		t.Fatalf("expected 2 claim attempts (1005 then claim), got %d: %v", len(claimed), claimed)
+	}
+	if claimed[1] != second {
+		t.Fatalf("second attempt = %q want %q (candidates %v)", claimed[1], second, candidates)
 	}
 }
 
