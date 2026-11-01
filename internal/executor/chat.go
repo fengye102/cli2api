@@ -1466,8 +1466,12 @@ func ptrInt(value int) *int { return &value }
 
 func ptrTime(value time.Time) *time.Time { return &value }
 
+// truncateErr bounds an upstream error message for logging and for the caller's
+// response. Redaction runs before the cut: a credential echoed by an upstream
+// must never reach request_logs, /api/logs, or the HTTP response, and truncating
+// first could leave a half-hidden secret behind.
 func truncateErr(msg string) string {
-	msg = strings.TrimSpace(msg)
+	msg = strings.TrimSpace(providers.RedactSecrets(msg))
 	if len(msg) <= 500 {
 		return msg
 	}
