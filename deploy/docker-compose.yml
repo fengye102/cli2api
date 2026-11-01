@@ -22,6 +22,23 @@ services:
       # usage/cost panel needs a longer history (~0.7 KB/row; ~150 MB at 90d @ 1.5k rows/day).
       CLI2API_LOG_RETENTION_DAYS: "${CLI2API_LOG_RETENTION_DAYS:-7}"
       CLI2API_LOG_MAX_ROWS: "${CLI2API_LOG_MAX_ROWS:-20000}"
+      # zcode client identity knobs. The provider reads these from its own
+      # environment, and compose passes only what is listed here: a value set in
+      # .env alone never reached the container. ZCODE_APP_VERSION pins the
+      # reported client build (a newer one the gateway turns away can be rolled
+      # back without a rebuild) — set it to a build ZCode actually released: a
+      # version number the gateway does not know (3.17.0, tested) answers
+      # 429 code 3012 "blocked due to unusual activity" and cools the account.
+      # ZCODE_CREDENTIAL_SECRET /
+      # ZCODE_CREDENTIAL_SEED open a sealed ZCode credentials.json on import.
+      ZCODE_APP_VERSION: "${ZCODE_APP_VERSION:-}"
+      ZCODE_CREDENTIAL_SECRET: "${ZCODE_CREDENTIAL_SECRET:-}"
+      ZCODE_CREDENTIAL_SEED: "${ZCODE_CREDENTIAL_SEED:-}"
+      ZCODE_IDENTITY_PLATFORM: "${ZCODE_IDENTITY_PLATFORM:-}"
+      ZCODE_IDENTITY_OS_VERSION: "${ZCODE_IDENTITY_OS_VERSION:-}"
+      ZCODE_IDENTITY_CLIENT_LANGUAGE: "${ZCODE_IDENTITY_CLIENT_LANGUAGE:-}"
+      ZCODE_IDENTITY_CLIENT_TIMEZONE: "${ZCODE_IDENTITY_CLIENT_TIMEZONE:-}"
+      ZCODE_DEVICE_MID: "${ZCODE_DEVICE_MID:-}"
     volumes:
       - qoder-data:/data
       - "${CLI2API_UPDATER_SOCKET_DIR:-/tmp/cli2api-updater}:/run/cli2api-updater:ro"
