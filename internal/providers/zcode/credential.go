@@ -141,7 +141,14 @@ func stringOrFloat(v any) string {
 func DecodeCredential(payload []byte) (Credential, error) {
 	trimmed := strings.TrimSpace(string(payload))
 	if isSealed(trimmed) {
-		return Credential{}, sealedCredentialError("payload")
+		// A bare sealed value (the operator pasted just the token): readable
+		// only with the seed the client used.
+		if plain, ok := openWithConfiguredSeeds(trimmed); ok {
+			trimmed = strings.TrimSpace(plain)
+			payload = []byte(trimmed)
+		} else {
+			return Credential{}, sealedCredentialError("payload")
+		}
 	}
 	if trimmed != "" {
 		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
@@ -164,11 +171,17 @@ func DecodeCredential(payload []byte) (Credential, error) {
 			}
 			// Tolerant walk of a ZCode local document (config.json /
 			// credentials.json), unwrapping JSON-stringified objects the
-			// way the shared helpers do.
+			// way the shared helpers do. A credentials.json from ZCode's own
+			// sign-in holds sealed values; those open only with the seed the
+			// client used (ZCODE_CREDENTIAL_SECRET / ZCODE_CREDENTIAL_SEED).
 			if value, err := providers.UnwrapJSONValue(payload); err == nil {
+				value, _ = unsealDocument(value)
 				credential, sealedKey, ok := credentialFromLocalDoc(value)
 				if sealedKey != "" {
 					return Credential{}, sealedCredentialError(sealedKey)
+				}
+				if !ok && hasProjectKeyLocation(value) {
+					return Credential{}, projectKeyLocationError()
 				}
 				if ok {
 					return credential, nil
@@ -232,9 +245,17 @@ func credentialFromBareString(value string) Credential {
 // the caller can fail with the actionable import message.
 func credentialFromLocalDoc(value any) (Credential, string, bool) {
 	credential := Credential{Format: CredentialFormat}
-	// ZCode config.json provider sections.
-	credential.APIKey = pickLocalString(value, "apiKey", "api_key")
-	baseURL := pickLocalString(value, "baseURL", "base_url")
+	// ZCode config.json provider sections. The section that names a ZCode site
+	// wins over whatever else the user's table holds (3.15 keeps the coding
+	// plan key there, magpie#2130).
+	var baseURL string
+	credential.APIKey, baseURL = pickProviderCredential(value)
+	if credential.APIKey == "" {
+		credential.APIKey = pickLocalString(value, "apiKey", "api_key")
+	}
+	if baseURL == "" {
+		baseURL = pickLocalString(value, "baseURL", "base_url")
+	}
 	regionFromBaseURL(&credential, baseURL)
 	if IsJWTToken(credential.APIKey) {
 		credential.AuthMode = AuthModeOAuth
@@ -431,13 +452,33 @@ func ensureSupportedRegion(c Credential) error {
 	}
 }
 
+// openWithConfiguredSeeds opens one sealed value with whichever seed the
+// operator configured.
+func openWithConfiguredSeeds(value string) (string, bool) {
+	for _, seed := range sealedValueSeeds() {
+		if plain, ok := openSealedValue(value, seed); ok {
+			return plain, true
+		}
+	}
+	return "", false
+}
+
 // sealedCredentialError is the actionable import failure for machine-bound
-// credentials.json values: the operator must use the plaintext apiKey from
-// config.json or export a fresh bundle from the console.
+// credentials.json values: without the seed the client used, the file cannot be
+// read at all — and with it, the whole file imports as-is.
 func sealedCredentialError(key string) error {
 	return fmt.Errorf(
-		"zcode credential field %q is sealed (enc:v1: AES-256-GCM, machine-bound key) and cannot be imported here. Paste the plaintext apiKey from the ZCode config.json instead, or export a credential bundle from this console",
+		"zcode credential field %q is sealed (enc:v1: AES-256-GCM under a key made from the machine that wrote it). Set ZCODE_CREDENTIAL_SECRET to the secret your ZCode client uses, or ZCODE_CREDENTIAL_SEED to the fallback seed string it falls back to (\"zcode-credential-fallback:<platform>:<home>:<user>\"), and import the file again; or paste the plaintext apiKey / the zcodejwttoken instead",
 		key,
+	)
+}
+
+// projectKeyLocationError explains ZCode 3.16's credential store, which holds
+// no key at all: only the location of one, fetched from the business API at
+// run time (magpie#410).
+func projectKeyLocationError() error {
+	return fmt.Errorf(
+		"zcode 3.16 credential file holds no key, only a project-key-location naming where the coding plan key is kept. The Start Plan session (zcodejwttoken in the same file) is what this gateway runs on and imports fine; for the coding plan key itself, copy it from the Z.ai or BigModel console and paste that instead",
 	)
 }
 

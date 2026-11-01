@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"net/http"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -12,9 +13,25 @@ import (
 	"github.com/caigee-cmd/cli2api/internal/providers"
 )
 
-// Version is the pinned ZCode client build the upstream still accepts. The
-// console reports the same string via X-ZCode-App-Version.
-const Version = "3.14.3"
+// defaultClientVersion is the ZCode desktop build this gateway reports. It
+// follows the release the official client is on (magpie's plugin pins the same
+// number for the sign-in it makes): the plan gateway fingerprints the client
+// version along with the rest of the identity headers.
+const defaultClientVersion = "3.16.3"
+
+// Version is the ZCode client build the upstream sees. ZCODE_APP_VERSION
+// overrides it, so an operator can fall back to an older build the gateway
+// still accepts without rebuilding the image.
+var Version = resolveClientVersion(os.Getenv("ZCODE_APP_VERSION"))
+
+// resolveClientVersion picks the reported build: the operator's pin when it is
+// given, the tracked release otherwise.
+func resolveClientVersion(override string) string {
+	if v := strings.TrimSpace(override); v != "" {
+		return v
+	}
+	return defaultClientVersion
+}
 
 // userAgent is the pinned ZCode desktop UA. The upstream WAF rejects unknown
 // UAs on some endpoints, so keep this string verbatim.
