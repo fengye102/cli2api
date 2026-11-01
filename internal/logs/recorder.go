@@ -116,6 +116,11 @@ type RequestRecorder struct {
 	usageCache   map[string]usageCacheEntry
 	rateOnce     sync.Once
 	rate         *RateCounter
+
+	// openMu guards the in-flight projection behind /api/live.
+	openMu      sync.Mutex
+	open        map[string]*OpenRequest
+	completions []RequestCompletion
 }
 
 func NewRequestRecorder(store RequestPersister) *RequestRecorder {
@@ -166,6 +171,10 @@ func (r *RequestRecorder) Close() {
 
 func (r *RequestRecorder) Start(log accounts.RequestLog) {
 	r.rateCounter().Add()
+	// The in-memory projection is what /api/live reads; it is written before
+	// the durable row is queued so a poll during the write still sees the
+	// request.
+	r.trackStart(log)
 	r.enqueue(func() {
 		if err := r.store.InsertRequestLog(context.Background(), log); err != nil {
 			logf("insert request log: %v", err)
@@ -185,6 +194,7 @@ func (r *RequestRecorder) rateCounter() *RateCounter {
 func (r *RequestRecorder) RecentRequests() int { return r.rateCounter().Count() }
 
 func (r *RequestRecorder) Finish(log accounts.RequestLog) {
+	r.trackFinish(log)
 	r.enqueue(func() {
 		if err := r.store.UpdateRequestLog(context.Background(), log); err != nil {
 			logf("update request log: %v", err)

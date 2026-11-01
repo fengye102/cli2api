@@ -31,6 +31,7 @@ import { fetchAccounts, fetchModels } from '@/api/overview'
 import { formatBytes, formatCompact, formatLatency, formatPercent } from '@/lib/format'
 import { accountProviderFamilyLabel, accountProviderLabel } from '@/lib/provider'
 import { ProviderMark } from '@/components/ProviderMark'
+import { InflightLiveCard } from '@/components/overview/InflightLiveCard'
 import { LiveStrip } from '@/components/overview/LiveStrip'
 import { useLive } from '@/hooks/useLive'
 
@@ -359,6 +360,8 @@ export function OverviewPage() {
       {error ? <PageAlert title={t('failedOverview', { msg: error })} /> : null}
 
       <LiveStrip live={live} samples={liveSamples} t={t} />
+
+      <InflightLiveCard live={live} now={now} t={t} />
 
       <section data-gsap-reveal className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {metrics.map((metric) => (

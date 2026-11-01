@@ -170,6 +170,9 @@ func New(cfg config.Config) *App {
 	chatExecutor.MaxAttempts = cfg.MaxRetryAccounts
 	chatExecutor.Providers = providerReg
 	chatExecutor.OnAttempt = recorder.Attempt
+	// The live panel shows a request on the account it took a slot on, which is
+	// earlier than the attempt row: bind tells it the moment that happens.
+	chatExecutor.OnBind = recorder.BindRequest
 	a := &App{
 		Cfg:       cfg,
 		Auth:      auth.NewVerifier(proxyAPIKey, store),

@@ -33,6 +33,10 @@ type ChatExecutor struct {
 	OnAttempt       AttemptHook
 	MaxAttempts     int
 	SessionAffinity *SessionAffinity
+	// OnBind, when set, is told which account a request took a slot on, the
+	// moment it takes it. /api/live shows the request there before the attempt
+	// finishes; nothing else depends on it.
+	OnBind func(requestID, accountID string)
 }
 
 type ChatResult struct {
@@ -858,6 +862,15 @@ func (e ChatExecutor) acquireInFlight(id string) bool {
 	return e.Pool.Acquire(id)
 }
 
+// noteBound tells the live panel which account took the slot. It is a no-op
+// when nothing listens, and never affects the request itself.
+func (e ChatExecutor) noteBound(ctx context.Context, accountID string) {
+	if e.OnBind == nil || accountID == "" {
+		return
+	}
+	e.OnBind(RequestIDFromContext(ctx), accountID)
+}
+
 func (e ChatExecutor) releaseInFlight(id string) {
 	if e.Pool != nil {
 		e.Pool.Release(id)
@@ -894,6 +907,7 @@ func (e ChatExecutor) ChatNonStream(ctx context.Context, req translate.ChatReque
 			continue
 		}
 		release := func() { e.releaseInFlight(poolID) }
+		e.noteBound(ctx, poolID)
 		if isInProcessItem(item) || e.qoderDirect(item) {
 			result, classified, err := e.chatInProcessNonStreamAttempt(ctx, item, req, i)
 			if err == nil {
@@ -1342,6 +1356,7 @@ func (e ChatExecutor) chatStreamProxy(ctx context.Context, req translate.ChatReq
 			continue
 		}
 		release := func() { e.releaseInFlight(poolID) }
+		e.noteBound(ctx, poolID)
 		if isInProcessItem(item) || (e.qoderDirect(item) && !(preferNativeResponses && native != nil)) {
 			result, classified, err := e.chatInProcessStreamAttempt(ctx, item, req, native, i, preferNativeResponses)
 

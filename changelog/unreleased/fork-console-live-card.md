@@ -1,0 +1,7 @@
+### English
+
+- console: the overview gains a live card fed by `/api/live`, which now carries the whole picture instead of one counter: the requests still selecting an account, the ones holding a slot with the model each is running and how long it has been running, every account resting on a cooldown with the time left, per-account slot occupancy, and the session-affinity hit rate. The middle window — a request that took a slot but has not finished — is not in the database (the request row is written when it starts, the attempt row when it ends), so the recorder keeps a small in-memory projection of it: bounded, age-swept, never persisted, emptied by a restart, which is what "in flight" means. The executor tells it the moment an account is bound (`OnBind`), so a request shows on the right account before its attempt finishes, and a failover moves it to the account that actually served it. The card itself is plain React over the same 2.5s poll the strip already used: queue, occupancy grouped by account, cooldowns counting down, and the per-account `n/max` slots.
+
+### 中文
+
+- console：概览页多了一张实时卡片，数据来自 `/api/live`——它现在给的是一整张图，不再只是一个计数器：还在选号的请求、已经占到并发位并带上模型名和已跑时长的请求、每个正在冷却的账号及其剩余时间、各账号的并发位占用、以及会话粘性的命中率。「中间的窗口」——请求已经占位但还没结束——数据库里根本没有（请求行在开始时就写了，attempt 行在结束才写），所以 recorder 保留了这块状态的内存投影：有上限、按时间清理、不落盘、重启即清空（这本就是「进行中」的含义）。executor 在抢到并发位的那一刻告诉它（`OnBind`），所以请求在 attempt 结束前就能显示在正确的账号下，发生 failover 时会移到真正服务它的账号上。卡片本身是普通 React，复用卡片条原有的 2.5 秒轮询：排队、按账号分组的占用、倒计时的冷却、以及每账号的 `n/max` 并发位。
