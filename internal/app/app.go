@@ -30,6 +30,7 @@ import (
 	"github.com/caigee-cmd/cli2api/internal/providers/devin"
 	"github.com/caigee-cmd/cli2api/internal/providers/kimi"
 	"github.com/caigee-cmd/cli2api/internal/providers/meta"
+	"github.com/caigee-cmd/cli2api/internal/providers/muse"
 	"github.com/caigee-cmd/cli2api/internal/providers/qoder"
 	"github.com/caigee-cmd/cli2api/internal/providers/qwenwork"
 	"github.com/caigee-cmd/cli2api/internal/providers/raccoon"
@@ -133,6 +134,7 @@ func New(cfg config.Config) *App {
 	providerReg.Register(kimi.NewClient(store).Adapter())
 	providerReg.Register(codearts.NewClient(store).Adapter())
 	providerReg.Register(meta.NewClient(store).Adapter())
+	providerReg.Register(muse.NewClient(store).Adapter())
 	// AutoClaw is two providers, not one with a region: the CN and overseas
 	// builds have different hosts and different credential formats.
 	providerReg.Register(autoclaw.NewClient(store, autoclaw.RegionCN).Adapter())

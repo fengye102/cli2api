@@ -68,7 +68,9 @@ export function ProviderMark({ provider, size = 16, className = '' }: Props) {
   if (id === 'kimi') {
     return <KimiMark size={size} className={className} />
   }
-  if (id === 'meta' || id === 'muse') {
+  // meta is Meta's Muse Code channel; muse-web replays a logged-in muse.ai
+  // browser session. Same brand, different channel, so they share one mark.
+  if (id === 'meta' || id === 'muse' || id === 'muse-web') {
     return <MuseMark size={size} className={className} />
   }
   return <QoderMark size={size} className={className} />

@@ -477,6 +477,30 @@ var Meta = ProviderDescriptor{
 	DefaultRegion: "global",
 }
 
+// MuseWeb is the muse.ai web-session adapter: it replays the cookies of a
+// logged-in browser tab instead of running an OAuth round, so it needs no
+// Muse Code subscription. The protocol constants live in
+// internal/providers/muse; keep this descriptor to routing metadata only.
+var MuseWeb = ProviderDescriptor{
+	ID:                "muse-web",
+	Label:             "Muse 网页版",
+	Runtime:           RuntimeInProcess,
+	AuthTypes:         []AuthType{AuthNative},
+	CredentialFormats: []string{"muse-cookie-v1"},
+	Capabilities: ProviderCapabilities{
+		Chat: true, Stream: true, Tools: false, Images: true, Reasoning: false,
+		ModelCatalog: true, Usage: false, Login: false, BrowserLogin: false,
+		PATLogin: false, ImportExport: true,
+	},
+	Regions: []RegionDescriptor{
+		{
+			ID: "global", Label: "Global", ChatBase: "https://muse.ai",
+			AuthBase: "https://muse.ai", DefaultDomain: "muse.ai",
+		},
+	},
+	DefaultRegion: "global",
+}
+
 // AutoClaw descriptor (智谱 autoglm / OpenClaw desktop client). Two builds
 // share one protocol but live on different hosts, so each is its own provider
 // family rather than one provider with a region field: the region is a channel,
@@ -552,6 +576,7 @@ var registry = map[string]ProviderDescriptor{
 	Kimi.ID:         Kimi,
 	CodeArts.ID:     CodeArts,
 	Meta.ID:         Meta,
+	MuseWeb.ID:      MuseWeb,
 	AutoClaw.ID:     AutoClaw,
 	AutoClawIntl.ID: AutoClawIntl,
 }
@@ -566,7 +591,7 @@ func Get(id string) (ProviderDescriptor, bool) {
 }
 
 func List() []ProviderDescriptor {
-	return []ProviderDescriptor{Qoder, WorkBuddy, Trae, Devin, Command, Codex, Zhipu, QwenWork, ZCode, Raccoon, Antigravity, Kimi, CodeArts, Meta, AutoClaw, AutoClawIntl}
+	return []ProviderDescriptor{Qoder, WorkBuddy, Trae, Devin, Command, Codex, Zhipu, QwenWork, ZCode, Raccoon, Antigravity, Kimi, CodeArts, Meta, MuseWeb, AutoClaw, AutoClawIntl}
 }
 
 // Resolve validates a provider/region pair. Empty values fall back to the
