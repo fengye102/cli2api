@@ -764,3 +764,73 @@ func TestAttemptsForHonorsRetryBudget(t *testing.T) {
 		t.Fatalf("default attempt budget = %d", got)
 	}
 }
+
+// TestChatServingAccountsCoolingIsNotMissingModel: when every account that
+// serves the model is temporarily out (cooling down or out of quota) the client
+// must get a retryable 429/quota error, not "model_not_available" — measured on
+// production logs where a single cool zcode account made GLM-5.3-Flash look
+// like a model that does not exist.
+func TestChatServingAccountsCoolingIsNotMissingModel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("a cooling account must not be dispatched")
+	}))
+	defer srv.Close()
+
+	pool := NewPool(nil, nil)
+	pool.Upsert(Item{ID: "z1", URL: srv.URL, Provider: "zcode", Runtime: "in_process"})
+	pool.MergeModels("z1", []string{"glm-5.3-flash", "glm-5.3"})
+	pool.MarkClassified("z1", Classified{
+		Kind: KindQuota, Cooldown: time.Hour, Message: "exceed quota limit", Failover: false,
+	})
+	ex := NewChatExecutor(pool, "")
+	ex.HTTPClient = srv.Client()
+
+	assertNotMissingModel := func(label string, err error) {
+		if err == nil {
+			t.Fatalf("%s: expected an error", label)
+		}
+		if strings.Contains(err.Error(), "model_not_available") {
+			t.Fatalf("%s: cooling accounts reported as missing model: %v", label, err)
+		}
+		if !strings.Contains(err.Error(), "quota") && !strings.Contains(err.Error(), "cooling down") {
+			t.Fatalf("%s: error does not explain the wait: %v", label, err)
+		}
+	}
+	_, err := ex.ChatNonStream(context.Background(), translate.ChatRequest{
+		Model: "glm-5.3-flash", Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}},
+	}, "", "")
+	assertNotMissingModel("quota cooldown", err)
+
+	// Same shape for a plain error cooldown: the model exists, it is just
+	// briefly unavailable, and the caller should be told to retry.
+	pool.MarkClassified("z1", Classified{
+		Kind: KindRateLimit, Cooldown: 45 * time.Second, Message: "busy", Failover: true,
+	})
+	_, err = ex.ChatNonStream(context.Background(), translate.ChatRequest{
+		Model: "glm-5.3", Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}},
+	}, "", "")
+	assertNotMissingModel("rate-limit cooldown", err)
+}
+
+// TestChatUnknownModelStaysMissing: an account that serves other models must
+// still report model_not_available for a model nobody serves.
+func TestChatUnknownModelStaysMissing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("no worker should be called for an unknown model")
+	}))
+	defer srv.Close()
+
+	pool := NewPool(nil, nil)
+	pool.Upsert(Item{ID: "z1", URL: srv.URL, Provider: "zcode", Runtime: "in_process"})
+	pool.MergeModels("z1", []string{"glm-5.3-flash"})
+	pool.MarkClassified("z1", Classified{Kind: KindRateLimit, Cooldown: time.Minute, Failover: true})
+	ex := NewChatExecutor(pool, "")
+	ex.HTTPClient = srv.Client()
+
+	_, err := ex.ChatNonStream(context.Background(), translate.ChatRequest{
+		Model: "gpt-9-imaginary", Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}},
+	}, "", "")
+	if err == nil || !strings.Contains(err.Error(), "model_not_available") {
+		t.Fatalf("unknown model should stay model_not_available, got %v", err)
+	}
+}

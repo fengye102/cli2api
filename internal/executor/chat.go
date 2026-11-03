@@ -360,6 +360,28 @@ func (e ChatExecutor) pick(requestID, prefer, providerFilter, regionFilter, publ
 			}, nil)
 		}
 		if publicModel != "" && publicModel != "auto" {
+			// The model may well exist: every account that serves it can be
+			// temporarily out (cooling down or out of quota). Reporting
+			// model_not_available there reads as "this model does not exist"
+			// and hides a plain retry, so surface the wait instead.
+			if retryAfter, quotaBlocked, ok := e.Pool.UnavailableModelRoute(query); ok {
+				e.logModelRouteBusy(requestID, query, retryAfter, quotaBlocked)
+				if quotaBlocked {
+					return Item{}, NewExecutionError(Classified{
+						Kind: accounts.KindQuota, Status: 429, Code: "insufficient_quota",
+						Type: "insufficient_quota", Failover: false,
+						Cooldown: retryAfter, RetryAfter: retryAfter,
+						Message: quotaBlockedMessage(publicModel),
+					}, nil)
+				}
+				return Item{}, NewExecutionError(Classified{
+					Kind: accounts.KindRateLimit, Status: 429, Code: "rate_limit",
+					Type: "api_error", Failover: true,
+					Cooldown: retryAfter, RetryAfter: retryAfter,
+					Message: fmt.Sprintf("all accounts that can serve %s are cooling down; retry in %ds",
+						publicModel, int((retryAfter+time.Second-1)/time.Second)),
+				}, nil)
+			}
 			unfiltered := query
 			unfiltered.PublicModel = ""
 			if e.Pool.LenRoute(unfiltered) > 0 {
@@ -387,6 +409,15 @@ func (e ChatExecutor) pick(requestID, prefer, providerFilter, regionFilter, publ
 		return Item{}, fmt.Errorf("no accounts available for this api key")
 	}
 	return Item{}, fmt.Errorf("no worker accounts configured")
+}
+
+func (e ChatExecutor) logModelRouteBusy(requestID string, query RouteQuery, retryAfter time.Duration, quotaBlocked bool) {
+	reason := "cooldown"
+	if quotaBlocked {
+		reason = "quota"
+	}
+	log.Printf("model route busy request_id=%q model=%q provider=%q region=%q reason=%s retry_after=%s",
+		requestID, query.PublicModel, query.ProviderFilter, query.RegionFilter, reason, retryAfter.Round(time.Second))
 }
 
 func (e ChatExecutor) logModelRouteMiss(requestID string, query RouteQuery) {
