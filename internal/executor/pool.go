@@ -341,6 +341,13 @@ func routeReadyAndScoped(item Item, q RouteQuery) bool {
 	if !itemReady(item) {
 		return false
 	}
+	return routeScopeMatches(item, q)
+}
+
+// routeScopeMatches applies the provider grant, region, exclusion and caller
+// predicate filters of a route without judging readiness or quota. Callers that
+// need to explain *why* a route is empty use it to look past those two gates.
+func routeScopeMatches(item Item, q RouteQuery) bool {
 	if _, skip := q.Excluded[item.ID]; skip {
 		return false
 	}
@@ -530,6 +537,63 @@ func (p *Pool) QuotaBlockedForModel(q RouteQuery) (Item, bool) {
 		}
 	}
 	return Item{}, false
+}
+
+// UnavailableModelRoute reports whether the requested model is served by
+// accounts that are momentarily kept out of routing, and how long until the
+// soonest of them is usable again.
+//
+// The router uses this to answer with a retry-after (or a quota error) instead
+// of a misleading model_not_available when the model exists but every account
+// serving it is cooling down or out of quota. Scope filters are applied;
+// readiness and quota are deliberately ignored, since those are the very
+// reasons this method exists. Only accounts whose catalog or proven models say
+// they serve the model are considered, so an unknown model still falls through
+// to model_not_available.
+func (p *Pool) UnavailableModelRoute(q RouteQuery) (time.Duration, bool, bool) {
+	if p == nil || routeModel(q.PublicModel) == "" {
+		return 0, false, false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	if p.routingStrategy == RoutingStrategyFEFO {
+		q.fefoNow = now
+	}
+	soonest := time.Duration(0)
+	found := false
+	quotaBlocked := false
+	for _, item := range p.items {
+		if !routeScopeMatches(item, q) || !itemHasModel(item, q.PublicModel) {
+			continue
+		}
+		exhausted := routeQuotaExceeded(item, q)
+		cooling := itemDown(item, now) || itemModelDown(item, q, now)
+		if !exhausted && !cooling {
+			// Routable for this model: the caller should have got it from
+			// PickRoute, so do not re-classify anything here.
+			return 0, false, false
+		}
+		resume := resumeAt(item, q)
+		if exhausted && resume.IsZero() {
+			// An exhausted quota snapshot without an explicit cooldown still
+			// recovers at the provider's daily reset.
+			resume = now.Add(NextLocalMidnightCooldownAt(now))
+		}
+		remaining := resume.Sub(now)
+		if remaining <= 0 {
+			continue
+		}
+		if !found || remaining < soonest {
+			soonest = remaining
+			quotaBlocked = exhausted
+			found = true
+		}
+	}
+	if !found {
+		return 0, false, false
+	}
+	return soonest, quotaBlocked, true
 }
 
 func (p *Pool) First() (Item, bool) {

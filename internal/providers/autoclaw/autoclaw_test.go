@@ -932,18 +932,49 @@ func TestBalanceRejectsBusinessNotFound(t *testing.T) {
 }
 
 // TestClassifyMapsStatuses pins the taxonomy: 429 -> quota, 401 -> auth,
-// 406/403 -> unavailable (not fatal).
+// 403 with an unrecognised body -> unavailable (not fatal), and the
+// request-shape rejections (406/400/422) -> invalid_request.
+//
+// 406 is invalid_request rather than unavailable because the cause is the
+// request body, not the account: cooling the account for it is what turned a
+// single bad request into "no autoclaw accounts available" for every caller
+// sharing that one account.
 func TestClassifyMapsStatuses(t *testing.T) {
 	cases := map[int]string{
 		401: accounts.KindAuth,
 		429: accounts.KindQuota,
-		406: accounts.KindUnavailable,
+		406: accounts.KindInvalidRequest,
+		400: accounts.KindInvalidRequest,
+		422: accounts.KindInvalidRequest,
 		403: accounts.KindUnavailable,
 	}
 	for status, want := range cases {
 		got := classifier{}.Classify(status, "")
 		if got.Kind != want {
 			t.Fatalf("status %d -> %q, want %q", status, got.Kind, want)
+		}
+	}
+}
+
+// TestClassifyReadsForbiddenBody covers the two 403 bodies measured in
+// production: exhausted free quota and transient upstream congestion. Both used
+// to classify as unavailable, so the first failed forever while the pool thought
+// the account was healthy, and the second cooled a perfectly good account.
+func TestClassifyReadsForbiddenBody(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"free quota exhausted", `{"code":403,"msg":"GLM-5.3 免费额度已用完,开通连续包月会员继续使用"}`, accounts.KindQuota},
+		{"english quota", `{"msg":"insufficient_quota"}`, accounts.KindQuota},
+		{"upstream busy", `{"msg":"当前使用人数较多，系统繁忙，请稍后重试"}`, accounts.KindRateLimit},
+		{"unknown reason stays unavailable", `{"msg":"something else"}`, accounts.KindUnavailable},
+	}
+	for _, tc := range cases {
+		got := classifier{}.Classify(http.StatusForbidden, tc.body)
+		if got.Kind != tc.want {
+			t.Fatalf("%s: 403 -> %q, want %q", tc.name, got.Kind, tc.want)
 		}
 	}
 }
