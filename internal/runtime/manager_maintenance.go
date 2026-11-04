@@ -222,11 +222,40 @@ func checkinSlot(value, accountID string, now time.Time) (time.Time, error) {
 	return time.Date(now.Year(), now.Month(), now.Day(), parsed.Hour(), parsed.Minute(), int(hash.Sum32()%60), 0, now.Location()), nil
 }
 
-func checkinDue(account Account, configuredTime string, now time.Time) bool {
-	return checkinDueFor(account, configuredTime, now, false)
+// checkinRetryLadder is the wait after each failed attempt before the day's
+// check-in is tried again. Upstream refusals here are usually transient: trae
+// answers 9074 "当前参与用户太多，请稍后再试" and raccoon "今日未见积分入账（发放触发
+// 未生效，稍后重试）". The old schedule retried exactly once at 21:00, so a busy
+// window at 09:00 that repeated at 21:00 silently cost the day's free credits
+// for every account behind it.
+var checkinRetryLadder = []time.Duration{
+	15 * time.Minute,
+	30 * time.Minute,
+	time.Hour,
+	2 * time.Hour,
+	3 * time.Hour,
 }
 
-func checkinDueFor(account Account, configuredTime string, now time.Time, allowDisabled bool) bool {
+// checkinRetryCutoffHour/Minute stop retries late enough in the evening that the
+// 30s maintenance tick still has room before the local day rolls over.
+const (
+	checkinRetryCutoffHour   = 23
+	checkinRetryCutoffMinute = 40
+)
+
+// checkinMaxAttempts caps attempts per local day so an adapter that is broken
+// for good cannot hammer upstream on every ladder rung.
+const checkinMaxAttempts = 12
+
+func checkinDue(account Account, configuredTime string, now time.Time) bool {
+	return checkinDueFor(account, configuredTime, now, false, 0)
+}
+
+// checkinDueFor reports whether the account's daily check-in should run now.
+// attemptsToday is the number of attempts already recorded for the current local
+// day (0 when unknown); it picks the retry rung, which is what turns a busy
+// upstream into a retry after minutes instead of a lost day.
+func checkinDueFor(account Account, configuredTime string, now time.Time, allowDisabled bool, attemptsToday int) bool {
 	if (!account.Enabled && !allowDisabled) || !account.AutoCheckin {
 		return false
 	}
@@ -241,8 +270,69 @@ func checkinDueFor(account Account, configuredTime string, now time.Time, allowD
 	if err != nil || last.Before(due) {
 		return true
 	}
-	retry, _ := checkinSlot("21:00", account.ID, now)
+	if account.LastCheckinStatus != "error" {
+		return false
+	}
+	if !retryableCheckinFailure(account.LastCheckinMsg) {
+		return false
+	}
+	if now.Hour() > checkinRetryCutoffHour ||
+		(now.Hour() == checkinRetryCutoffHour && now.Minute() >= checkinRetryCutoffMinute) {
+		return false
+	}
+	if attemptsToday <= 0 {
+		// The last attempt is today's, so count it even when the record listing
+		// was unavailable.
+		attemptsToday = 1
+	}
+	if attemptsToday <= len(checkinRetryLadder) {
+		return !now.Before(last.Add(checkinRetryLadder[attemptsToday-1]))
+	}
+	if attemptsToday > checkinMaxAttempts {
+		return false
+	}
+	// Ladder exhausted: keep the single evening retry this schedule always had,
+	// for failures that only clear after the working day.
+	retry, retryErr := checkinSlot("21:00", account.ID, now)
+	if retryErr != nil {
+		return false
+	}
 	return due.Before(retry) && !now.Before(retry) && last.Before(retry)
+}
+
+// retryableCheckinFailure reports whether a failed check-in deserves another
+// attempt. Unexplained failures are retried on the ladder — in practice they are
+// transient upstream refusals — while the terminal answers that cannot change
+// before tomorrow are not.
+func retryableCheckinFailure(message string) bool {
+	lower := strings.ToLower(message)
+	for _, terminal := range []string{
+		"已签到", "已经签到", "已领取", "already checked", "already claimed",
+		"不支持", "not supported", "unsupported", "does not support", "无签到", "没有签到",
+	} {
+		if strings.Contains(lower, terminal) {
+			return false
+		}
+	}
+	return true
+}
+
+// todayCheckinAttempts counts the check-in attempts recorded for the account's
+// current local day. Callers only use it for accounts whose last attempt failed,
+// so the hot path stays at one listing per tick.
+func (manager *Manager) todayCheckinAttempts(ctx context.Context, accountID string, now time.Time) int {
+	records, err := manager.store.ListCheckinRecords(ctx, accountID, checkinMaxAttempts+4)
+	if err != nil {
+		log.Printf("checkin attempts account=%s: %v", accountID, err)
+		return 0
+	}
+	count := 0
+	for _, record := range records {
+		if recordedToday(record.CreatedAt.Format(time.RFC3339Nano), now) {
+			count++
+		}
+	}
+	return count
 }
 
 func (manager *Manager) runScheduledCheckins(ctx context.Context, now time.Time) {
@@ -272,7 +362,11 @@ func (manager *Manager) runScheduledCheckins(ctx context.Context, now time.Time)
 			log.Printf("checkin settings account=%s: %v", account.ID, err)
 			continue
 		}
-		if !checkinDueFor(account, configuredTime, now.In(location), allowDisabled) {
+		attemptsToday := 0
+		if account.LastCheckinStatus == "error" && recordedToday(account.LastCheckinAt, now.In(location)) {
+			attemptsToday = manager.todayCheckinAttempts(ctx, account.ID, now.In(location))
+		}
+		if !checkinDueFor(account, configuredTime, now.In(location), allowDisabled, attemptsToday) {
 			continue
 		}
 		if processed >= maintenancePerTickCap {
