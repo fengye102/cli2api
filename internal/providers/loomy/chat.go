@@ -129,6 +129,9 @@ func (c *Client) doChat(ctx context.Context, accountID string, req translate.Cha
 		return nil, providers.ResolvedChat{}, &providers.Error{
 			Kind:    accounts.KindUnavailable,
 			Message: "loomy 上游不可达：" + err.Error(),
+			// Keep the chain: a dial/TLS failure must be recognised by shape,
+			// or the executor cools a healthy account for a network hiccup.
+			Err: err,
 		}
 	}
 	return resp, providers.ResolvedChat{}, nil

@@ -81,6 +81,7 @@ func (c *Client) GenerateImage(ctx context.Context, accountID string, req provid
 		return providers.ImageGenerationResult{}, &providers.Error{
 			Kind:    accounts.KindUnavailable,
 			Message: "loomy 图像接口不可达：" + err.Error(),
+			Err:     err,
 		}
 	}
 	// readGatewayJSON closes the body, turns >=300 into a classified provider

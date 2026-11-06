@@ -140,3 +140,36 @@ func TestProbeImageModels(t *testing.T) {
 		"messages": []map[string]any{{"role": "user", "content": "画一只橘猫"}},
 	})
 }
+
+// TestProbePointsRecords reads the itemised credit records (GET only, spends
+// nothing) to see what an image generation was actually charged.
+func TestProbePointsRecords(t *testing.T) {
+	client, accountID := probeClient(t)
+	ctx := context.Background()
+	cred, err := client.credential(ctx, accountID)
+	if err != nil {
+		t.Fatalf("credential: %v", err)
+	}
+	hc, err := client.modelClient(ctx, accountID)
+	if err != nil {
+		t.Fatalf("model client: %v", err)
+	}
+	url := strings.TrimRight(client.modelBase, "/") + "/points/records?record_type=all&page_no=1&page_size=10"
+	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	for k, v := range modelHeaders(cred.Session) {
+		req.Header.Set(k, v)
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		t.Fatalf("records: %v", err)
+	}
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	resp.Body.Close()
+	var pretty any
+	if json.Unmarshal(raw, &pretty) == nil {
+		out, _ := json.MarshalIndent(pretty, "", "  ")
+		fmt.Printf("### points/records %d\n%s\n", resp.StatusCode, string(out))
+		return
+	}
+	fmt.Printf("### points/records %d\n%s\n", resp.StatusCode, string(raw))
+}

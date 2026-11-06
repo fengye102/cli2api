@@ -255,6 +255,18 @@ type Error struct {
 	// about that model alone — a per-model bucket or a single model's queue;
 	// leaving it empty keeps the account-wide reading.
 	Model string
+	// Err is the underlying transport/decoding error, when this class covers
+	// one. Keeping the chain lets the executor recognise a dial/TLS failure by
+	// shape (errors.As(*url.Error)) instead of cooling a healthy account for a
+	// network hiccup that says nothing about the credential or the quota.
+	Err error
+}
+
+func (e *Error) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
 }
 
 func (e *Error) Error() string {

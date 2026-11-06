@@ -83,3 +83,31 @@ func TestClassifyErrorWrappedTransportFailure(t *testing.T) {
 		t.Fatalf("wrapped transport classified=%+v", c)
 	}
 }
+
+// A provider that wraps its transport error in providers.Error must not lose
+// the shape: the account stays routable, same as the bare url.Error case above.
+// This is the loomy shape — "loomy 图像接口不可达：… TLS handshake timeout" — which
+// parked the only loomy account and made the next request answer 429 "all
+// accounts are cooling down".
+func TestClassifyErrorWrappedTransportFailureKeepsAccountRoutable(t *testing.T) {
+	wrapped := &providers.Error{
+		Kind:    accounts.KindUnavailable,
+		Message: "loomy 图像接口不可达：" + qoderHandshakeTimeout().Error(),
+		Err:     qoderHandshakeTimeout(),
+	}
+	c := ClassifyError(wrapped)
+	if c.Code != "upstream_unreachable" || c.Cooldown != 0 || c.Failover {
+		t.Fatalf("wrapped transport classified=%+v", c)
+	}
+	pool := NewPool(nil, nil)
+	pool.Upsert(Item{ID: "loomy-1", Provider: "loomy"})
+	executor := NewChatExecutor(pool, "")
+	executor.markClassified("loomy-1", c, "loomy/Hy-Image-3.5-preview")
+	item, ok := pool.ByID("loomy-1")
+	if !ok {
+		t.Fatal("account missing from pool")
+	}
+	if !item.DownUntil.IsZero() {
+		t.Fatalf("wrapped transport failure parked the account until %v", item.DownUntil)
+	}
+}
