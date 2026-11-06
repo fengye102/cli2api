@@ -37,10 +37,18 @@ type fakeGateway struct {
 	envelopeAuth bool
 
 	tasks map[string]bool
+	// balance is the credit balance /points/records reports; completing a task
+	// adds that task's points so a test can assert the claim reports what
+	// actually landed instead of only the advertised sum.
+	balance float64
+	// creditOnClaim=false models a gateway that marks the task complete and
+	// credits nothing, which is what the live service seems to do when the task
+	// itself was never performed.
+	creditOnClaim bool
 }
 
 func newFakeGateway(t *testing.T, session string) *fakeGateway {
-	gateway := &fakeGateway{t: t, session: session, tasks: map[string]bool{}, envelopeAuth: true}
+	gateway := &fakeGateway{t: t, session: session, tasks: map[string]bool{}, envelopeAuth: true, balance: 9989, creditOnClaim: true}
 	gateway.srv = httptest.NewServer(http.HandlerFunc(gateway.handle))
 	t.Cleanup(gateway.srv.Close)
 	return gateway
@@ -104,7 +112,10 @@ func (g *fakeGateway) handle(w http.ResponseWriter, r *http.Request) {
 
 	case "/api/v1/points/records":
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"data":{"balance":9989,"dailyBalance":4989,"availableBalance":9989}}`)
+		g.mu.Lock()
+		balance := g.balance
+		g.mu.Unlock()
+		fmt.Fprintf(w, `{"data":{"balance":%.0f,"dailyBalance":4989,"availableBalance":%.0f}}`, balance, balance)
 
 	case "/api/v1/onboarding/tasks":
 		w.Header().Set("Content-Type", "application/json")
@@ -125,9 +136,15 @@ func (g *fakeGateway) handle(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		already := g.tasks[body.Key]
 		g.tasks[body.Key] = true
+		if !already && g.creditOnClaim {
+			if task, ok := onboardingTaskByKey(body.Key); ok {
+				g.balance += float64(task.Points)
+			}
+		}
+		balance := g.balance
 		g.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"code":"000000","data":{"alreadyCompleted":%v,"balance":10000}}`, already)
+		fmt.Fprintf(w, `{"code":"000000","data":{"alreadyCompleted":%v,"balance":%.0f}}`, already, balance)
 
 	default:
 		http.NotFound(w, r)

@@ -227,6 +227,7 @@ func (c *Client) Claim(ctx context.Context, accountID, planID string) (providers
 	if !known {
 		return providers.ClaimResult{}, fmt.Errorf("loomy 没有名为 %q 的新手任务", planID)
 	}
+	before, beforeOK := c.availableCredits(ctx, accountID)
 	already, err := c.claimTask(ctx, accountID, session, key)
 	if err != nil {
 		if reloginErr := c.retryClaimAfterAuth(ctx, accountID, err, func(next string) error {
@@ -244,16 +245,40 @@ func (c *Client) Claim(ctx context.Context, accountID, planID string) (providers
 			Message:        fmt.Sprintf("%s：上游 alreadyCompleted（已领过）", task.Title),
 		}, nil
 	}
+	after, afterOK := c.availableCredits(ctx, accountID)
 	return providers.ClaimResult{
 		Claimed: true,
 		PlanID:  planID,
-		Message: fmt.Sprintf("%s：+%d 积分", task.Title, task.Points),
+		Message: fmt.Sprintf("%s：任务标称 +%d 积分%s", task.Title, task.Points, creditDelta(before, beforeOK, after, afterOK)),
 	}, nil
+}
+
+// availableCredits reads the usable balance, reporting ok=false when the
+// gateway does not expose one. Claims report this because the task table's
+// points are only a promise: the complete call can come back successful and
+// credit nothing, and an operator who only sees "宣称 +10000" has no way to
+// tell the two apart.
+func (c *Client) availableCredits(ctx context.Context, accountID string) (float64, bool) {
+	snapshot, err := c.pointsRecords(ctx, accountID)
+	if err != nil || snapshot.Available == nil {
+		return 0, false
+	}
+	return *snapshot.Available, true
+}
+
+// creditDelta renders the before/after sentence, or nothing when either read
+// failed.
+func creditDelta(before float64, beforeOK bool, after float64, afterOK bool) string {
+	if !beforeOK || !afterOK {
+		return ""
+	}
+	return fmt.Sprintf("；可用积分 %.0f → %.0f（%+.0f）", before, after, after-before)
 }
 
 // claimAll walks the table serially, skipping what is already done — the same
 // order the official client uses.
 func (c *Client) claimAll(ctx context.Context, accountID, session string) (providers.ClaimResult, error) {
+	before, beforeOK := c.availableCredits(ctx, accountID)
 	done, err := c.onboardingState(ctx, accountID, session)
 	if err != nil {
 		return providers.ClaimResult{}, err
@@ -298,7 +323,8 @@ func (c *Client) claimAll(ctx context.Context, accountID, session string) (provi
 		points += task.Points
 	}
 
-	message := fmt.Sprintf("本次领取 %d 项，+%d 积分；已领过 %d 项", claimed, points, skipped)
+	after, afterOK := c.availableCredits(ctx, accountID)
+	message := fmt.Sprintf("本次领取 %d 项，任务标称 +%d 积分%s；已领过 %d 项", claimed, points, creditDelta(before, beforeOK, after, afterOK), skipped)
 	if len(failed) > 0 {
 		message += fmt.Sprintf("；失败 %d 项（%s）", len(failed), strings.Join(failed, ", "))
 	}
