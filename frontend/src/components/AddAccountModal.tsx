@@ -237,7 +237,10 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
     // phone number and an SMS code here, the overseas build returns a callback
     // URL. Both end with a paste.
     activeOption?.provider === 'autoclaw' ||
-    activeOption?.provider === 'autoclaw-intl'
+    activeOption?.provider === 'autoclaw-intl' ||
+    // Loomy has no browser round either: it signs in on the account plane with
+    // a phone number and then an SMS code, both pasted into this same box.
+    activeOption?.provider === 'loomy'
   const busy = phase === 'busy' || phase === 'polling'
   const settingsLocked = Boolean(createdId.current) || busy
   const isDone = phase === 'done'

@@ -29,6 +29,7 @@ import (
 	"github.com/caigee-cmd/cli2api/internal/providers/command"
 	"github.com/caigee-cmd/cli2api/internal/providers/devin"
 	"github.com/caigee-cmd/cli2api/internal/providers/kimi"
+	"github.com/caigee-cmd/cli2api/internal/providers/loomy"
 	"github.com/caigee-cmd/cli2api/internal/providers/meta"
 	"github.com/caigee-cmd/cli2api/internal/providers/muse"
 	"github.com/caigee-cmd/cli2api/internal/providers/qoder"
@@ -129,6 +130,7 @@ func New(cfg config.Config) *App {
 	providerReg.Register(zcode.NewClient(store).Adapter())
 	providerReg.Register(zhipu.NewClient(store).Adapter())
 	providerReg.Register(raccoon.NewClient(store).Adapter())
+	providerReg.Register(loomy.NewClient(store).Adapter())
 	providerReg.Register(antigravity.NewClient(store).Adapter())
 	providerReg.Register(qwenwork.NewClient(store).Adapter())
 	providerReg.Register(kimi.NewClient(store).Adapter())

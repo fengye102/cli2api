@@ -561,6 +561,48 @@ var AutoClawIntl = ProviderDescriptor{
 	DefaultRegion: "global",
 }
 
+// Loomy descriptor (讯飞 Loomy). In-process provider; a server-side login on
+// the account service hands back a 14-day session that the OpenAI-compatible
+// model gateway accepts as a bearer token.
+//
+// Three ways in, one credential shape:
+//   - credential import: {"loginid","password"} — the adapter logs in and
+//     re-logs in by itself, so the account lives as long as the password does;
+//   - paste a session token (the "PAT" tab), which works until it expires
+//     because there is no refresh token to lean on;
+//   - SMS login on the account plane (Login true, BrowserLogin false): there is
+//     no browser round, so the console's paste box carries the phone number and
+//     then the code.
+//
+// No check-in: credits refill on the provider's own schedule and the only
+// one-off grants are the eight onboarding tasks, which are exposed as claims.
+var Loomy = ProviderDescriptor{
+	ID:                "loomy",
+	Label:             "Loomy 讯飞",
+	Runtime:           RuntimeInProcess,
+	AuthTypes:         []AuthType{AuthPAT},
+	CredentialFormats: []string{"loomy-credential-v1"},
+	Capabilities: ProviderCapabilities{
+		Chat: true, Stream: true, Tools: true, Images: true, Reasoning: false,
+		ModelCatalog: true, Usage: true, Login: true,
+		// BrowserLogin names the console's interactive tab, not a real browser
+		// round: the SMS sign-in collects the phone number and then the code in
+		// that tab's paste box, the same way AutoClaw's domestic build does.
+		// Reporting false would hide the tab and make the round unreachable.
+		BrowserLogin: true,
+		PATLogin:     true, ImportExport: true,
+	},
+	Regions: []RegionDescriptor{
+		{
+			ID: "cn", Label: "CN",
+			ChatBase:      "https://loomyad.xunfei.cn/api/v1",
+			AuthBase:      "https://account.xfinfr.com",
+			DefaultDomain: "xunfei.cn",
+		},
+	},
+	DefaultRegion: "cn",
+}
+
 var registry = map[string]ProviderDescriptor{
 	Qoder.ID:        Qoder,
 	WorkBuddy.ID:    WorkBuddy,
@@ -579,6 +621,7 @@ var registry = map[string]ProviderDescriptor{
 	MuseWeb.ID:      MuseWeb,
 	AutoClaw.ID:     AutoClaw,
 	AutoClawIntl.ID: AutoClawIntl,
+	Loomy.ID:        Loomy,
 }
 
 func Get(id string) (ProviderDescriptor, bool) {
@@ -591,7 +634,7 @@ func Get(id string) (ProviderDescriptor, bool) {
 }
 
 func List() []ProviderDescriptor {
-	return []ProviderDescriptor{Qoder, WorkBuddy, Trae, Devin, Command, Codex, Zhipu, QwenWork, ZCode, Raccoon, Antigravity, Kimi, CodeArts, Meta, MuseWeb, AutoClaw, AutoClawIntl}
+	return []ProviderDescriptor{Qoder, WorkBuddy, Trae, Devin, Command, Codex, Zhipu, QwenWork, ZCode, Raccoon, Antigravity, Kimi, CodeArts, Meta, MuseWeb, AutoClaw, AutoClawIntl, Loomy}
 }
 
 // Resolve validates a provider/region pair. Empty values fall back to the
