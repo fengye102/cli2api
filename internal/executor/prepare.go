@@ -89,6 +89,9 @@ func (e ChatExecutor) Prepare(in PrepareInput) (PreparedRequest, error) {
 		request.Model = publicModel
 		request.Stream = in.NativeRequest.Stream()
 	}
+	// Inline screenshots arrive already base64-encoded by the client; shrink the
+	// ones over budget before any provider builds its upstream payload.
+	ShrinkInlineImages(request.Messages)
 	if RejectsBareModel(publicModel, in.CrossProviderPool) {
 		return PreparedRequest{}, &PrepareError{
 			Status:  400,
