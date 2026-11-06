@@ -48,7 +48,7 @@ services:
     tmpfs:
       - /run/cli2api:mode=0700
     ports:
-      - "127.0.0.1:3010:3010"
+      - "3010:3010"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3010/health"]
       interval: 10s
