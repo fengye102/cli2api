@@ -177,8 +177,12 @@ func (e ChatExecutor) Prepare(in PrepareInput) (PreparedRequest, error) {
 // providerPrefixes are the provider segments a client may pin with a leading
 // "<provider>/" model id. Command Code's own model ids are org-namespaced
 // ("deepseek/…", "moonshotai/…"), so its provider prefix sits in front of an
-// already-namespaced id ("command/deepseek/…").
-var providerPrefixes = []string{"qoder/", "workbuddy/", "trae/", "devin/", "command/", "codex/", "zcode/", "zhipu/", "qwenwork/", "kimi/", "codearts/", "autoclaw/", "autoclaw-intl/", "muse-web/", "custom/"}
+// already-namespaced id ("command/deepseek/…"). runable is deliberately absent:
+// its vendor model ids already start with an org segment ("runable/runner-chat",
+// "anthropic/claude-haiku-5.5"), so stripping a "runable/" prefix would turn the
+// vendor's own id into a different model. Pin it through an API key's provider
+// allowlist instead.
+var providerPrefixes = []string{"qoder/", "workbuddy/", "trae/", "devin/", "command/", "codex/", "zcode/", "zhipu/", "qwenwork/", "kimi/", "codearts/", "autoclaw/", "autoclaw-intl/", "muse-web/", "custom/", "minimax/"}
 
 // regionDashSuffixes are the region qualifiers that may be appended to a
 // provider prefix with a dash: "workbuddy-cn/", "workbuddy-gl/",

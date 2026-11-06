@@ -32,10 +32,12 @@ import (
 	"github.com/caigee-cmd/cli2api/internal/providers/kimi"
 	"github.com/caigee-cmd/cli2api/internal/providers/loomy"
 	"github.com/caigee-cmd/cli2api/internal/providers/meta"
+	"github.com/caigee-cmd/cli2api/internal/providers/minimax"
 	"github.com/caigee-cmd/cli2api/internal/providers/muse"
 	"github.com/caigee-cmd/cli2api/internal/providers/qoder"
 	"github.com/caigee-cmd/cli2api/internal/providers/qwenwork"
 	"github.com/caigee-cmd/cli2api/internal/providers/raccoon"
+	"github.com/caigee-cmd/cli2api/internal/providers/runable"
 	"github.com/caigee-cmd/cli2api/internal/providers/trae"
 	"github.com/caigee-cmd/cli2api/internal/providers/workbuddy"
 	"github.com/caigee-cmd/cli2api/internal/providers/zcode"
@@ -134,6 +136,9 @@ func New(cfg config.Config) *App {
 	loomyClient := loomy.NewClient(store)
 	providerReg.Register(loomyClient.Adapter())
 	providerReg.Register(custom.NewClient(store).Adapter())
+	minimaxClient := minimax.NewClient(store)
+	providerReg.Register(minimaxClient.Adapter())
+	providerReg.Register(runable.NewClient(store).Adapter())
 	providerReg.Register(antigravity.NewClient(store).Adapter())
 	providerReg.Register(qwenwork.NewClient(store).Adapter())
 	providerReg.Register(kimi.NewClient(store).Adapter())
@@ -166,6 +171,10 @@ func New(cfg config.Config) *App {
 	// Loomy's 14-day session has no refresh token; the client renews it from the
 	// stored phone number and password when it gets close to expiry.
 	manager.SetSessionRenewer("loomy", loomyClient)
+	// MiniMax Code access tokens live about twelve hours and the refresh token
+	// is single use: the client refreshes ahead of the deadline so a chat never
+	// has to spend one mid-flight, and gates itself when the token is fresh.
+	manager.SetSessionRenewer("minimax", minimaxClient)
 	go manager.RefreshAll(context.Background(), false)
 	recorder := applogs.NewRequestRecorder(store)
 	stopLogs := make(chan struct{})

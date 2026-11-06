@@ -609,6 +609,75 @@ var Loomy = ProviderDescriptor{
 // readiness is "GET {base_url}/models answers 200".
 //
 // The region exists only because Resolve requires one; it carries no address.
+// Runable is the vendor's own web client reached through its cookie. It is a
+// chat-only channel: the endpoint takes one flattened prompt and has no tool
+// channel, so Tools is false and a request carrying tools gets a plain answer.
+// Login is false because this process cannot capture a browser session; PATLogin
+// is true because pasting the Cookie header is exactly the supported input.
+var Runable = ProviderDescriptor{
+	ID:                "runable",
+	Label:             "Runable",
+	Runtime:           RuntimeInProcess,
+	AuthTypes:         []AuthType{AuthNative},
+	CredentialFormats: []string{"runable-cookie-v1"},
+	Capabilities: ProviderCapabilities{
+		Chat: true, Stream: true, Tools: false, Images: false, Reasoning: false,
+		ModelCatalog: true, Usage: false, Login: false, BrowserLogin: false,
+		PATLogin: true, ImportExport: true,
+	},
+	Regions: []RegionDescriptor{
+		{
+			ID: "global", Label: "Global",
+			ChatBase:      "https://api.runable.com",
+			AuthBase:      "https://api.runable.com",
+			DefaultDomain: "runable.com",
+		},
+	},
+	DefaultRegion: "global",
+}
+
+// Minimax is MiniMax Code: the mcode CLI's OAuth account talking to the agent
+// gateway over Anthropic Messages. The region is part of the credential — a
+// pair minted on account.minimax.cn is not accepted by agent.minimax.io — so the
+// two sites are two regions of one provider rather than two providers.
+//
+// Capabilities worth explaining:
+//   - Tools is true: the gateway accepts tools and returns tool_use blocks.
+//   - Reasoning is false for now even though the catalog advertises thinking
+//     variants: the adapter does not send a thinking config yet, and claiming a
+//     level it never sends would silently ignore the client's request.
+//   - Login/BrowserLogin are true: the device flow has a URL to open, which is
+//     what that tab is for, and PollLogin collects the token.
+//   - Usage is false: the gateway bills a subscription the public API does not
+//     expose.
+var Minimax = ProviderDescriptor{
+	ID:                "minimax",
+	Label:             "MiniMax Code",
+	Runtime:           RuntimeInProcess,
+	AuthTypes:         []AuthType{AuthOAuth},
+	CredentialFormats: []string{"minimax-oauth-v1"},
+	Capabilities: ProviderCapabilities{
+		Chat: true, Stream: true, Tools: true, Images: true, Reasoning: false,
+		ModelCatalog: true, Usage: false, Login: true, BrowserLogin: true,
+		PATLogin: true, ImportExport: true,
+	},
+	Regions: []RegionDescriptor{
+		{
+			ID: "cn", Label: "国内版",
+			ChatBase:      "https://agent.minimax.cn",
+			AuthBase:      "https://account.minimax.cn",
+			DefaultDomain: "minimax.cn",
+		},
+		{
+			ID: "global", Label: "国际版",
+			ChatBase:      "https://agent.minimax.io",
+			AuthBase:      "https://account.minimax.io",
+			DefaultDomain: "minimax.io",
+		},
+	},
+	DefaultRegion: "cn",
+}
+
 var Custom = ProviderDescriptor{
 	ID:                "custom",
 	Label:             "自定义中转站",
@@ -648,6 +717,8 @@ var registry = map[string]ProviderDescriptor{
 	AutoClaw.ID:     AutoClaw,
 	AutoClawIntl.ID: AutoClawIntl,
 	Loomy.ID:        Loomy,
+	Runable.ID:      Runable,
+	Minimax.ID:      Minimax,
 	Custom.ID:       Custom,
 }
 
@@ -661,7 +732,7 @@ func Get(id string) (ProviderDescriptor, bool) {
 }
 
 func List() []ProviderDescriptor {
-	return []ProviderDescriptor{Qoder, WorkBuddy, Trae, Devin, Command, Codex, Zhipu, QwenWork, ZCode, Raccoon, Antigravity, Kimi, CodeArts, Meta, MuseWeb, AutoClaw, AutoClawIntl, Loomy, Custom}
+	return []ProviderDescriptor{Qoder, WorkBuddy, Trae, Devin, Command, Codex, Zhipu, QwenWork, ZCode, Raccoon, Antigravity, Kimi, CodeArts, Meta, MuseWeb, AutoClaw, AutoClawIntl, Loomy, Custom, Minimax, Runable}
 }
 
 // Resolve validates a provider/region pair. Empty values fall back to the

@@ -33,13 +33,17 @@ func DefaultPriorityValue(value int) int {
 // JSON instructions in the system prompt, and those families have no equivalent
 // screening. A custom relay keeps them too: it is a passthrough to whatever it
 // fronts, so discarding the caller's instructions would silently change how the
-// model answers. An explicit value always wins.
+// model answers. MiniMax Code keeps them: its agent gateway takes the system
+// prompt as a top-level Messages field and a request that drops it loses the
+// agent's own instructions. Runable keeps them too: the adapter pastes the
+// system prompt into the flattened transcript, so dropping it would silently
+// rewrite the caller's instructions before the model ever sees them. An explicit value always wins.
 func DefaultDropSystemPrompt(provider string, value *bool) bool {
 	if value != nil {
 		return *value
 	}
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "trae", "kimi", "codearts", "autoclaw", "autoclaw-intl", "custom":
+	case "trae", "kimi", "codearts", "autoclaw", "autoclaw-intl", "custom", "minimax", "runable":
 		return false
 	default:
 		return true
