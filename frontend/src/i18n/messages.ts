@@ -1414,6 +1414,7 @@ export const messages: Record<Lang, Dict> = {
     startBrowserLogin: '用浏览器登录',
     starting: '启动中…',
     quotaLoading: '额度获取中…',
+    quotaNotTracked: '该供应商无额度信息',
     quotaUnavailable: '额度不可用',
     authUrl: '授权链接',
     openAuthUrl: '打开链接',

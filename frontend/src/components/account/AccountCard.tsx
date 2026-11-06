@@ -260,6 +260,10 @@ export function AccountCard({
             exceededLabel={t('quotaExceeded')}
             provider={account.provider}
           />
+        ) : account.provider === 'custom' ? (
+          // A relay has no balance API to poll (capabilities.usage is false), so
+          // the generic "fetching quota…" copy would spin here forever.
+          <span className="text-caption text-foreground/65">{t('quotaNotTracked')}</span>
         ) : <span className="text-caption text-foreground/65">{state === 'hot' || state === 'ready' || state === 'loading' || state === 'starting' ? t('quotaLoading') : t('quotaUnavailable')}</span>}
 
         {lastError ? (
