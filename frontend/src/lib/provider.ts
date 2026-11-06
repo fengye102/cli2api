@@ -51,6 +51,14 @@ export function isCustomProvider(provider?: string) {
   return String(provider || '').toLowerCase() === 'custom'
 }
 
+export function isRunableProvider(provider?: string) {
+  return String(provider || '').toLowerCase() === 'runable'
+}
+
+export function isMinimaxProvider(provider?: string) {
+  return String(provider || '').toLowerCase() === 'minimax'
+}
+
 export function isMetaProvider(provider?: string) {
   const value = String(provider || '').toLowerCase()
   return value === 'meta' || value === 'muse'
@@ -74,6 +82,8 @@ export function accountProviderFamilyLabel(
   if (isCodeArtsProvider(providerID)) return 'CodeArts'
   if (isMetaProvider(providerID)) return 'Muse (Meta)'
   if (isCustomProvider(providerID)) return t('accountTypeCustom')
+  if (isMinimaxProvider(providerID)) return 'MiniMax Code'
+  if (isRunableProvider(providerID)) return 'Runable'
   if (isQoderProvider(providerID)) return 'Qoder'
   return provider || t('account')
 }
@@ -123,6 +133,12 @@ export function accountProviderLabel(
   }
   if (isCustomProvider(providerID)) {
     return t('accountTypeCustom')
+  }
+  if (isMinimaxProvider(providerID)) {
+    return regionID === 'global' ? t('accountTypeMinimaxGlobal') : t('accountTypeMinimaxCN')
+  }
+  if (isRunableProvider(providerID)) {
+    return t('accountTypeRunable')
   }
   if (isQoderProvider(providerID)) {
     return regionID === 'cn' ? t('accountTypeQoderCN') : t('accountTypeQoderGlobal')

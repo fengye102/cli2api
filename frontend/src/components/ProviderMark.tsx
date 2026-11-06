@@ -2,8 +2,10 @@ import { CommandMark } from '@/components/CommandMark'
 import { CodexMark } from '@/components/CodexMark'
 import { DevinMark } from '@/components/DevinMark'
 import { KimiMark } from '@/components/KimiMark'
+import { MiniMaxMark } from '@/components/MiniMaxMark'
 import { MuseMark } from '@/components/MuseMark'
 import { QoderMark } from '@/components/QoderMark'
+import { RunableMark } from '@/components/RunableMark'
 import { QwenworkMark } from '@/components/QwenworkMark'
 import { TraeMark } from '@/components/TraeMark'
 import { WorkBuddyMark } from '@/components/WorkBuddyMark'
@@ -35,6 +37,12 @@ export function ProviderMark({ provider, size = 16, className = '' }: Props) {
   }
   if (id === 'custom') {
     return <CustomMark size={size} className={className} />
+  }
+  if (id === 'minimax') {
+    return <MiniMaxMark size={size} className={className} />
+  }
+  if (id === 'runable') {
+    return <RunableMark size={size} className={className} />
   }
   if (id === 'codearts') {
     return <CodeArtsMark size={size} className={className} />
