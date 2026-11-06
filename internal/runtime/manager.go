@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -64,6 +65,16 @@ type WorkBuddyMaintainer interface {
 	Keepalive(ctx context.Context, accountID string) error
 }
 
+// SessionRenewer is implemented by an in-process provider that can mint a fresh
+// session from stored credentials — Loomy's 14-day session, which has no refresh
+// token, is the first one. RenewSession has to be self-gated: it returns nil
+// without doing any work when the session is still fresh or the account has
+// nothing to renew with, so the maintenance loop can call it unconditionally
+// every hour without deciding provider policy itself.
+type SessionRenewer interface {
+	RenewSession(ctx context.Context, accountID string) error
+}
+
 type Manager struct {
 	config         ManagerConfig
 	store          AccountStore
@@ -72,6 +83,7 @@ type Manager struct {
 	pool           *Pool
 	providers      *providers.Registry
 	workbuddy      WorkBuddyMaintainer
+	renewers       map[string]SessionRenewer
 	checkinRunning map[string]bool
 	mu             sync.Mutex
 	processes      map[string]ManagedProcess
@@ -477,6 +489,42 @@ func (m *Manager) SetWorkBuddy(ops WorkBuddyMaintainer) {
 		return
 	}
 	m.workbuddy = ops
+}
+
+// SetSessionRenewer registers a provider that can renew its own sessions. Call
+// before RunMaintenanceLoop; the loop reads the map from its own goroutine.
+func (m *Manager) SetSessionRenewer(provider string, renewer SessionRenewer) {
+	if m == nil || renewer == nil {
+		return
+	}
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.renewers == nil {
+		m.renewers = map[string]SessionRenewer{}
+	}
+	m.renewers[provider] = renewer
+}
+
+// sessionRenewers returns a snapshot so the maintenance loop can iterate without
+// holding the manager lock across provider network calls.
+func (m *Manager) sessionRenewers() map[string]SessionRenewer {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.renewers) == 0 {
+		return nil
+	}
+	out := make(map[string]SessionRenewer, len(m.renewers))
+	for provider, renewer := range m.renewers {
+		out[provider] = renewer
+	}
+	return out
 }
 
 func (m *Manager) Close() error {

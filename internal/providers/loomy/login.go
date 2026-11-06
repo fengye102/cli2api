@@ -78,6 +78,17 @@ func (f loginFlow) StartLogin(ctx context.Context, accountID string) (providers.
 	}
 	phone := normalizePhone(providers.LoginInputFromContext(ctx).Phone)
 	if phone == "" {
+		// Remember the phone number the account signed in with: an operator
+		// whose 14-day session expired should have to ask for a new code, not
+		// retype the number they already gave us. SMS logins store LoginID, so
+		// every account that used this dialog once gets the shortcut.
+		if stored, err := c.credentials(ctx, accountID); err == nil {
+			if candidate := normalizePhone(stored.LoginID); len(candidate) == 11 {
+				phone = candidate
+			}
+		}
+	}
+	if phone == "" {
 		c.rememberRound(accountID, loginRound{})
 		return providers.LoginSession{State: "sms"}, nil
 	}
@@ -105,9 +116,9 @@ func (f loginFlow) PollLogin(ctx context.Context, accountID string) (bool, strin
 		return false, "", nil
 	}
 	if round.Phone == "" {
-		return false, "Loomy 走手机验证码：把 11 位手机号粘贴到下面的框，点“完成登录”后会给你发验证码", nil
+		return false, "Loomy 走手机验证码：把 11 位手机号粘贴到下面的框，点“提交”后会给你发验证码", nil
 	}
-	return false, fmt.Sprintf("验证码已发到 %s：把收到的 6 位数字粘贴到下面的框再点“完成登录”", maskPhone(round.Phone)), nil
+	return false, fmt.Sprintf("验证码已发到 %s：把收到的 6 位数字粘贴到下面的框，再点“提交”", maskPhone(round.Phone)), nil
 }
 
 // CompleteLogin takes the operator's paste. Both a phone number and an SMS code

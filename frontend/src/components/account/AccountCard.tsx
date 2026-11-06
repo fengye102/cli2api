@@ -298,15 +298,15 @@ export function AccountCard({
                 <Button size="sm" isPending={busyKind === 'device'} onPress={() => onDeviceLogin()}><ShieldCheck size={14} />{t('startBrowserLogin')}</Button>
               )}
             </div>
-            {(account.provider === 'trae' || account.provider === 'codex' || account.provider === 'devin') && onSubmitCallback && onCallbackChange ? (
+            {(account.provider === 'trae' || account.provider === 'codex' || account.provider === 'devin' || account.provider === 'loomy') && onSubmitCallback && onCallbackChange ? (
               <div className="mt-3 space-y-2">
-                <p className="text-caption leading-4 text-muted">{t('wizardCallbackLead')}</p>
+                <p className="text-caption leading-4 text-muted">{t(account.provider === 'loomy' ? 'wizardCallbackLeadLoomy' : 'wizardCallbackLead')}</p>
                 <TextArea
                   className="h-24 w-full resize-none font-mono text-caption leading-5"
                   value={callbackUrl || ''}
                   onChange={(event) => onCallbackChange(event.target.value)}
-                  placeholder={t('wizardCallbackPh')}
-                  aria-label={t('wizardCallbackPh')}
+                  placeholder={t(account.provider === 'loomy' ? 'wizardCallbackPhLoomy' : 'wizardCallbackPh')}
+                  aria-label={t(account.provider === 'loomy' ? 'wizardCallbackPhLoomy' : 'wizardCallbackPh')}
                 />
                 <Button size="sm" variant="secondary" isPending={busyKind === 'callback'} onPress={onSubmitCallback}>
                   {t('wizardSubmitCallback')}

@@ -38,6 +38,12 @@ const (
 	// sessionExpireSeconds is what the client asks for: 14 days, no refresh
 	// token.
 	sessionExpireSeconds = 14 * 24 * 3600
+
+	// sessionRenewLeadSeconds is how long before expiry the maintenance loop
+	// re-logs in. Two days of headroom means a renewal that fails once (network,
+	// password rotated) still has a whole day to be retried before the session
+	// actually dies — the account never has to be fixed by hand on day 14.
+	sessionRenewLeadSeconds = 2 * 24 * 3600
 )
 
 // Paths. The first group hangs off modelBaseURL, the second off accountBaseURL.

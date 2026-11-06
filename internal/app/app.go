@@ -130,7 +130,8 @@ func New(cfg config.Config) *App {
 	providerReg.Register(zcode.NewClient(store).Adapter())
 	providerReg.Register(zhipu.NewClient(store).Adapter())
 	providerReg.Register(raccoon.NewClient(store).Adapter())
-	providerReg.Register(loomy.NewClient(store).Adapter())
+	loomyClient := loomy.NewClient(store)
+	providerReg.Register(loomyClient.Adapter())
 	providerReg.Register(antigravity.NewClient(store).Adapter())
 	providerReg.Register(qwenwork.NewClient(store).Adapter())
 	providerReg.Register(kimi.NewClient(store).Adapter())
@@ -160,6 +161,9 @@ func New(cfg config.Config) *App {
 	providerReg.Register(qoderClient.Adapter())
 	manager.SetProviders(providerReg)
 	manager.SetWorkBuddy(workbuddyClient)
+	// Loomy's 14-day session has no refresh token; the client renews it from the
+	// stored phone number and password when it gets close to expiry.
+	manager.SetSessionRenewer("loomy", loomyClient)
 	go manager.RefreshAll(context.Background(), false)
 	recorder := applogs.NewRequestRecorder(store)
 	stopLogs := make(chan struct{})

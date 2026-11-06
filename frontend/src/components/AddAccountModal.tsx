@@ -394,7 +394,7 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
       if (output.authUrl) {
         setAuthUrl(output.authUrl)
       }
-      setMessage(t('wizardWaitingBrowser'))
+      setMessage(t(isLoomy ? 'wizardWaitingCode' : 'wizardWaitingBrowser'))
       for (let attempt = 0; attempt < POLL_ATTEMPTS; attempt++) {
         await new Promise((resolve) => { pollTimer.current = window.setTimeout(resolve, POLL_INTERVAL) })
         const status = await fetchLoginStatus(id)
@@ -402,7 +402,7 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
         if (login.message) setMessage(login.message)
         if (login.status === 'ok') break
         if (login.status === 'error') throw new Error(login.message || 'login failed')
-        if (attempt === POLL_ATTEMPTS - 1) throw new Error(t('wizardLoginTimeout'))
+        if (attempt === POLL_ATTEMPTS - 1) throw new Error(t(isLoomy ? 'wizardLoginTimeoutSms' : 'wizardLoginTimeout'))
       }
       setPhase('done')
       setMessage(t('wizardAccountReady'))
@@ -586,9 +586,14 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
   }))
 
   const isZhipu = activeOption?.provider === 'zhipu'
+  // Loomy has no browser round: the operator types a phone number into the
+  // paste box and the provider texts a code back into the same box, so the
+  // generic "start browser login" button and its 127.0.0.1/address-bar copy
+  // would only mislead.
+  const isLoomy = activeOption?.provider === 'loomy'
   const methodOptions = [
     activeOption?.descriptor.capabilities?.browser_login !== false
-      ? { value: 'browser' as const, label: t('tabBrowser'), icon: <ShieldCheck size={16} /> }
+      ? { value: 'browser' as const, label: t(isLoomy ? 'tabSmsLogin' : 'tabBrowser'), icon: <ShieldCheck size={16} /> }
       : null,
     showPatTab ? { value: 'pat' as const, label: t('tabPat'), icon: <Key size={16} /> } : null,
     showImportTab ? { value: 'import' as const, label: t('tabImport'), icon: <FileCode size={16} /> } : null,
@@ -841,13 +846,13 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
                         ) : null}
                         {showCallbackPaste ? (
                           <div className="space-y-2">
-                            <p className="text-caption leading-4 text-muted">{t('wizardCallbackLead')}</p>
+                            <p className="text-caption leading-4 text-muted">{t(isLoomy ? 'wizardCallbackLeadLoomy' : 'wizardCallbackLead')}</p>
                             <TextArea
                               className="h-28 w-full resize-none font-mono text-caption leading-5"
                               value={callbackUrl}
                               onChange={(event) => setCallbackUrl(event.target.value)}
-                              placeholder={t('wizardCallbackPh')}
-                              aria-label={t('wizardCallbackPh')}
+                              placeholder={t(isLoomy ? 'wizardCallbackPhLoomy' : 'wizardCallbackPh')}
+                              aria-label={t(isLoomy ? 'wizardCallbackPhLoomy' : 'wizardCallbackPh')}
                               disabled={isDone}
                             />
                             <Button className="w-full" variant="secondary" isPending={phase === 'busy' && Boolean(callbackUrl.trim())} onPress={() => void runCallback()} isDisabled={isDone}>
@@ -856,7 +861,7 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
                           </div>
                         ) : null}
                         <Button className="w-full" isPending={tabPending('browser')} onPress={() => void runBrowser()}>
-                          {isDone ? <><CheckCircle size={15} />{t('wizardAccountReady')}</> : <><ShieldCheck size={15} />{t('wizardStartBrowser')}</>}
+                          {isDone ? <><CheckCircle size={15} />{t('wizardAccountReady')}</> : <><ShieldCheck size={15} />{t(isLoomy ? 'wizardStartBrowserLoomy' : 'wizardStartBrowser')}</>}
                         </Button>
                       </>
                     ) : tab === 'pat' ? (

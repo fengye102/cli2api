@@ -269,3 +269,38 @@ func (c *Client) loginAndStore(ctx context.Context, accountID string, cred Crede
 	}
 	return cred, nil
 }
+
+// RenewSession mints a fresh 14-day session from the stored phone number and
+// password. The maintenance loop calls it every hour for every enabled account,
+// so the gate has to be cheap and silent: it returns nil — doing nothing — when
+// the session is still fresh, when the account has no password to renew with
+// (SMS-only or imported-session accounts), or when there is no stored credential
+// yet (an account row created by the add-account dialog before its first login).
+func (c *Client) RenewSession(ctx context.Context, accountID string) error {
+	cred, err := c.credentials(ctx, accountID)
+	if err != nil {
+		if isMissingCredential(err) {
+			return nil
+		}
+		return err
+	}
+	if strings.TrimSpace(cred.Password) == "" || len(normalizePhone(cred.LoginID)) != 11 {
+		// Nothing to renew with: the operator has to supply a code (or a new
+		// session) on day 14, exactly as before.
+		return nil
+	}
+	if cred.ExpiresAt > 0 {
+		remaining := time.Until(time.Unix(cred.ExpiresAt, 0))
+		// sessionRenewLeadSeconds is seconds; unsigned comparison against a
+		// Duration would compare nanoseconds and never renew.
+		if remaining > sessionRenewLeadSeconds*time.Second {
+			return nil
+		}
+		// An expiry the service handed back in the past means the session is
+		// already dead; renewing is the only way back.
+	}
+	if _, err := c.loginAndStore(ctx, accountID, cred); err != nil {
+		return fmt.Errorf("renew loomy session: %w", err)
+	}
+	return nil
+}

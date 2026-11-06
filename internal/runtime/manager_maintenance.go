@@ -500,6 +500,34 @@ func (manager *Manager) KeepaliveWorkBuddy(ctx context.Context, onlyOptIn bool, 
 	return more
 }
 
+// renewProviderSessions asks each registered SessionRenewer to refresh the
+// accounts it owns. Providers gate the work themselves (still fresh, nothing to
+// renew with), so this just fans out and logs failures: a session that cannot be
+// renewed keeps working until it expires, and the next hourly pass retries.
+func (manager *Manager) renewProviderSessions(ctx context.Context) {
+	renewers := manager.sessionRenewers()
+	if len(renewers) == 0 {
+		return
+	}
+	items, err := manager.store.List(ctx)
+	if err != nil {
+		log.Printf("session renew list: %v", err)
+		return
+	}
+	for _, account := range items {
+		if ctx.Err() != nil {
+			return
+		}
+		renewer, ok := renewers[account.Provider]
+		if !ok || !account.Enabled {
+			continue
+		}
+		if err := renewer.RenewSession(ctx, account.ID); err != nil {
+			log.Printf("session renew account=%s provider=%s: %v", account.ID, account.Provider, err)
+		}
+	}
+}
+
 func (manager *Manager) RunMaintenanceLoop(stop <-chan struct{}) {
 	ctx, cancel := context.WithCancel(manager.runCtx)
 	defer cancel()
@@ -522,6 +550,9 @@ func (manager *Manager) RunMaintenanceLoop(stop <-chan struct{}) {
 	// /health round-trip and short-lived tests with a stub worker are not probed
 	// the instant the loop starts.
 	lastLiveness := time.Now()
+	// Session renewal (Loomy's 14-day session) is also throttled: the first
+	// pass runs one hour after boot so startup is not competing with it.
+	lastSessionRenew := time.Now()
 	for {
 		if ctx.Err() != nil {
 			return
@@ -553,6 +584,10 @@ func (manager *Manager) RunMaintenanceLoop(stop <-chan struct{}) {
 			manager.refreshStaleQuota(ctx)
 			lastStaleQuota = now
 		}
+		if now.Sub(lastSessionRenew) >= sessionRenewInterval {
+			manager.renewProviderSessions(ctx)
+			lastSessionRenew = now
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -565,6 +600,11 @@ func (manager *Manager) RunMaintenanceLoop(stop <-chan struct{}) {
 // accounts. It is only the sweep cadence: the per-account backoff below
 // decides whether a given account is actually re-fetched on that sweep.
 const staleQuotaInterval = 5 * time.Minute
+
+// sessionRenewInterval is how often registered SessionRenewers get a chance to
+// refresh their accounts. Hourly is plenty: a 14-day session renews at two days
+// of headroom, so the pass has 24 attempts before it matters.
+const sessionRenewInterval = time.Hour
 
 // quotaProbeBackoff is the per-account wait between consecutive quota probes
 // while an account keeps reporting Exceeded, indexed by the number of
