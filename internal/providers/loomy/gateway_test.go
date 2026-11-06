@@ -107,7 +107,9 @@ func (g *fakeGateway) handle(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"data":[
 			{"id":"qwen3.8-flash","name":"qwen 3.8 flash (x0.8)","multiplier":0.8,"context_length":1000000,"modalities":["text","image","video"]},
 			{"id":"spark-x","name":"Spark X2.5 (x0.1)","multiplier":0.1,"context_length":1048576,"modalities":["text"]},
-			{"id":"Hy-Image-3.5-preview","name":"Hy image 3.5 preview","multiplier":0,"context_length":100000,"modalities":["text","image"]}
+			{"id":"Hy-Image-3.5-preview","name":"Hy image 3.5 preview","multiplier":0,"context_length":100000,"modalities":["text","image"]},
+			{"id":"doubao-seedream-5-lite","name":"Doubao seedream 5 lite","multiplier":0,"context_length":128000},
+			{"id":"qwen-image-3.0-pro","name":"qwen image 3.0 pro","multiplier":0}
 		]}`)
 
 	case "/api/v1/points/records":
@@ -439,6 +441,12 @@ func TestModelsDropImageGenerationRecords(t *testing.T) {
 	}
 	if byID["loomy/Hy-Image-3.5-preview"] {
 		t.Fatal("an image-generation model must not be advertised as a chat model")
+	}
+	// The gateway sends the seedream/qwen-image records with no `modalities`
+	// field at all; those went out on /v1/models in production while the mock
+	// carried modalities for every record and hid the bug.
+	if byID["loomy/doubao-seedream-5-lite"] || byID["loomy/qwen-image-3.0-pro"] {
+		t.Fatalf("generation models without modalities leaked: %v", byID)
 	}
 }
 

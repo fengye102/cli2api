@@ -329,3 +329,20 @@ func TestParseStreamUsageLineMissingCreditStaysNil(t *testing.T) {
 		t.Fatalf("stats = %+v ok=%v", stats, ok)
 	}
 }
+
+// Loomy reports the cost of a request as `points_consumed` inside the usage
+// block and sends no `credits` key. Streaming calls through this parser
+// therefore logged an empty credit while non-streaming calls logged one.
+func TestParseStreamUsageLineReadsLoomyPointsConsumed(t *testing.T) {
+	stats, ok := parseStreamUsageLine(`data: {"model":"qwen3.8-flash","choices":[],"usage":{"prompt_tokens":63,"completion_tokens":24,"points_consumed":1}}`)
+	if !ok || stats.Credits == nil || *stats.Credits != 1 {
+		t.Fatalf("stats = %+v ok=%v", stats, ok)
+	}
+}
+
+func TestParseStreamUsageLinePrefersCreditsOverPointsConsumed(t *testing.T) {
+	stats, ok := parseStreamUsageLine(`data: {"usage":{"credits":2.5,"points_consumed":1}}`)
+	if !ok || stats.Credits == nil || *stats.Credits != 2.5 {
+		t.Fatalf("stats = %+v ok=%v", stats, ok)
+	}
+}

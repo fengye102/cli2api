@@ -36,23 +36,39 @@ type catalogEntry struct {
 	ContextLengthAlt int      `json:"contextLength"`
 }
 
+// imageModelIDs are the generation models the gateway lists but this one cannot
+// serve: they need /v1/images/generations.
+var imageModelIDs = map[string]bool{
+	"hy-image-3.5-preview":   true,
+	"doubao-seedream-5-lite": true,
+	"qwen-image-3.0-pro":     true,
+}
+
 // imageOnlyModalities marks a record as an image-generation model.
+//
+// The id test runs before the modality test on purpose. The gateway sends these
+// records without a `modalities` field at all, so "no modalities means a text
+// model" let every generation model through and they were advertised on
+// /v1/models and then failed with 404 when called — the exact shape that
+// production served before this was ordered correctly.
 func (entry catalogEntry) imageModel() bool {
+	id := strings.ToLower(strings.TrimSpace(entry.ID))
+	if imageModelIDs[id] ||
+		strings.Contains(id, "image") ||
+		strings.Contains(id, "seedream") ||
+		strings.Contains(id, "seededit") ||
+		strings.Contains(id, "seedance") {
+		return true
+	}
+	if len(entry.Modalities) == 0 {
+		return false
+	}
 	text := false
 	for _, modality := range entry.Modalities {
 		switch strings.ToLower(strings.TrimSpace(modality)) {
 		case "text":
 			text = true
 		}
-	}
-	if len(entry.Modalities) == 0 {
-		return false
-	}
-	// The generation models advertise text+image but carry a zero multiplier
-	// and no usable context; the reliable signal is the id.
-	switch strings.ToLower(entry.ID) {
-	case "hy-image-3.5-preview", "doubao-seedream-5-lite", "qwen-image-3.0-pro":
-		return true
 	}
 	return !text
 }

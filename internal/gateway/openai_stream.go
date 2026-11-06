@@ -448,7 +448,13 @@ func ParseStreamUsageLine(line string) (StreamRelayStats, bool) {
 			Source               string   `json:"source"`
 			Credits              *float64 `json:"credits"`
 			Credit               *float64 `json:"credit"`
-			PromptDetails        struct {
+			// PointsConsumed is Loomy's spelling for the same thing: the
+			// credits one request cost. Its usage block carries no `source`
+			// and no `credits` key, so a streaming call used to record an
+			// empty credit while the identical non-streaming call recorded
+			// one — the field was simply never read.
+			PointsConsumed *float64 `json:"points_consumed"`
+			PromptDetails  struct {
 				CachedTokens *int `json:"cached_tokens"`
 			} `json:"prompt_tokens_details"`
 		} `json:"usage"`
@@ -459,6 +465,9 @@ func ParseStreamUsageLine(line string) (StreamRelayStats, bool) {
 	credits := parsed.Usage.Credits
 	if credits == nil {
 		credits = parsed.Usage.Credit
+	}
+	if credits == nil {
+		credits = parsed.Usage.PointsConsumed
 	}
 	cacheRead := parsed.Usage.CacheReadTokens
 	if cacheRead == nil {
