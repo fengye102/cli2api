@@ -1,4 +1,4 @@
-package zcode
+package anthropicwire
 
 import (
 	"encoding/json"
@@ -19,7 +19,7 @@ import (
 // maxTokensCap is the catalog MaxOutput for the resolved model (0 = unknown);
 // it is used only to default max_tokens when the client omitted one. Client
 // values pass through unchanged, matching the cross-provider behavior.
-func anthropicBody(req translate.ChatRequest, reasoningLevel string, maxTokensCap int) map[string]any {
+func Body(req translate.ChatRequest, maxTokensCap int) map[string]any {
 	body := map[string]any{
 		"model":      req.Model,
 		"stream":     true,
@@ -45,22 +45,17 @@ func anthropicBody(req translate.ChatRequest, reasoningLevel string, maxTokensCa
 	if choice := anthropicToolChoice(req.ToolChoice); choice != nil {
 		body["tool_choice"] = choice
 	}
-	if reasoningLevel != "" && reasoningLevel != "none" {
-		// output_config.effort is the ZCode plan gateway shape for GLM
-		// reasoning tiers; do not invent levels a model does not declare.
-		body["output_config"] = map[string]any{"effort": reasoningLevel}
-	}
 	return body
 }
 
-// defaultMaxTokens is the last-resort max_tokens when neither the client nor
+// DefaultMaxTokens is the last-resort max_tokens when neither the client nor
 // the catalog declare one. Anthropic Messages rejects a missing/zero field,
 // so the body must always carry a positive value.
-const defaultMaxTokens = 8192
+const DefaultMaxTokens = 8192
 
 // resolveMaxTokens returns the client's max_tokens (or max_completion_tokens)
 // when present and positive; otherwise the catalog MaxOutput cap; otherwise
-// defaultMaxTokens. Client values pass through unchanged — we do not cap at
+// DefaultMaxTokens. Client values pass through unchanged — we do not cap at
 // the model's declared max output, matching the other providers.
 func resolveMaxTokens(req translate.ChatRequest, catalogMaxOutput int) int {
 	for _, raw := range []json.RawMessage{req.MaxTokens, req.MaxCompletionTokens} {
@@ -71,7 +66,7 @@ func resolveMaxTokens(req translate.ChatRequest, catalogMaxOutput int) int {
 	if catalogMaxOutput > 0 {
 		return catalogMaxOutput
 	}
-	return defaultMaxTokens
+	return DefaultMaxTokens
 }
 
 func rawInt(raw json.RawMessage) (int, bool) {

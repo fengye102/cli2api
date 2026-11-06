@@ -1,4 +1,4 @@
-package zcode
+package anthropicwire
 
 import (
 	"bufio"
@@ -129,12 +129,12 @@ func (s *streamState) roleDelta() map[string]any {
 // OpenAI chat.completion.chunk stream the executor can relay. Headers stay
 // 200 OK; protocol errors arriving mid-stream are surfaced as a trailing
 // error event the executor reads once the pipe drains.
-func rewriteChatStream(resp *http.Response) *http.Response {
+func RewriteStream(resp *http.Response, label string) *http.Response {
 	pr, pw := io.Pipe()
 	go func() {
 		defer resp.Body.Close()
 		defer pw.Close()
-		if err := translateAnthropicStream(resp.Body, pw); err != nil {
+		if err := TranslateStream(resp.Body, pw, label); err != nil {
 			_ = pw.CloseWithError(err)
 		}
 	}()
@@ -152,7 +152,7 @@ func rewriteChatStream(resp *http.Response) *http.Response {
 
 // translateAnthropicStream drives the per-event state machine. Writes go
 // directly to dst so back-pressure from the reader applies upstream.
-func translateAnthropicStream(src io.Reader, dst io.Writer) error {
+func TranslateStream(src io.Reader, dst io.Writer, label string) error {
 	state := newStreamState()
 	write := func(payload []byte) error {
 		_, err := fmt.Fprintf(dst, "data: %s\n\n", payload)
@@ -306,7 +306,7 @@ func translateAnthropicStream(src io.Reader, dst io.Writer) error {
 			return nil
 		case "message_stop":
 			state.stopSeen = true
-			finish := reconcileFinish(state.finishReason, state.sawToolUse())
+			finish := ReconcileFinish(state.finishReason, state.sawToolUse())
 			usage := state.usage
 			if usage != nil {
 				if p, ok := usage["prompt_tokens"].(int); ok {
@@ -330,9 +330,9 @@ func translateAnthropicStream(src io.Reader, dst io.Writer) error {
 				} `json:"error"`
 			}
 			if err := json.Unmarshal(ev.Data, &evt); err != nil {
-				return fmt.Errorf("zcode stream error: %s", string(ev.Data))
+				return fmt.Errorf("%s stream error: %s", label, string(ev.Data))
 			}
-			return fmt.Errorf("zcode stream error type=%s: %s", evt.Error.Type, evt.Error.Message)
+			return fmt.Errorf("%s stream error type=%s: %s", label, evt.Error.Type, evt.Error.Message)
 		}
 		return nil
 	})
@@ -345,7 +345,7 @@ func translateAnthropicStream(src io.Reader, dst io.Writer) error {
 		if state.id == "" {
 			state.id = fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 		}
-		finish := reconcileFinish(state.finishReason, state.sawToolUse())
+		finish := ReconcileFinish(state.finishReason, state.sawToolUse())
 		if err := emit(map[string]any{}, finish, state.usage); err != nil {
 			return err
 		}
@@ -374,7 +374,7 @@ func anthropicStopToOpenAI(reason string) string {
 // talking", so a reply that is nothing but tool calls looks like an empty
 // response and gets retried or dropped. Whenever the stream carried a tool_use
 // block, the turn ended in tool calls regardless of what upstream claimed.
-func reconcileFinish(finish string, sawToolUse bool) string {
+func ReconcileFinish(finish string, sawToolUse bool) string {
 	if sawToolUse {
 		return "tool_calls"
 	}
@@ -397,7 +397,7 @@ func (s *streamState) sawToolUse() bool {
 // Aggregate consumes a full Anthropic SSE body and returns a single OpenAI
 // chat.completion object. Used by ChatNonStream; mirrors the workbuddy
 // Aggregate shape.
-func Aggregate(reader io.Reader) (map[string]any, error) {
+func Aggregate(reader io.Reader, label string) (map[string]any, error) {
 	result := map[string]any{"object": "chat.completion"}
 	message := map[string]any{"role": "assistant"}
 	toolCalls := map[int]map[string]any{}
@@ -529,9 +529,9 @@ func Aggregate(reader io.Reader) (map[string]any, error) {
 				} `json:"error"`
 			}
 			if err := json.Unmarshal(ev.Data, &evt); err != nil {
-				return fmt.Errorf("zcode stream error: %s", string(ev.Data))
+				return fmt.Errorf("%s stream error: %s", label, string(ev.Data))
 			}
-			return fmt.Errorf("zcode stream error type=%s: %s", evt.Error.Type, evt.Error.Message)
+			return fmt.Errorf("%s stream error type=%s: %s", label, evt.Error.Type, evt.Error.Message)
 		}
 		return nil
 	})
@@ -539,7 +539,7 @@ func Aggregate(reader io.Reader) (map[string]any, error) {
 		return nil, err
 	}
 	if !sawStop {
-		return nil, fmt.Errorf("zcode stream ended before message_stop")
+		return nil, fmt.Errorf("%s stream ended before message_stop", label)
 	}
 
 	message["content"] = content.String()
@@ -556,7 +556,7 @@ func Aggregate(reader io.Reader) (map[string]any, error) {
 	}
 	// Same reconciliation as the streaming path: a turn that produced tool
 	// calls ended in tool_calls, whatever stop_reason upstream reported.
-	finishReason = reconcileFinish(finishReason, len(toolCalls) > 0)
+	finishReason = ReconcileFinish(finishReason, len(toolCalls) > 0)
 	if id == "" {
 		id = fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	}
