@@ -1,8 +1,11 @@
 package executor
 
 import (
+	"context"
 	"testing"
 	"time"
+
+	"github.com/caigee-cmd/cli2api/internal/translate"
 )
 
 // newQuotaFailoverPool builds a pool where both regions serve the same model,
@@ -119,5 +122,25 @@ func TestQuotaPinReleaseOnlyAppliesToQuota(t *testing.T) {
 	}
 	if loop.regionFilter != "global" || loop.attempts != 1 {
 		t.Fatalf("a request-level rejection must not widen the route: region=%q attempts=%d", loop.regionFilter, loop.attempts)
+	}
+}
+
+// A session pin seeds the region filter, but quota must still be able to
+// escape it: otherwise a conversation bound to an account that ran out of
+// credits fails every following turn.
+func TestSessionPinRegionIsSoftForQuota(t *testing.T) {
+	exec := ChatExecutor{Pool: newQuotaFailoverPool(), MaxAttempts: 4}
+	loop := exec.newRouteLoop(context.Background(), "acc-global", "", translate.ChatRequest{Model: "MiniMax-M3"})
+	if loop.regionFilter != "global" || !loop.softRegion {
+		t.Fatalf("session pin must seed a soft region filter: region=%q soft=%v", loop.regionFilter, loop.softRegion)
+	}
+	loop.excluded["acc-global"] = struct{}{}
+	loop.index = 1
+	quota := Classified{Kind: KindQuota, Failover: true, Cooldown: time.Hour}
+	if !loop.mayFailover(exec, quota, "MiniMax-M3") {
+		t.Fatal("a quota refusal must escape a session pin")
+	}
+	if loop.regionFilter != "" {
+		t.Fatalf("session pin region survived a quota refusal: %q", loop.regionFilter)
 	}
 }

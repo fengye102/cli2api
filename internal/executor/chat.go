@@ -823,9 +823,16 @@ func (e ChatExecutor) newRouteLoop(ctx context.Context, prefer, providerFilter s
 			regionFilter = granted
 		}
 	}
+	// A session pin (or any client-supplied preference) is a scheduling hint,
+	// not a routing decision: a quota refusal has to be able to escape it, or
+	// a conversation bound to an account that ran out of credits keeps failing
+	// every turn. Model-prefix and key-grant regions above are decisions and
+	// stay hard.
+	softRegion := false
 	if regionFilter == "" && prefer != "" && e.Pool != nil {
 		if pinnedItem, ok := e.Pool.ByID(prefer); ok {
 			regionFilter = pinRegion("", pinnedItem.Region)
+			softRegion = true
 		}
 	}
 	loop := routeLoop{
@@ -836,6 +843,7 @@ func (e ChatExecutor) newRouteLoop(ctx context.Context, prefer, providerFilter s
 		routing:        routing,
 		excluded:       map[string]struct{}{},
 		allowed:        allowed,
+		softRegion:     softRegion,
 		attempts:       e.attemptsFor(providerFilter, regionFilter, req.Model, allowed, nil),
 	}
 	if routing.Source == routingPin {
