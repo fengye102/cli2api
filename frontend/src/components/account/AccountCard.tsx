@@ -264,7 +264,7 @@ export function AccountCard({
             exceededLabel={t('quotaExceeded')}
             provider={account.provider}
           />
-        ) : NO_QUOTA_PROVIDERS.has(account.provider) ? (
+        ) : account.provider && NO_QUOTA_PROVIDERS.has(account.provider) ? (
           // A relay (and a cookie-only web session) has no balance API to poll,
           // so the generic "fetching quota…" copy would spin here forever.
           <span className="text-caption text-foreground/65">{t('quotaNotTracked')}</span>
