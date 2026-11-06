@@ -880,11 +880,30 @@ func (l routeLoop) canFailover(classified Classified) bool {
 // the candidate set (the attempt budget is recomputed from the model-aware
 // route count), so a request with no alternative still ends on the original
 // quota error.
-func (l *routeLoop) mayFailover(e ChatExecutor, classified Classified, publicModel string) bool {
+func (l *routeLoop) mayFailover(e ChatExecutor, classified Classified, publicModel, failedID string) bool {
 	if classified.Kind == accounts.KindQuota && l.softRegion && l.regionFilter != "" {
 		l.regionFilter = ""
 		l.softRegion = false
-		l.attempts = e.attemptsFor(l.providerFilter, l.regionFilter, publicModel, l.allowed, l.eligible)
+		// The budget counts attempts, not candidates: the hops already spent
+		// stay spent, and the candidates still worth trying are added on top.
+		// Counting only what is left would end the request one account short
+		// (the refused account is already excluded from the route count), and
+		// a region whose accounts all refuse would never reach the healthy
+		// sibling in the other region.
+		remaining := 0
+		if e.Pool != nil {
+			excluded := make(map[string]struct{}, len(l.excluded)+1)
+			for id := range l.excluded {
+				excluded[id] = struct{}{}
+			}
+			if failedID != "" {
+				excluded[failedID] = struct{}{}
+			}
+			remaining = e.Pool.LenRoute(e.routeQuery("", l.providerFilter, "", publicModel, l.allowed, excluded, l.eligible))
+		}
+		if l.index+remaining > l.attempts {
+			l.attempts = l.index + remaining
+		}
 	}
 	return l.canFailover(classified)
 }
@@ -994,7 +1013,7 @@ func (e ChatExecutor) ChatNonStream(ctx context.Context, req translate.ChatReque
 				release()
 				return ChatResult{AttemptCount: i + 1, AccountID: item.ID, Provider: item.Provider}, err
 			}
-			if loop.mayFailover(e, classified, req.Model) {
+			if loop.mayFailover(e, classified, req.Model, item.ID) {
 				release()
 				loop.exclude(item)
 				continue
@@ -1055,7 +1074,7 @@ func (e ChatExecutor) ChatNonStream(ctx context.Context, req translate.ChatReque
 			}
 			e.markClassified(item.ID, classified, req.Model)
 			status := accounts.AttemptStatusError
-			if loop.mayFailover(e, classified, req.Model) {
+			if loop.mayFailover(e, classified, req.Model, item.ID) {
 				status = accounts.AttemptStatusFailover
 				loop.exclude(item)
 				e.recordAttempt(ctx, accounts.RequestAttempt{
@@ -1454,7 +1473,7 @@ func (e ChatExecutor) chatStreamProxy(ctx context.Context, req translate.ChatReq
 				release()
 				return StreamResult{AttemptCount: i + 1, AccountID: item.ID, Provider: item.Provider}, err
 			}
-			if loop.mayFailover(e, classified, req.Model) {
+			if loop.mayFailover(e, classified, req.Model, item.ID) {
 				release()
 				loop.exclude(item)
 				continue
@@ -1513,7 +1532,7 @@ func (e ChatExecutor) chatStreamProxy(ctx context.Context, req translate.ChatReq
 			finished := time.Now().UTC()
 			latency := int(finished.Sub(started).Milliseconds())
 			status := accounts.AttemptStatusError
-			if loop.mayFailover(e, classified, req.Model) {
+			if loop.mayFailover(e, classified, req.Model, item.ID) {
 				status = accounts.AttemptStatusFailover
 				loop.exclude(item)
 				e.recordAttempt(ctx, accounts.RequestAttempt{

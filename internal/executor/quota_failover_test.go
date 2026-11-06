@@ -44,14 +44,17 @@ func TestQuotaFailoverReleasesStickyRegionPin(t *testing.T) {
 	}
 	quota := Classified{Kind: KindQuota, Failover: true, Cooldown: time.Hour}
 
-	if !loop.mayFailover(exec, quota, "MiniMax-M3") {
+	if !loop.mayFailover(exec, quota, "MiniMax-M3", "acc-global") {
 		t.Fatal("quota refusal must fail over to the sibling account in the other region")
 	}
 	if loop.regionFilter != "" {
 		t.Fatalf("sticky region pin was not released: %q", loop.regionFilter)
 	}
+	// One attempt is spent and the healthy sibling in the other region is the
+	// only candidate left, so the budget must cover two attempts — a budget
+	// that only counted what was left would have stopped at one.
 	if loop.attempts != 2 {
-		t.Fatalf("attempt budget must re-count the cross-region route, got %d", loop.attempts)
+		t.Fatalf("attempt budget must add the spent hop to the remaining route, got %d", loop.attempts)
 	}
 }
 
@@ -69,7 +72,7 @@ func TestQuotaFailoverKeepsHardRegionPin(t *testing.T) {
 	}
 	quota := Classified{Kind: KindQuota, Failover: true, Cooldown: time.Hour}
 
-	if loop.mayFailover(exec, quota, "MiniMax-M3") {
+	if loop.mayFailover(exec, quota, "MiniMax-M3", "acc-global") {
 		t.Fatal("a hard region pin must not fail over into another region")
 	}
 	if loop.regionFilter != "global" {
@@ -98,7 +101,7 @@ func TestQuotaFailoverStaysSingleAttemptWithoutSibling(t *testing.T) {
 	}
 	quota := Classified{Kind: KindQuota, Failover: true, Cooldown: time.Hour}
 
-	if loop.mayFailover(exec, quota, "MiniMax-M3") {
+	if loop.mayFailover(exec, quota, "MiniMax-M3", "acc-only") {
 		t.Fatal("a lone exhausted account must not stretch the attempt budget")
 	}
 }
@@ -117,7 +120,7 @@ func TestQuotaPinReleaseOnlyAppliesToQuota(t *testing.T) {
 	}
 	invalid := Classified{Kind: KindInvalidRequest, Failover: false}
 
-	if loop.mayFailover(exec, invalid, "MiniMax-M3") {
+	if loop.mayFailover(exec, invalid, "MiniMax-M3", "acc-global") {
 		t.Fatal("a request-level rejection must not fail over")
 	}
 	if loop.regionFilter != "global" || loop.attempts != 1 {
@@ -137,10 +140,53 @@ func TestSessionPinRegionIsSoftForQuota(t *testing.T) {
 	loop.excluded["acc-global"] = struct{}{}
 	loop.index = 1
 	quota := Classified{Kind: KindQuota, Failover: true, Cooldown: time.Hour}
-	if !loop.mayFailover(exec, quota, "MiniMax-M3") {
+	if !loop.mayFailover(exec, quota, "MiniMax-M3", "acc-global") {
 		t.Fatal("a quota refusal must escape a session pin")
 	}
 	if loop.regionFilter != "" {
 		t.Fatalf("session pin region survived a quota refusal: %q", loop.regionFilter)
+	}
+}
+
+// The shape that exposed the budget bug: two exhausted accounts in one region
+// and a healthy one in the other. The first refusal must budget for the second
+// exhausted account AND the healthy sibling, otherwise the request ends one
+// account short with the quota error.
+func TestQuotaFailoverBudgetsTheWholeChain(t *testing.T) {
+	pool := NewPool(nil, nil)
+	pool.Upsert(Item{ID: "acc-dead-a", Provider: "minimax", Region: "global", Models: []string{"MiniMax-M3"}})
+	pool.Upsert(Item{ID: "acc-dead-b", Provider: "minimax", Region: "global", Models: []string{"MiniMax-M3"}})
+	pool.Upsert(Item{ID: "acc-ok", Provider: "minimax", Region: "cn", Models: []string{"MiniMax-M3"}})
+
+	exec := ChatExecutor{Pool: pool, MaxAttempts: 4}
+	loop := routeLoop{
+		providerFilter: "minimax",
+		regionFilter:   "global",
+		softRegion:     true,
+		attempts:       2,
+		// mayFailover runs after the attempt, so index already counts it.
+		index:    1,
+		excluded: map[string]struct{}{},
+	}
+	quota := Classified{Kind: KindQuota, Failover: true, Cooldown: time.Hour}
+
+	if !loop.mayFailover(exec, quota, "MiniMax-M3", "acc-dead-a") {
+		t.Fatal("first refusal must fail over")
+	}
+	if loop.attempts != 3 {
+		t.Fatalf("budget must cover both remaining accounts, got %d", loop.attempts)
+	}
+	loop.index = 2
+	loop.excluded["acc-dead-a"] = struct{}{}
+	if !loop.mayFailover(exec, quota, "MiniMax-M3", "acc-dead-b") {
+		t.Fatal("second refusal must still reach the healthy sibling")
+	}
+	if loop.attempts != 3 {
+		t.Fatalf("budget must not shrink on the second refusal, got %d", loop.attempts)
+	}
+	loop.index = 3
+	loop.excluded["acc-dead-b"] = struct{}{}
+	if loop.mayFailover(exec, quota, "MiniMax-M3", "acc-ok") {
+		t.Fatal("the budget must stop once every candidate was tried")
 	}
 }
