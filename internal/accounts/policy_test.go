@@ -15,6 +15,9 @@ func TestDefaultAccountPolicyValues(t *testing.T) {
 	if !DefaultDropSystemPrompt("workbuddy", nil) {
 		t.Fatal("drop system prompt defaults on")
 	}
+	if DefaultDropSystemPrompt("custom", nil) {
+		t.Fatal("a custom relay must keep the caller's system prompt")
+	}
 	if DefaultDropSystemPrompt("trae", nil) {
 		t.Fatal("trae must keep caller system prompts by default")
 	}

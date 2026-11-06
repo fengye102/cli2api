@@ -31,13 +31,15 @@ func DefaultPriorityValue(value int) int {
 // system prompts because upstream content screening rejects third-party
 // identity. Trae, Kimi, and CodeArts keep them: clients such as MiMo Code put
 // JSON instructions in the system prompt, and those families have no equivalent
-// screening. An explicit value always wins.
+// screening. A custom relay keeps them too: it is a passthrough to whatever it
+// fronts, so discarding the caller's instructions would silently change how the
+// model answers. An explicit value always wins.
 func DefaultDropSystemPrompt(provider string, value *bool) bool {
 	if value != nil {
 		return *value
 	}
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "trae", "kimi", "codearts", "autoclaw", "autoclaw-intl":
+	case "trae", "kimi", "codearts", "autoclaw", "autoclaw-intl", "custom":
 		return false
 	default:
 		return true
