@@ -110,7 +110,6 @@ func (c *Client) Checkin(ctx context.Context, accountID string) (providers.Check
 		// Without the ledger we cannot honestly claim success.
 		return providers.CheckinResult{}, fmt.Errorf("小浣熊签到：无法核对今日入账：%w", err)
 	}
-
 	granted := int64(0)
 	for _, item := range grants {
 		granted += item.Points
@@ -119,6 +118,15 @@ func (c *Client) Checkin(ctx context.Context, accountID string) (providers.Check
 		message := fmt.Sprintf("今日积分 +%d", granted)
 		if note := grantNote(grant); note != "" {
 			message += "；" + note
+		}
+		// One-time first-login rewards ride along with the daily grant: the
+		// official desktop client collects them on the same launch, and an
+		// account pool fed from desktop logins has never taken the phone one
+		// (onboarding.go). Best-effort on purpose — a reward endpoint having a
+		// bad day must not fail a check-in whose daily credit already landed.
+		if points, notes := c.ClaimLoginGrants(ctx, accountID); points > 0 {
+			_ = notes
+			message += fmt.Sprintf("；首登奖励 +%d 分", points)
 		}
 		return providers.CheckinResult{
 			Status:        "success",

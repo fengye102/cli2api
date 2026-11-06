@@ -52,6 +52,12 @@ type Client struct {
 	authBase string
 	siteBase string
 
+	// grantsMu guards resolvedGrants: the one-time first-login rewards this
+	// process already settled, so the daily check-in hook does not re-post them
+	// every morning (onboarding.go).
+	grantsMu       sync.Mutex
+	resolvedGrants map[string]bool
+
 	// rounds holds the in-flight browser-login round per account (login.go).
 	rounds map[string]*loginRound
 	// listener is the loopback callback listener, bound once and kept for the
@@ -224,6 +230,7 @@ func (c *Client) Adapter() providers.Adapter {
 		ImportExport: importer{},
 		Prober:       c,
 		Checkin:      c,
+		Claim:        c,
 	}
 }
 
