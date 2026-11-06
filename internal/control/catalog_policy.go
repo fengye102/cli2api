@@ -207,6 +207,12 @@ func ProviderModelEntry(model providers.ModelInfo, provider string) map[string]a
 	if model.Capabilities.Images {
 		entry["supports_images"] = true
 	}
+	// Image-generation models are advertised with their own marker so a client
+	// can tell "this produces images" from "this accepts images".
+	if model.Capabilities.ImageGeneration {
+		entry["supports_image_generation"] = true
+		entry["type"] = "image"
+	}
 	return entry
 }
 

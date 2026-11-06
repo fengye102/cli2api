@@ -39,6 +39,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc(endpoint.ChatCompletionsPath, s.withAPIKey(s.gatewayHandler().HandleChatCompletions))
 	s.mux.HandleFunc(endpoint.MessagesPath, s.withAPIKey(s.gatewayHandler().HandleAnthropicMessages))
 	s.mux.HandleFunc(endpoint.ResponsesPath, s.withAPIKey(s.gatewayHandler().HandleResponses))
+	s.mux.HandleFunc(endpoint.ImagesPath, s.withAPIKey(s.gatewayHandler().HandleImagesGenerations))
 
 	ui := webui.Handler()
 	s.mux.Handle("/assets/", ui)

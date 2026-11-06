@@ -6,4 +6,5 @@ const (
 	ChatCompletionsPath = "/v1/chat/completions"
 	MessagesPath        = "/v1/messages"
 	ResponsesPath       = "/v1/responses"
+	ImagesPath          = "/v1/images/generations"
 )

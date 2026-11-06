@@ -98,6 +98,16 @@ func (c *Client) doChat(ctx context.Context, accountID string, req translate.Cha
 	if model == "" {
 		return nil, providers.ResolvedChat{}, newProviderError(http.StatusBadRequest, "loomy model is required")
 	}
+	// A generation model has no chat plane: forwarding it upstream only earns
+	// a 404 "该模型暂未开放". Point the caller at the endpoint that does serve
+	// it instead of spending a round trip.
+	if (catalogEntry{ID: model}).imageModel() {
+		return nil, providers.ResolvedChat{}, &providers.Error{
+			Kind:    accounts.KindInvalidRequest,
+			Status:  http.StatusBadRequest,
+			Message: publicModel(model) + " 是图像生成模型，请改用 POST /v1/images/generations（body 与 OpenAI 一致：model + prompt）",
+		}
+	}
 	payload, err := buildChatBody(req, model)
 	if err != nil {
 		return nil, providers.ResolvedChat{}, err

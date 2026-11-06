@@ -28,7 +28,7 @@ func (s *Server) Handler() http.Handler {
 
 func isOpenAIEndpoint(path string) bool {
 	switch path {
-	case endpoint.ModelsPath, endpoint.ChatCompletionsPath, endpoint.MessagesPath, endpoint.ResponsesPath:
+	case endpoint.ModelsPath, endpoint.ChatCompletionsPath, endpoint.MessagesPath, endpoint.ResponsesPath, endpoint.ImagesPath:
 		return true
 	default:
 		return false

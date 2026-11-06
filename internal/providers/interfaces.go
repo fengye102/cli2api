@@ -31,11 +31,15 @@ type ModelCapabilities struct {
 	// MaxMode tiers: when a model declares a second (Max/Max-mode) tier, these
 	// carry the Max-tier prompt/output ceilings so the console can show the
 	// value that matches the max-mode toggle instead of the default tier.
-	PromptMaxTokensMax int      `json:"prompt_max_tokens_max,omitempty"`
-	MaxOutputMax       int      `json:"max_output_tokens_max,omitempty"`
-	MaxMode            bool     `json:"max_mode,omitempty"`
-	Tools              bool     `json:"tools"`
-	Images             bool     `json:"images"`
+	PromptMaxTokensMax int  `json:"prompt_max_tokens_max,omitempty"`
+	MaxOutputMax       int  `json:"max_output_tokens_max,omitempty"`
+	MaxMode            bool `json:"max_mode,omitempty"`
+	Tools              bool `json:"tools"`
+	Images             bool `json:"images"`
+	// ImageGeneration marks a model that produces images instead of text: it is
+	// served by /v1/images/generations, and a chat request naming it is
+	// rejected with a pointer to that endpoint.
+	ImageGeneration    bool     `json:"image_generation,omitempty"`
 	Reasoning          bool     `json:"reasoning"`
 	ReasoningOptions   []string `json:"reasoning_options,omitempty"`
 	ReasoningDefault   string   `json:"reasoning_default,omitempty"`
@@ -263,6 +267,28 @@ func (e *Error) Error() string {
 	return e.Kind
 }
 
+// ImageGenerationRequest is one OpenAI-shaped image request. Body is the
+// client's original JSON; a provider rewrites `model` itself (each one owns its
+// prefix and its own native naming), so fields like size/n/seed pass through
+// without this layer modelling them all.
+type ImageGenerationRequest struct {
+	PublicModel string
+	Body        json.RawMessage
+}
+
+// ImageGenerationResult is the upstream's OpenAI-shaped answer to relay back.
+type ImageGenerationResult struct {
+	Body json.RawMessage
+	// Credits is what the request actually cost, when the upstream reports it.
+	Credits *float64
+}
+
+// ImageGenerator is the optional image-generation capability. One call serves
+// one image request on one account; the executor owns routing and failover.
+type ImageGenerator interface {
+	GenerateImage(ctx context.Context, accountID string, req ImageGenerationRequest) (ImageGenerationResult, error)
+}
+
 // Adapter bundles the optional capability interfaces. Every field may be nil;
 // use Supports() before calling so unsupported paths fail explicitly.
 type Adapter struct {
@@ -284,6 +310,9 @@ type Adapter struct {
 	// NativeResponses is the optional native Responses capability. When set,
 	// /v1/responses requests routed to this adapter skip the chat form.
 	NativeResponses NativeResponsesStreamer
+	// ImageGen is the optional image-generation capability behind
+	// /v1/images/generations. Nil means the provider has no image plane.
+	ImageGen ImageGenerator
 }
 
 func (a Adapter) Supports(capability string) bool {
@@ -308,6 +337,8 @@ func (a Adapter) Supports(capability string) bool {
 		return a.Claim != nil
 	case "native_responses":
 		return a.NativeResponses != nil
+	case "image_generation":
+		return a.ImageGen != nil
 	default:
 		return false
 	}

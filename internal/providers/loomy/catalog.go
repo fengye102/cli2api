@@ -20,9 +20,9 @@ import (
 //
 // `multiplier` is the per-request credit cost, which the console renders as the
 // model's rate. The list also contains image-generation models
-// (Hy-Image-3.5-preview, doubao-seedream-5-lite, qwen-image-3.0-pro) that this
-// gateway cannot serve — they need /v1/images/generations — so they are dropped
-// instead of advertised and then failing with 404.
+// (Hy-Image-3.5-preview, doubao-seedream-5-lite, qwen-image-3.0-pro) marked
+// `"type":"image"`; they are advertised with image_generation set and served by
+// /v1/images/generations, never as chat models.
 
 // catalogEntry is one model record.
 type catalogEntry struct {
@@ -34,24 +34,46 @@ type catalogEntry struct {
 	Object           string   `json:"object"`
 	OwnedBy          string   `json:"owned_by"`
 	ContextLengthAlt int      `json:"contextLength"`
+	// The gateway's own classification. `modalities` is usually absent, so
+	// `type` plus capabilities.output_modalities are the fields that actually
+	// say "this record generates images".
+	Type         string `json:"type"`
+	Capabilities struct {
+		OutputModalities []string `json:"output_modalities"`
+		InputModalities  []string `json:"input_modalities"`
+	} `json:"capabilities"`
 }
 
-// imageModelIDs are the generation models the gateway lists but this one cannot
-// serve: they need /v1/images/generations.
+// imageModelIDs are the generation models this gateway serves through
+// /v1/images/generations. They are kept in the catalog (marked
+// image_generation) instead of being hidden: a client that asks for one in a
+// chat request gets a pointer to the image endpoint rather than a 404.
 var imageModelIDs = map[string]bool{
 	"hy-image-3.5-preview":   true,
 	"doubao-seedream-5-lite": true,
 	"qwen-image-3.0-pro":     true,
 }
 
-// imageOnlyModalities marks a record as an image-generation model.
+// imageModel reports whether a record generates images instead of text.
 //
-// The id test runs before the modality test on purpose. The gateway sends these
-// records without a `modalities` field at all, so "no modalities means a text
-// model" let every generation model through and they were advertised on
-// /v1/models and then failed with 404 when called — the exact shape that
-// production served before this was ordered correctly.
+// `type` and capabilities.output_modalities are tried first because they are
+// the gateway's explicit statement; the id heuristics remain for records that
+// carry neither. The old code tested `modalities` first and returned "text
+// model" when it was absent — the gateway omits `modalities` on exactly these
+// records, so the generation models slipped through as chat models.
 func (entry catalogEntry) imageModel() bool {
+	if strings.EqualFold(strings.TrimSpace(entry.Type), "image") {
+		return true
+	}
+	if len(entry.Capabilities.OutputModalities) > 0 {
+		text := false
+		for _, modality := range entry.Capabilities.OutputModalities {
+			if strings.EqualFold(strings.TrimSpace(modality), "text") {
+				text = true
+			}
+		}
+		return !text
+	}
 	id := strings.ToLower(strings.TrimSpace(entry.ID))
 	if imageModelIDs[id] ||
 		strings.Contains(id, "image") ||
@@ -63,14 +85,12 @@ func (entry catalogEntry) imageModel() bool {
 	if len(entry.Modalities) == 0 {
 		return false
 	}
-	text := false
 	for _, modality := range entry.Modalities {
-		switch strings.ToLower(strings.TrimSpace(modality)) {
-		case "text":
-			text = true
+		if strings.EqualFold(strings.TrimSpace(modality), "text") {
+			return false
 		}
 	}
-	return !text
+	return true
 }
 
 func (entry catalogEntry) supportsImages() bool {
@@ -139,6 +159,7 @@ func fallbackModels() []providers.ModelInfo {
 
 // info converts one gateway record into the shared model shape.
 func (entry catalogEntry) info() providers.ModelInfo {
+	imageGen := entry.imageModel()
 	return providers.ModelInfo{
 		NativeModel: entry.ID,
 		PublicModel: publicModel(entry.ID),
@@ -149,9 +170,11 @@ func (entry catalogEntry) info() providers.ModelInfo {
 			ContextWindow: entry.contextWindow(),
 			// The gateway was measured serving tool calls and vision input;
 			// it exposes no prompt/output ceilings, so those stay zero rather
-			// than being invented.
-			Tools:  true,
-			Images: entry.supportsImages(),
+			// than being invented. A generation model serves neither: it is
+			// reached through /v1/images/generations.
+			Tools:           !imageGen,
+			Images:          entry.supportsImages(),
+			ImageGeneration: imageGen,
 		},
 	}
 }
@@ -192,7 +215,7 @@ func (c *Client) fetchCatalog(ctx context.Context, accountID string, cred Creden
 	seen := map[string]bool{}
 	for _, entry := range payload.Data {
 		id := strings.TrimSpace(entry.ID)
-		if id == "" || entry.imageModel() || seen[id] {
+		if id == "" || seen[id] {
 			continue
 		}
 		seen[id] = true

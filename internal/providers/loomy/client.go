@@ -281,6 +281,7 @@ func (c *Client) Adapter() providers.Adapter {
 		ImportExport: importer{},
 		Prober:       c,
 		Claim:        c,
+		ImageGen:     c,
 	}
 }
 

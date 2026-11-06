@@ -37,6 +37,10 @@ type fakeGateway struct {
 	envelopeAuth bool
 
 	tasks map[string]bool
+	// imageBody/imageCalls/imageStatus record what the image plane received.
+	imageBody   map[string]any
+	imageCalls  int
+	imageStatus int
 	// balance is the credit balance /points/records reports; completing a task
 	// adds that task's points so a test can assert the claim reports what
 	// actually landed instead of only the advertised sum.
@@ -80,6 +84,24 @@ func (g *fakeGateway) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch r.URL.Path {
+	case "/api/v1/images/generations":
+		raw, _ := io.ReadAll(r.Body)
+		body := map[string]any{}
+		_ = json.Unmarshal(raw, &body)
+		g.mu.Lock()
+		g.imageBody = body
+		g.imageCalls++
+		status := g.imageStatus
+		g.mu.Unlock()
+		if status >= 300 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			fmt.Fprint(w, `{"error":{"message":"insufficient points","type":"quota_error"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"created":1793948356,"data":[{"url":"https://example.test/out.png?signature=abc"}],"points_consumed":110}`)
+
 	case "/api/v1/chat/completions":
 		g.mu.Lock()
 		g.chatCalls++
@@ -107,9 +129,9 @@ func (g *fakeGateway) handle(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"data":[
 			{"id":"qwen3.8-flash","name":"qwen 3.8 flash (x0.8)","multiplier":0.8,"context_length":1000000,"modalities":["text","image","video"]},
 			{"id":"spark-x","name":"Spark X2.5 (x0.1)","multiplier":0.1,"context_length":1048576,"modalities":["text"]},
-			{"id":"Hy-Image-3.5-preview","name":"Hy image 3.5 preview","multiplier":0,"context_length":100000,"modalities":["text","image"]},
-			{"id":"doubao-seedream-5-lite","name":"Doubao seedream 5 lite","multiplier":0,"context_length":128000},
-			{"id":"qwen-image-3.0-pro","name":"qwen image 3.0 pro","multiplier":0}
+			{"id":"Hy-Image-3.5-preview","name":"Hy image 3.5 preview","multiplier":0,"context_length":100000,"modalities":["text","image"],"type":"image"},
+			{"id":"doubao-seedream-5-lite","name":"Doubao seedream 5 lite","multiplier":0,"context_length":128000,"type":"image"},
+			{"id":"qwen-image-3.0-pro","name":"qwen image 3.0 pro","multiplier":0,"type":"image"}
 		]}`)
 
 	case "/api/v1/points/records":
@@ -415,7 +437,7 @@ func TestQuotaMapsCreditWindows(t *testing.T) {
 	}
 }
 
-func TestModelsDropImageGenerationRecords(t *testing.T) {
+func TestModelsMarkImageGenerationRecords(t *testing.T) {
 	store := newFakeStore()
 	store.add("acc-1", Credential{Format: CredentialFormat, Session: "sess-live"})
 	gateway := newFakeGateway(t, "sess-live")
@@ -426,27 +448,114 @@ func TestModelsDropImageGenerationRecords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Models: %v", err)
 	}
-	if len(models) != 2 {
-		t.Fatalf("models = %d, want 2 chat models", len(models))
+	if len(models) != 5 {
+		t.Fatalf("models = %d, want 5 (2 chat + 3 image)", len(models))
 	}
-	byID := map[string]bool{}
+	byID := map[string]providers.ModelInfo{}
 	for _, model := range models {
-		byID[model.PublicModel] = true
+		byID[model.PublicModel] = model
 		if model.Credits == "" && !model.Free {
 			t.Fatalf("model %s has neither a price nor a free flag", model.PublicModel)
 		}
 	}
-	if !byID["loomy/qwen3.8-flash"] || !byID["loomy/spark-x"] {
-		t.Fatalf("public models = %v", byID)
+	if !byID["loomy/qwen3.8-flash"].Capabilities.Tools || !byID["loomy/spark-x"].Capabilities.Tools {
+		t.Fatal("chat models must keep advertising tools")
 	}
-	if byID["loomy/Hy-Image-3.5-preview"] {
-		t.Fatal("an image-generation model must not be advertised as a chat model")
+	// The generation records arrive with no `modalities` field — the shape that
+	// used to make them look like chat models. They must now be advertised as
+	// image generation and stripped of chat affordances.
+	for _, id := range []string{
+		"loomy/Hy-Image-3.5-preview", "loomy/doubao-seedream-5-lite", "loomy/qwen-image-3.0-pro",
+	} {
+		model, ok := byID[id]
+		if !ok {
+			t.Fatalf("%s is not advertised: %v", id, byID)
+		}
+		if !model.Capabilities.ImageGeneration || model.Capabilities.Tools {
+			t.Fatalf("%s capabilities = %+v, want image generation and no tools", id, model.Capabilities)
+		}
 	}
-	// The gateway sends the seedream/qwen-image records with no `modalities`
-	// field at all; those went out on /v1/models in production while the mock
-	// carried modalities for every record and hid the bug.
-	if byID["loomy/doubao-seedream-5-lite"] || byID["loomy/qwen-image-3.0-pro"] {
-		t.Fatalf("generation models without modalities leaked: %v", byID)
+	for _, model := range models {
+		if model.Capabilities.ImageGeneration && model.PublicModel == "loomy/spark-x" {
+			t.Fatal("a text model was marked as image generation")
+		}
+	}
+}
+
+func TestGenerateImageForwardsBodyAndCredits(t *testing.T) {
+	store := newFakeStore()
+	store.add("acc-1", Credential{Format: CredentialFormat, Session: "sess-live"})
+	gateway := newFakeGateway(t, "sess-live")
+	account := newFakeAccountService(t, "pw")
+	client := newTestClient(t, store, gateway, account)
+
+	result, err := client.GenerateImage(context.Background(), "acc-1", providers.ImageGenerationRequest{
+		PublicModel: "loomy/Hy-Image-3.5-preview",
+		Body:        []byte(`{"model":"loomy/Hy-Image-3.5-preview","prompt":"a red apple","size":"1024x1024","n":1}`),
+	})
+	if err != nil {
+		t.Fatalf("GenerateImage: %v", err)
+	}
+	if result.Credits == nil || *result.Credits != 110 {
+		t.Fatalf("credits = %v, want the upstream points_consumed 110", result.Credits)
+	}
+	if !strings.Contains(string(result.Body), "example.test/out.png") {
+		t.Fatalf("body = %s", result.Body)
+	}
+	if got, _ := gateway.imageBody["model"].(string); got != "Hy-Image-3.5-preview" {
+		t.Fatalf("upstream model = %q, want the native name without the loomy/ prefix", got)
+	}
+	if got, _ := gateway.imageBody["size"].(string); got != "1024x1024" {
+		t.Fatalf("size was not forwarded: %v", gateway.imageBody)
+	}
+	if got, _ := gateway.imageBody["prompt"].(string); got != "a red apple" {
+		t.Fatalf("prompt was not forwarded: %v", gateway.imageBody)
+	}
+}
+
+func TestGenerateImageSurfacesUpstreamFailure(t *testing.T) {
+	store := newFakeStore()
+	store.add("acc-1", Credential{Format: CredentialFormat, Session: "sess-live"})
+	gateway := newFakeGateway(t, "sess-live")
+	gateway.imageStatus = http.StatusPaymentRequired
+	account := newFakeAccountService(t, "pw")
+	client := newTestClient(t, store, gateway, account)
+
+	_, err := client.GenerateImage(context.Background(), "acc-1", providers.ImageGenerationRequest{
+		PublicModel: "loomy/doubao-seedream-5-lite",
+		Body:        []byte(`{"model":"loomy/doubao-seedream-5-lite","prompt":"x"}`),
+	})
+	if err == nil {
+		t.Fatal("a 402 from the image plane must not look like success")
+	}
+	providerErr, ok := err.(*providers.Error)
+	if !ok || providerErr.Kind == "" {
+		t.Fatalf("err = %v, want a classified provider error", err)
+	}
+}
+
+// A chat request naming a generation model gets a pointer to the image
+// endpoint instead of the upstream's 404 "该模型暂未开放".
+func TestChatOnImageModelPointsAtTheImageEndpoint(t *testing.T) {
+	store := newFakeStore()
+	store.add("acc-1", Credential{Format: CredentialFormat, Session: "sess-live"})
+	gateway := newFakeGateway(t, "sess-live")
+	account := newFakeAccountService(t, "pw")
+	client := newTestClient(t, store, gateway, account)
+
+	_, err := client.ChatNonStream(context.Background(), "acc-1", translate.ChatRequest{
+		Model:    "loomy/qwen-image-3.0-pro",
+		Stream:   true,
+		Messages: []translate.ChatMessage{{Role: "user", Content: "画一只猫"}},
+	})
+	if err == nil {
+		t.Fatal("chat on an image model must be refused")
+	}
+	if !strings.Contains(err.Error(), "/v1/images/generations") {
+		t.Fatalf("err = %v, want a pointer to the image endpoint", err)
+	}
+	if gateway.chatCalls != 0 {
+		t.Fatalf("chat reached upstream %d times, want 0", gateway.chatCalls)
 	}
 }
 
