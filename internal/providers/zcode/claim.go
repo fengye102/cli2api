@@ -181,7 +181,11 @@ func (c *Client) Claim(ctx context.Context, accountID, planID string) (providers
 	case payload.Code == 1003 || strings.Contains(strings.ToLower(payload.Msg), "already claimed"):
 		return providers.ClaimResult{AlreadyClaimed: true, PlanID: planID, Message: firstNonEmptyString(payload.Msg, "already claimed")}, nil
 	case payload.Code == 3007 || strings.Contains(strings.ToLower(payload.Msg), "captcha"):
-		return providers.ClaimResult{}, fmt.Errorf("zcode claim captcha failed: %s", firstNonEmptyString(payload.Msg, "captcha required"))
+		// 3007 is "the captcha token is missing or unwanted". The gateway mints
+		// one when its node is up, so reaching here means upstream wants a check
+		// we cannot mint — tag it so the schedulers stop instead of re-posting.
+		return providers.ClaimResult{}, fmt.Errorf("zcode claim captcha failed: %s: %w",
+			firstNonEmptyString(payload.Msg, "captcha required"), providers.ErrNeedsHumanVerification)
 	default:
 		return providers.ClaimResult{}, fmt.Errorf("zcode claim failed (status=%d code=%d): %s",
 			status, payload.Code, firstNonEmptyString(payload.Msg, strings.TrimSpace(string(respBody))))

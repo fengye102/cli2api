@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/caigee-cmd/cli2api/internal/providers"
 )
 
 func newClaimClient(t *testing.T, handler http.Handler, store *observeStore) *Client {
@@ -143,6 +145,12 @@ func TestClaim_CaptchaRequired(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "captcha") {
 		t.Errorf("error should mention captcha, got %q", err.Error())
+	}
+	// The schedulers key their "stop retrying" decision off this tag: a 3007
+	// answers identically until a person solves the check, so riding the retry
+	// ladder only re-posts a doomed claim every ten minutes.
+	if !providers.NeedsHumanVerification(err) {
+		t.Errorf("a 3007 must be classified as needing human verification, got %v", err)
 	}
 }
 

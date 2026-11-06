@@ -498,7 +498,10 @@ func (c *Client) claimPlan(ctx context.Context, accountID, planID, captchaParam 
 			ResetAt: "code=429",
 		}, nil
 	case payload.Code == 3007 || strings.Contains(strings.ToLower(payload.Msg), "captcha"):
-		return providers.ClaimResult{}, fmt.Errorf("zcode claim captcha failed: %s", firstNonEmptyString(payload.Msg, "captcha required"))
+		// Same meaning as Claim's 3007: upstream wants an interactive check we
+		// cannot mint, so tag it and let the sweep stop round-tripping.
+		return providers.ClaimResult{}, fmt.Errorf("zcode claim captcha failed: %s: %w",
+			firstNonEmptyString(payload.Msg, "captcha required"), providers.ErrNeedsHumanVerification)
 	default:
 		// Business failure with the raw code embedded for the sweep. An empty
 		// body is a real answer here (upstream sometimes refuses a claim with

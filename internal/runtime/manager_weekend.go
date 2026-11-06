@@ -57,6 +57,12 @@ type weekendWindow interface {
 // the maintenance loop being single-goroutine.
 var weekendClaimedAt = map[string]time.Time{}
 
+// weekendNeedsHuman remembers accounts whose last round came back asking for an
+// interactive captcha/risk check. Those rounds cannot succeed until a person
+// solves it, so the sweep stops re-posting every ten minutes and says why; the
+// flag clears the moment the promo window closes, so next weekend starts clean.
+var weekendNeedsHuman = map[string]string{}
+
 // runWeekendClaims fires one grab round per eligible account. Called from
 // RunMaintenanceLoop on every 30s tick; does its own window gating by asking
 // the adapter (an empty round on a closed window would also work, but the
@@ -81,12 +87,25 @@ func (manager *Manager) runWeekendClaims(ctx context.Context, now time.Time) {
 		// Checked before the throttle is stamped: the first tick inside the
 		// window must fire at once, not ten minutes after it opened.
 		if !manager.weekendWindowOpen(ctx, account.ID, now) {
+			// Window shut: drop yesterday's verdict so the next promo starts
+			// with a clean slate instead of inheriting a stale "needs human".
+			delete(weekendNeedsHuman, account.ID)
+			continue
+		}
+		if _, waiting := weekendNeedsHuman[account.ID]; waiting {
+			// Already asked the operator once this window; re-posting would
+			// answer 3007 again and bury the reason under repetition.
 			continue
 		}
 		weekendClaimedAt[account.ID] = now
 
 		result, err := manager.weekendClaimAccount(ctx, account.ID)
 		if err != nil {
+			if providers.NeedsHumanVerification(err) {
+				weekendNeedsHuman[account.ID] = err.Error()
+				log.Printf("weekend claim account=%s: needs human verification, stopping rounds until the window closes: %v", account.ID, err)
+				continue
+			}
 			log.Printf("weekend claim account=%s: %v", account.ID, err)
 			continue
 		}
