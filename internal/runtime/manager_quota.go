@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -33,7 +34,16 @@ func (m *Manager) fetchProviderQuota(ctx context.Context, accountID string, prob
 	}
 	defer release()
 	info, err := prober.Quota(ctx, accountID)
-	if err != nil || info == nil || !quotaInfoHasWindows(info) {
+	if err != nil {
+		// A provider without a quota surface says so; anything else is a real
+		// failure and must not be silent, or a broken reader looks like an
+		// account that simply has no balance to show.
+		if !errors.Is(err, providers.ErrUnsupported) {
+			log.Printf("quota fetch failed account=%s err=%v", accountID, err)
+		}
+		return
+	}
+	if info == nil || !quotaInfoHasWindows(info) {
 		// An empty snapshot is "not fetched yet", not a zero balance. Saving it
 		// makes the account card render 0/0 and hides a later real reading.
 		return
@@ -52,10 +62,11 @@ func (m *Manager) fetchProviderQuota(ctx context.Context, accountID string, prob
 		FetchedAt:  info.FetchedAt,
 		Windows:    quotaWindowsFromInfo(info.Windows),
 	}
-	// Package-expiry detail is currently only produced by WorkBuddy's
-	// get-user-resource packs; keep other providers from leaking a stale or
-	// fabricated expiry into the snapshot.
-	if info.ProviderID == "workbuddy" {
+	// Package-expiry detail only travels for providers that report real packs;
+	// keep the others from leaking a stale or fabricated expiry into the
+	// snapshot. MiniMax Code grants 30-day credit packs, so its expiry is as
+	// real as WorkBuddy's.
+	if info.ProviderID == "workbuddy" || info.ProviderID == "minimax" {
 		quota.ExpiresAt = info.ExpiresAt
 		quota.ExpiringRemain = info.ExpiringRemain
 		quota.Packages = quotaPackagesFromInfo(info.Packages)
