@@ -77,6 +77,19 @@ func TestParseCreditDetailsDerivesMissingConsumed(t *testing.T) {
 	}
 }
 
+// The gateway answers a healthy call with status_msg "ok" as often as
+// "success", so the parser must key off the status code alone.
+func TestParseCreditDetailsAcceptsOkStatusMsg(t *testing.T) {
+	body := `{"details":[{"granted_amount":"400.00","remaining_amount":"120.00","consumed_amount":"280.00","expire_at_ms":1796572800000}],"total_count":1,"base_resp":{"status_code":0,"status_msg":"ok"}}`
+	info, err := parseCreditDetails([]byte(body), time.Now())
+	if err != nil {
+		t.Fatalf("a healthy status_msg must not be read as an error: %v", err)
+	}
+	if info.Remaining != 120 || info.Used != 280 {
+		t.Fatalf("totals wrong: %+v", info)
+	}
+}
+
 func TestParseCreditDetailsRejectsUpstreamError(t *testing.T) {
 	if _, err := parseCreditDetails([]byte(`{"base_resp":{"status_code":1,"status_msg":"invalid token"}}`), time.Now()); err == nil {
 		t.Fatal("an upstream error must not be read as an empty balance")

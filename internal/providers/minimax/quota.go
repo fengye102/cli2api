@@ -122,8 +122,10 @@ func parseCreditDetails(body []byte, now time.Time) (*providers.QuotaInfo, error
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("minimax 额度响应无法解析：%w", err)
 	}
-	if msg := strings.TrimSpace(payload.BaseResp.StatusMsg); msg != "" && payload.BaseResp.StatusMsg != "success" {
-		return nil, fmt.Errorf("minimax 额度失败：%s", msg)
+	// status_msg is prose, not a contract: a healthy response says "success" on
+	// one call and "ok" on the next. Only the code decides.
+	if code := payload.BaseResp.StatusCode.float(); code != 0 {
+		return nil, fmt.Errorf("minimax 额度失败：code=%v %s", code, strings.TrimSpace(payload.BaseResp.StatusMsg))
 	}
 
 	info := &providers.QuotaInfo{
