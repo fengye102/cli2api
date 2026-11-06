@@ -70,6 +70,7 @@ const labelKeys: Record<string, string> = {
   'kimi-cn': 'accountTypeKimiCN',
   'codearts-cn-north-4': 'accountTypeCodeArtsCN',
   'meta-global': 'accountTypeMetaGlobal',
+  'custom-custom': 'accountTypeCustom',
 }
 
 const hintKeys: Record<string, string> = {
@@ -90,6 +91,7 @@ const hintKeys: Record<string, string> = {
   'kimi-cn': 'accountTypeKimiCNHint',
   'codearts-cn-north-4': 'accountTypeCodeArtsCNHint',
   'meta-global': 'accountTypeMetaGlobalHint',
+  'custom-custom': 'accountTypeCustomHint',
 }
 
 function AccountTypeSkeleton({ ariaLabel }: { ariaLabel: string }) {
@@ -166,6 +168,11 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
   const [zhipuKey, setZhipuKey] = useState('')
   const [zhipuOrganization, setZhipuOrganization] = useState('')
   const [zhipuProject, setZhipuProject] = useState('')
+  // A relay is two facts, not one token: the address and the key. The generic
+  // PAT box could only carry one string, so this provider gets its own fields.
+  const [customBaseUrl, setCustomBaseUrl] = useState('')
+  const [customKey, setCustomKey] = useState('')
+  const [customModels, setCustomModels] = useState('')
   const [phase, setPhase] = useState<Phase>('idle')
   const [message, setMessage] = useState('')
   const [authUrl, setAuthUrl] = useState('')
@@ -280,7 +287,9 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
       // the historical drop=true default.
       drop_system_prompt: showDropSystem
         ? dropSystemPrompt
-        : activeOption?.provider !== 'kimi' && activeOption?.provider !== 'codearts',
+        : activeOption?.provider !== 'kimi' &&
+            activeOption?.provider !== 'codearts' &&
+            activeOption?.provider !== 'custom',
       proxy_url: proxyUrl.trim(),
     }
   }
@@ -303,6 +312,9 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
     setZhipuKey('')
     setZhipuOrganization('')
     setZhipuProject('')
+    setCustomBaseUrl('')
+    setCustomKey('')
+    setCustomModels('')
     setAdvancedOpen(false)
     setPhase('idle')
     setMessage('')
@@ -365,7 +377,8 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
     setDropSystemPrompt(
       option?.provider !== 'trae' &&
         option?.provider !== 'kimi' &&
-        option?.provider !== 'codearts',
+        option?.provider !== 'codearts' &&
+        option?.provider !== 'custom',
     )
     setMessage('')
     setStep('login')
@@ -463,6 +476,51 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
         enabled: true,
         provider: activeOption.provider,
         region: activeOption.region,
+        max_inflight: options.max_inflight,
+        priority: options.priority,
+        drop_system_prompt: options.drop_system_prompt,
+        proxy_url: options.proxy_url,
+      })
+      setPhase('done')
+      setMessage(t('wizardAccountReady'))
+      onAdded()
+      window.setTimeout(finishAndClose, 700)
+    } catch (error) {
+      setPhase('idle')
+      setMessage(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  function customModelList() {
+    return customModels
+      .split(/[,\s，、]+/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+  }
+
+  async function runCustom() {
+    const base = customBaseUrl.trim()
+    const key = customKey.trim()
+    if (!base) { setMessage(t('customBaseRequired')); return }
+    if (!base.includes('://')) { setMessage(t('customBaseRequired')); return }
+    if (!key) { setMessage(t('customKeyRequired')); return }
+    if (!activeOption) { setMessage(t('accountTypeHint')); return }
+    setMessage('')
+    try {
+      setPhase('busy')
+      const options = accountOptions()
+      const models = customModelList()
+      await importAccount({
+        format: 'custom-relay-v1',
+        provider: activeOption.provider,
+        region: activeOption.region,
+        name: name.trim() || t('accountTypeCustom'),
+        enabled: true,
+        credential: {
+          base_url: base,
+          api_key: key,
+          ...(models.length ? { models } : {}),
+        },
         max_inflight: options.max_inflight,
         priority: options.priority,
         drop_system_prompt: options.drop_system_prompt,
@@ -586,6 +644,9 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
   }))
 
   const isZhipu = activeOption?.provider === 'zhipu'
+  // A relay has no browser round and no single-token login: address plus key is
+  // the whole credential, so the bespoke form replaces the PAT/import tabs.
+  const isCustom = activeOption?.provider === 'custom'
   // Loomy has no browser round: the operator types a phone number into the
   // paste box and the provider texts a code back into the same box, so the
   // generic "start browser login" button and its 127.0.0.1/address-bar copy
@@ -775,7 +836,47 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
                     </div>
                   ) : null}
 
-                  {isZhipu ? null : (
+                  {isCustom ? (
+                    <div className="mt-4 flex flex-col gap-4">
+                      <FormRow label={t('customBaseUrl')} hint={t('customBaseUrlHint')}>
+                        <Input
+                          value={customBaseUrl}
+                          onChange={(event) => setCustomBaseUrl(event.target.value)}
+                          placeholder={t('customBaseUrlPh')}
+                          aria-label={t('customBaseUrl')}
+                          disabled={busy}
+                          autoFocus
+                        />
+                      </FormRow>
+                      <FormRow label={t('customApiKey')} hint={t('customApiKeyHint')}>
+                        <Input
+                          type="password"
+                          value={customKey}
+                          onChange={(event) => setCustomKey(event.target.value)}
+                          placeholder={t('customApiKeyPh')}
+                          aria-label={t('customApiKey')}
+                          disabled={busy}
+                        />
+                      </FormRow>
+                      <FormRow label={t('customModels')} hint={t('customModelsHint')}>
+                        <Input
+                          value={customModels}
+                          onChange={(event) => setCustomModels(event.target.value)}
+                          placeholder={t('customModelsPh')}
+                          aria-label={t('customModels')}
+                          disabled={busy}
+                        />
+                      </FormRow>
+                      {message ? (
+                        <p className="flex items-center gap-2 rounded-lg bg-surface-secondary px-3 py-2 text-caption">{isDone ? <CheckCircle size={14} className="shrink-0 text-success" /> : null}<span className={isDone ? 'font-medium text-foreground' : 'text-muted'}>{message}</span></p>
+                      ) : null}
+                      <Button className="w-full" isPending={phase === 'busy'} onPress={() => void runCustom()} isDisabled={isDone}>
+                        {isDone ? <><CheckCircle size={15} />{t('wizardAccountReady')}</> : <><Key size={15} />{t('customCreate')}</>}
+                      </Button>
+                    </div>
+                  ) : null}
+
+                  {isZhipu || isCustom ? null : (
                     <>
                   <FilterToggle
                     className="mt-3"

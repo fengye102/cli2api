@@ -13,6 +13,7 @@ import { RaccoonMark } from '@/components/RaccoonMark'
 import { AntigravityMark } from '@/components/AntigravityMark'
 import { AutoClawMark } from '@/components/AutoClawMark'
 import { CodeArtsMark } from '@/components/CodeArtsMark'
+import { CustomMark } from '@/components/CustomMark'
 
 type Props = {
   provider?: string
@@ -31,6 +32,9 @@ export function ProviderMark({ provider, size = 16, className = '' }: Props) {
   }
   if (id === 'autoclaw-intl') {
     return <AutoClawMark size={size} className={className} intl />
+  }
+  if (id === 'custom') {
+    return <CustomMark size={size} className={className} />
   }
   if (id === 'codearts') {
     return <CodeArtsMark size={size} className={className} />

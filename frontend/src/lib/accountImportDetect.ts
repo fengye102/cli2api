@@ -30,6 +30,7 @@ const FORMAT_TO_PROVIDER: Record<string, string> = {
   'qwenwork-oauth-v1': 'qwenwork',
   'meta-oauth-v1': 'meta',
   'meta-key-v1': 'meta',
+  'custom-relay-v1': 'custom',
 }
 
 const CN_DOMAIN_MARKERS = ['codebuddy.cn', 'workbuddy.cn']
