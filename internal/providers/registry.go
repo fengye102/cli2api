@@ -603,6 +603,32 @@ var Loomy = ProviderDescriptor{
 	DefaultRegion: "cn",
 }
 
+// Custom descriptor. This is the "bring your own relay" provider: the host is
+// not compiled in, it travels in the credential as base_url, so one account is
+// one third-party relay plus one key. There is no login and no quota endpoint —
+// readiness is "GET {base_url}/models answers 200".
+//
+// The region exists only because Resolve requires one; it carries no address.
+var Custom = ProviderDescriptor{
+	ID:                "custom",
+	Label:             "自定义中转站",
+	Runtime:           RuntimeInProcess,
+	AuthTypes:         []AuthType{AuthPAT},
+	CredentialFormats: []string{"custom-relay-v1"},
+	Capabilities: ProviderCapabilities{
+		// Chat Completions only: compatible relays generally have no
+		// /v1/responses, so nothing here claims one. Usage is not exposed
+		// either — a relay reports it per response, not on a balance endpoint.
+		Chat: true, Stream: true, Tools: true, Images: false, Reasoning: false,
+		ModelCatalog: true, Usage: false, Login: false, BrowserLogin: false,
+		PATLogin: true, ImportExport: true,
+	},
+	Regions: []RegionDescriptor{
+		{ID: "custom", Label: "自定义"},
+	},
+	DefaultRegion: "custom",
+}
+
 var registry = map[string]ProviderDescriptor{
 	Qoder.ID:        Qoder,
 	WorkBuddy.ID:    WorkBuddy,
@@ -622,6 +648,7 @@ var registry = map[string]ProviderDescriptor{
 	AutoClaw.ID:     AutoClaw,
 	AutoClawIntl.ID: AutoClawIntl,
 	Loomy.ID:        Loomy,
+	Custom.ID:       Custom,
 }
 
 func Get(id string) (ProviderDescriptor, bool) {
@@ -634,7 +661,7 @@ func Get(id string) (ProviderDescriptor, bool) {
 }
 
 func List() []ProviderDescriptor {
-	return []ProviderDescriptor{Qoder, WorkBuddy, Trae, Devin, Command, Codex, Zhipu, QwenWork, ZCode, Raccoon, Antigravity, Kimi, CodeArts, Meta, MuseWeb, AutoClaw, AutoClawIntl, Loomy}
+	return []ProviderDescriptor{Qoder, WorkBuddy, Trae, Devin, Command, Codex, Zhipu, QwenWork, ZCode, Raccoon, Antigravity, Kimi, CodeArts, Meta, MuseWeb, AutoClaw, AutoClawIntl, Loomy, Custom}
 }
 
 // Resolve validates a provider/region pair. Empty values fall back to the

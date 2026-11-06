@@ -27,6 +27,7 @@ import (
 	"github.com/caigee-cmd/cli2api/internal/providers/codearts"
 	"github.com/caigee-cmd/cli2api/internal/providers/codex"
 	"github.com/caigee-cmd/cli2api/internal/providers/command"
+	"github.com/caigee-cmd/cli2api/internal/providers/custom"
 	"github.com/caigee-cmd/cli2api/internal/providers/devin"
 	"github.com/caigee-cmd/cli2api/internal/providers/kimi"
 	"github.com/caigee-cmd/cli2api/internal/providers/loomy"
@@ -132,6 +133,7 @@ func New(cfg config.Config) *App {
 	providerReg.Register(raccoon.NewClient(store).Adapter())
 	loomyClient := loomy.NewClient(store)
 	providerReg.Register(loomyClient.Adapter())
+	providerReg.Register(custom.NewClient(store).Adapter())
 	providerReg.Register(antigravity.NewClient(store).Adapter())
 	providerReg.Register(qwenwork.NewClient(store).Adapter())
 	providerReg.Register(kimi.NewClient(store).Adapter())
