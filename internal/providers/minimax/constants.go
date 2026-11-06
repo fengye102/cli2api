@@ -57,6 +57,10 @@ const (
 	// ProbeTimeout bounds the readiness check so a dead gateway cannot hang the
 	// console's test button.
 	ProbeTimeout = 25 * time.Second
+	// CreditDetailsPath lists the credit packs behind the agent subscription.
+	// It is the only quota surface the account exposes: no aggregate balance
+	// endpoint exists, so the console sums the packs.
+	CreditDetailsPath = "/minimax-cloud/api/v1/credit/details"
 
 	// refreshLead is how long before expiry the adapter renews a token on its
 	// own. Access tokens live ~12h; the hourly renewer therefore fires with

@@ -332,12 +332,6 @@ func (c *Client) Probe(ctx context.Context, accountID string) (providers.Account
 	return providers.AccountHealth{Ready: true, UID: cred.Subject}, nil
 }
 
-// Quota is unknown: the agent gateway bills a subscription the public API does
-// not expose, and inventing a number would be worse than reporting none.
-func (c *Client) Quota(context.Context, string) (*providers.QuotaInfo, error) {
-	return nil, providers.ErrUnsupported
-}
-
 // Adapter wires the capability surface.
 func (c *Client) Adapter() providers.Adapter {
 	return providers.Adapter{

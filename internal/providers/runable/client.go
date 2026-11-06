@@ -170,9 +170,11 @@ func (c *Client) Probe(ctx context.Context, accountID string) (providers.Account
 	return providers.AccountHealth{Ready: true, UID: firstNonEmpty(cred.UserID, cred.Email)}, nil
 }
 
-// Quota is unknown: the account view is a web session, not a billing API this
-// adapter can read. Runable reports an exhausted free quota as a 402 on chat,
-// which the classifier turns into a quota cooldown.
+// Quota is unknown on purpose: the signed-in web app reads its balance through
+// an oRPC surface this adapter has no contract for (an exhaustive scan of the
+// app bundle and every plausible rpc method returned 404), and Runable reports
+// an exhausted free quota as a 402 on chat, which the classifier turns into a
+// quota cooldown. Reporting a made-up balance would be worse than none.
 func (c *Client) Quota(context.Context, string) (*providers.QuotaInfo, error) {
 	return nil, providers.ErrUnsupported
 }

@@ -60,6 +60,10 @@ type Props = {
   onViewModels: () => void
 }
 
+// Providers whose adapter has no quota surface: their account card must not
+// claim a balance is being fetched, because no fetch will ever arrive.
+const NO_QUOTA_PROVIDERS = new Set(['custom', 'runable'])
+
 function stateCopyFor(state: ReturnType<typeof accountState>, cooldown: string, t: Translate) {
   if (state === 'hot') return t('signedIn')
   if (state === 'ready') return t('ready')
@@ -260,11 +264,11 @@ export function AccountCard({
             exceededLabel={t('quotaExceeded')}
             provider={account.provider}
           />
-        ) : account.provider === 'custom' ? (
-          // A relay has no balance API to poll (capabilities.usage is false), so
-          // the generic "fetching quota…" copy would spin here forever.
+        ) : NO_QUOTA_PROVIDERS.has(account.provider) ? (
+          // A relay (and a cookie-only web session) has no balance API to poll,
+          // so the generic "fetching quota…" copy would spin here forever.
           <span className="text-caption text-foreground/65">{t('quotaNotTracked')}</span>
-        ) : <span className="text-caption text-foreground/65">{state === 'hot' || state === 'ready' || state === 'loading' || state === 'starting' ? t('quotaLoading') : t('quotaUnavailable')}</span>}
+        ) : <span className="text-caption text-foreground/65">{state === 'loading' || state === 'starting' ? t('quotaLoading') : t('quotaUnavailable')}</span>}
 
         {lastError ? (
           <Tooltip>
