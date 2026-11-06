@@ -616,11 +616,10 @@ func (e ChatExecutor) ObserveStreamFailure(accountID string, err error, model st
 		return
 	}
 	if classified.Kind == accounts.KindQuota {
-		// Quota is classified with Failover=false because the account is not
-		// at fault on a normal request path. Here the response already went
-		// out with 200, so there is no other account to fail over to; without
-		// an explicit cooldown the next request would pick this account again
-		// and fail the same way. Force the cooldown.
+		// The response already went out with 200, so this request cannot fail
+		// over any more; what it can do is make sure the account is cooled so
+		// the next request starts on a different one. Force a cooldown when
+		// the classifier did not supply one.
 		classified.Failover = true
 		if classified.Cooldown <= 0 {
 			classified.Cooldown = NextLocalMidnightCooldown()
@@ -794,6 +793,12 @@ type routeLoop struct {
 	attempts       int
 	pinned         string
 	index          int
+	// softRegion records that regionFilter was pinned by this request's first
+	// pick rather than by a model prefix, a key grant or a session pin. Only a
+	// soft pin may be released, and only when the failure says the account
+	// cannot serve the model for reasons another region's account might not
+	// share (quota).
+	softRegion bool
 	// eligible narrows candidates to one protocol capability; nil admits all.
 	eligible func(Item) bool
 }
@@ -849,6 +854,7 @@ func (l *routeLoop) pickNext(e ChatExecutor, publicModel string) (Item, int, err
 	l.prefer = ""
 	if l.regionFilter == "" {
 		l.regionFilter = pinRegion(l.regionFilter, item.Region)
+		l.softRegion = true
 		l.attempts = e.attemptsFor(l.providerFilter, l.regionFilter, publicModel, l.allowed, l.eligible)
 	}
 	l.index++
@@ -857,6 +863,22 @@ func (l *routeLoop) pickNext(e ChatExecutor, publicModel string) (Item, int, err
 
 func (l routeLoop) canFailover(classified Classified) bool {
 	return classified.Failover && l.index < l.attempts
+}
+
+// mayFailover decides whether this failure retries on another account. It also
+// releases a sticky region pin when the failure is a quota refusal: quota is
+// per account, so an exhausted account in one region says nothing about the
+// same model on an account in the other region. Releasing the pin only widens
+// the candidate set (the attempt budget is recomputed from the model-aware
+// route count), so a request with no alternative still ends on the original
+// quota error.
+func (l *routeLoop) mayFailover(e ChatExecutor, classified Classified, publicModel string) bool {
+	if classified.Kind == accounts.KindQuota && l.softRegion && l.regionFilter != "" {
+		l.regionFilter = ""
+		l.softRegion = false
+		l.attempts = e.attemptsFor(l.providerFilter, l.regionFilter, publicModel, l.allowed, l.eligible)
+	}
+	return l.canFailover(classified)
 }
 
 func (l *routeLoop) exclude(item Item) {
@@ -964,7 +986,7 @@ func (e ChatExecutor) ChatNonStream(ctx context.Context, req translate.ChatReque
 				release()
 				return ChatResult{AttemptCount: i + 1, AccountID: item.ID, Provider: item.Provider}, err
 			}
-			if loop.canFailover(classified) {
+			if loop.mayFailover(e, classified, req.Model) {
 				release()
 				loop.exclude(item)
 				continue
@@ -1025,7 +1047,7 @@ func (e ChatExecutor) ChatNonStream(ctx context.Context, req translate.ChatReque
 			}
 			e.markClassified(item.ID, classified, req.Model)
 			status := accounts.AttemptStatusError
-			if loop.canFailover(classified) {
+			if loop.mayFailover(e, classified, req.Model) {
 				status = accounts.AttemptStatusFailover
 				loop.exclude(item)
 				e.recordAttempt(ctx, accounts.RequestAttempt{
@@ -1424,7 +1446,7 @@ func (e ChatExecutor) chatStreamProxy(ctx context.Context, req translate.ChatReq
 				release()
 				return StreamResult{AttemptCount: i + 1, AccountID: item.ID, Provider: item.Provider}, err
 			}
-			if loop.canFailover(classified) {
+			if loop.mayFailover(e, classified, req.Model) {
 				release()
 				loop.exclude(item)
 				continue
@@ -1483,7 +1505,7 @@ func (e ChatExecutor) chatStreamProxy(ctx context.Context, req translate.ChatReq
 			finished := time.Now().UTC()
 			latency := int(finished.Sub(started).Milliseconds())
 			status := accounts.AttemptStatusError
-			if loop.canFailover(classified) {
+			if loop.mayFailover(e, classified, req.Model) {
 				status = accounts.AttemptStatusFailover
 				loop.exclude(item)
 				e.recordAttempt(ctx, accounts.RequestAttempt{

@@ -201,7 +201,12 @@ func Classify(status int, body, retryAfter, kindHint, failoverHint string) Class
 	switch kind {
 	case KindQuota:
 		out.Status = 429
-		out.Failover = false
+		// Quota is per account, not per model: an exhausted account in one
+		// region says nothing about the same model on a sibling account, so
+		// the request fails over (the route loop bounds the hops by the
+		// number of accounts that actually serve the model). The account is
+		// still cooled to the next reset so it stops being picked.
+		out.Failover = true
 		out.Cooldown = NextLocalMidnightCooldown()
 		out.Code = firstNonEmpty(code, "insufficient_quota")
 		out.Type = "insufficient_quota"
