@@ -31,10 +31,15 @@ cli2api 这边照这个思路落成 provider `custom`：
 
 ## 面板怎么加账号
 
-两种都实测过：
+添加账号 → 点「自定义中转站」，表单就是中转站真正需要的两个值：
 
-1. **导入凭证**（`POST /api/accounts/import`）——贴完整 JSON，`format` 填 `custom-relay-v1`。
-2. **单框粘贴**（`login/pat`）——中转站的地址和 key 拼一行即可：`https://relay/v1|sk-xxx`（竖线或空格都行）。之所以加这个，是因为面板那个粘贴框只会把整串当 `api_key` 发过来，而中转站需要两个值。
+- **中转站地址**（`https://xxx/v1`，只填域名会自动补 `/v1`）
+- **中转站 Key**
+- 可选：**补充模型名**（中转站没有 `/v1/models` 时手填，逗号分隔）
+
+提交后走 `POST /api/accounts/import`（`format=custom-relay-v1`），其余字段照旧。
+
+以前所有供应商共用同一个「粘贴令牌」框，而中转站是地址 + 钥匙两个值，一个字符串塞不下，只能靠 `https://relay/v1|sk-xxx` 这种拼接（后端仍然认这种写法，方便 curl 和 CLI 直接调用）。现在面板给了独立表单，POST 直接写 `{"base_url":…,"api_key":…}` 也可以。
 
 ## 顺手修掉的两处
 
@@ -52,5 +57,6 @@ cli2api 这边照这个思路落成 provider `custom`：
 - 假中转站看到的：`Authorization: Bearer sk-stub-key`、`model` 已改成上游原名、`stream:true`、`roles:["system","system","user"]`（developer 已折叠、system 保留）
 - 网关日志：`provider=custom`，状态 `ok`，tokens 与上游一致
 - 未知模型 → `400 model_not_available`（不会打到上游）
-- 单框粘贴建号 → `login/pat 200`，账号 `ready`
+- 面板表单建号 → 账号 `ready`；网关侧 49 个模型、非流式与流式均 200
+- 账号卡片显示「自定义中转站 / 该供应商无额度信息」，不再顶着一个永远转不完的「额度获取中」
 - 清理：账号删除 `204`，测试 key 与假中转站容器均已清除
