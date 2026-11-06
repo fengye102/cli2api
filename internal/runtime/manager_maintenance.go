@@ -304,7 +304,15 @@ func checkinDueFor(account Account, configuredTime string, now time.Time, allowD
 // attempt. Unexplained failures are retried on the ladder — in practice they are
 // transient upstream refusals — while the terminal answers that cannot change
 // before tomorrow are not.
+//
+// A human-verification answer is terminal in the same sense but for a different
+// reason: the request will answer identically until someone solves the check by
+// hand, so riding the ladder only re-posts a doomed call five more times and
+// leaves the operator reading "still failing" instead of "needs you".
 func retryableCheckinFailure(message string) bool {
+	if providers.MessageNeedsHumanVerification(message) {
+		return false
+	}
 	lower := strings.ToLower(message)
 	for _, terminal := range []string{
 		"已签到", "已经签到", "已领取", "already checked", "already claimed",
@@ -377,7 +385,7 @@ func (manager *Manager) runScheduledCheckins(ctx context.Context, now time.Time)
 			return
 		}
 		if _, err := manager.checkinAccount(ctx, account.ID, allowDisabled); err != nil {
-			log.Printf("checkin account=%s: %v", account.ID, err)
+			logCheckinFailure(account.ID, err)
 		}
 		processed++
 	}
@@ -412,9 +420,21 @@ func (manager *Manager) checkinOptedIn(ctx context.Context, now time.Time, sched
 			}
 		}
 		if _, err := manager.checkinAccount(ctx, account.ID, allowDisabled); err != nil {
-			log.Printf("checkin account=%s: %v", account.ID, err)
+			logCheckinFailure(account.ID, err)
 		}
 	}
+}
+
+// logCheckinFailure writes the one line an operator reads for a failed
+// check-in. A human-verification answer gets its own wording: the ladder is
+// going to stop for the day, so the log has to say that instead of looking like
+// yet another transient refusal that will be retried in fifteen minutes.
+func logCheckinFailure(accountID string, err error) {
+	if providers.NeedsHumanVerification(err) {
+		log.Printf("checkin account=%s: needs human verification, retries stopped for today: %v", accountID, err)
+		return
+	}
+	log.Printf("checkin account=%s: %v", accountID, err)
 }
 
 func (manager *Manager) allowDisabledCheckin(ctx context.Context) bool {
