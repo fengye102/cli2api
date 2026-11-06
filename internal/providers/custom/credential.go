@@ -130,6 +130,14 @@ func DecodeCredential(payload []byte) (Credential, error) {
 		APIKey:  FormatAPIKey(firstNonEmpty(alias.APIKey, alias.APIKeyCamel, alias.Key, alias.Token, alias.APIToken)),
 		Name:    strings.TrimSpace(alias.Name),
 	}
+	// The console's single "paste token" box (and any CLI one-liner) hands the
+	// whole string over as api_key. A relay needs two values, so accept the
+	// compact form there too: "https://relay/v1|sk-...".
+	if strings.TrimSpace(credential.BaseURL) == "" {
+		if base, key, ok := splitCompactCredential(credential.APIKey); ok {
+			credential.BaseURL, credential.APIKey = base, key
+		}
+	}
 	models, err := decodeModels(alias.Models)
 	if err != nil {
 		return Credential{}, err
@@ -145,6 +153,29 @@ func DecodeCredential(payload []byte) (Credential, error) {
 	}
 	credential.ModelMapping = mapping
 	return credential, nil
+}
+
+// splitCompactCredential splits "https://relay/v1|sk-..." (or the same with a
+// space) into a base URL and a key. It only fires when the first half is a URL
+// with a scheme, so a key that merely contains a pipe is left alone.
+func splitCompactCredential(raw string) (string, string, bool) {
+	value := strings.TrimSpace(raw)
+	for _, separator := range []string{"|", " ", "\n"} {
+		index := strings.Index(value, separator)
+		if index <= 0 {
+			continue
+		}
+		base := strings.TrimSpace(value[:index])
+		key := FormatAPIKey(value[index+len(separator):])
+		if !strings.Contains(base, "://") || key == "" {
+			continue
+		}
+		if _, err := NormalizeBaseURL(base); err != nil {
+			continue
+		}
+		return base, key, true
+	}
+	return "", "", false
 }
 
 // decodeModels accepts ["a","b"] or "a,b".

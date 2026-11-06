@@ -467,3 +467,28 @@ func mustJSON(t *testing.T, value any) []byte {
 	}
 	return encoded
 }
+
+// The console's single paste box hands the whole string over as api_key; a
+// relay needs a base URL too, so the compact "url|key" form has to work there.
+func TestDecodeCompactBaseAndKey(t *testing.T) {
+	for _, raw := range []string{
+		`{"api_key":"https://relay.example.com/v1|sk-abc"}`,
+		`{"api_key":" https://relay.example.com/v1 sk-abc "}`,
+	} {
+		credential, err := DecodeCredential([]byte(raw))
+		if err != nil {
+			t.Fatalf("%s: %v", raw, err)
+		}
+		if credential.APIKey != "sk-abc" {
+			t.Fatalf("%s → api_key %q", raw, credential.APIKey)
+		}
+		if base, err := credential.ChatBase(); err != nil || base != "https://relay.example.com/v1" {
+			t.Fatalf("%s → base %q err=%v", raw, base, err)
+		}
+	}
+	// A key that only contains a pipe must not be split.
+	credential, err := DecodeCredential([]byte(`{"base_url":"https://relay.example.com/v1","api_key":"sk-a|b"}`))
+	if err != nil || credential.APIKey != "sk-a|b" {
+		t.Fatalf("credential = %+v err=%v", credential, err)
+	}
+}
