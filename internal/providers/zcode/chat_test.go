@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/caigee-cmd/cli2api/internal/accounts"
@@ -480,10 +481,15 @@ func TestChatStream_ClassifiesUpstreamError(t *testing.T) {
 // not fail the turn. The request goes out without the captcha headers and the
 // pool records the reason for the console.
 func TestChatRequest_SendsBareWhenCaptchaFails(t *testing.T) {
+	// The provider can retry, so the stub is hit from more than one server
+	// goroutine: the recorded headers need a lock or -race fails the test.
+	var mu sync.Mutex
 	var gotParam, gotRegion string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		gotParam = r.Header.Get(CaptchaHeader)
 		gotRegion = r.Header.Get(CaptchaRegionHeader)
+		mu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte(anthropicStream))
 	}))
@@ -507,8 +513,11 @@ func TestChatRequest_SendsBareWhenCaptchaFails(t *testing.T) {
 		t.Fatalf("a missing solver must not fail the turn: %v", err)
 	}
 	defer resp.Body.Close()
-	if gotParam != "" || gotRegion != "" {
-		t.Errorf("captcha headers sent without a token: param=%q region=%q", gotParam, gotRegion)
+	mu.Lock()
+	param, region := gotParam, gotRegion
+	mu.Unlock()
+	if param != "" || region != "" {
+		t.Errorf("captcha headers sent without a token: param=%q region=%q", param, region)
 	}
 }
 
