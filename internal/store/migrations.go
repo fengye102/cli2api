@@ -251,6 +251,15 @@ UPDATE accounts SET drop_system_prompt = 0 WHERE provider = 'trae';`},
 	{filename: "025_request_log_api_key.sql", sql: `
 ALTER TABLE request_logs ADD COLUMN api_key_id TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS request_logs_api_key_id ON request_logs(api_key_id);`},
+	// The console shows the full gateway key, not a masked preview, so the
+	// secret has to be stored. The hash stays the thing lookups use, so a
+	// leaked database dump still cannot be replayed against the gateway...
+	// except that it can, which is the trade the operator asked for: the same
+	// database already holds upstream account tokens in clear text, and hiding
+	// only the key that unlocks them protects nothing. Keys created before this
+	// migration keep an empty secret and show their prefix.
+	{filename: "026_api_key_secret.sql", sql: `
+ALTER TABLE api_keys ADD COLUMN key_secret TEXT NOT NULL DEFAULT '';`},
 }
 
 const schemaMigrationsDDL = `

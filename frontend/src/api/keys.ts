@@ -38,6 +38,10 @@ export function updateAPIKey(id: string, input: { name?: string; providers?: str
   })
 }
 
+export function rotateAPIKey(id: string) {
+  return api<APIKeyRecord>(`/api/keys/${encodeURIComponent(id)}/rotate`, { method: 'POST' })
+}
+
 export function deleteAPIKey(id: string) {
   return api(`/api/keys/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }

@@ -54,7 +54,25 @@ func (h *Handler) HandleAPIKeys(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleAPIKeyByID(w http.ResponseWriter, r *http.Request) {
-	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/keys/"), "/")
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/keys/"), "/")
+	if rotateID, ok := strings.CutSuffix(rest, "/rotate"); ok {
+		if r.Method != http.MethodPost {
+			writeErr(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST only")
+			return
+		}
+		key, err := h.Control.Keys.Rotate(r.Context(), strings.Trim(rotateID, "/"))
+		if errors.Is(err, accounts.ErrAPIKeyNotFound) {
+			writeErr(w, http.StatusNotFound, "api_key_not_found", err.Error())
+			return
+		}
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "api_key_rotate_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, key)
+		return
+	}
+	id := rest
 	if id == "" || strings.Contains(id, "/") {
 		writeErr(w, http.StatusNotFound, "api_key_not_found", "api key id required")
 		return

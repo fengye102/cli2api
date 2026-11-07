@@ -239,6 +239,72 @@ func TestProviderModelReasoningEffortPersistsWithMaxMode(t *testing.T) {
 	}
 }
 
+func TestStoreKeepsAndRotatesThePlaintextAPIKey(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "qoder.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	first := "sk_firstfirstfirstfirstfirstfirstfirst01"
+	created, err := store.InsertAPIKey(ctx, accounts.StoredAPIKey{
+		Name: "Visible", Prefix: accounts.APIKeyPrefix(first), KeyHash: accounts.HashAPIKey(first),
+		Secret: first, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Secret != first {
+		t.Fatalf("created key secret = %q, want the plain text back", created.Secret)
+	}
+	listed, err := store.ListAPIKeys(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].Secret != first {
+		t.Fatalf("listed = %+v", listed)
+	}
+
+	// A key minted before the secret column exists keeps an empty secret; the
+	// console shows its prefix instead of failing.
+	legacySecret := "sk_legacylegacyfirstfirstfirstfirst003"
+	legacy, err := store.InsertAPIKey(ctx, accounts.StoredAPIKey{
+		Name: "Legacy", Prefix: accounts.APIKeyPrefix(legacySecret), KeyHash: accounts.HashAPIKey(legacySecret), Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Secret != "" {
+		t.Fatalf("legacy key secret = %q, want empty", legacy.Secret)
+	}
+
+	second := "sk_secondsecondsecondsecondsecondsecond02"
+	if err := store.RotateAPIKeySecret(ctx, created.ID, second, accounts.APIKeyPrefix(second), accounts.HashAPIKey(second)); err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := store.GetAPIKey(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated.Secret != second || rotated.Prefix != accounts.APIKeyPrefix(second) {
+		t.Fatalf("rotated = %+v", rotated)
+	}
+	if rotated.Name != "Visible" || !rotated.Enabled {
+		t.Fatalf("rotation must keep the name and the enabled flag: %+v", rotated)
+	}
+	// The old secret stops working the moment it is rotated.
+	if _, ok, err := store.LookupAPIKey(ctx, first); err != nil || ok {
+		t.Fatalf("old secret still resolves: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := store.LookupAPIKey(ctx, second); err != nil || !ok {
+		t.Fatalf("new secret does not resolve: ok=%v err=%v", ok, err)
+	}
+	if err := store.RotateAPIKeySecret(ctx, "key_missing", second, "p", "h"); !errors.Is(err, accounts.ErrAPIKeyNotFound) {
+		t.Fatalf("rotate unknown id err = %v", err)
+	}
+}
+
 func TestStoreCreatesNamedAPIKeys(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenStore(filepath.Join(t.TempDir(), "qoder.db"))

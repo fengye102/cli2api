@@ -43,6 +43,7 @@ func (k *Keys) Create(ctx context.Context, input accounts.CreateAPIKey) (account
 		Name:      prepared.Name,
 		Prefix:    accounts.APIKeyPrefix(secret),
 		KeyHash:   accounts.HashAPIKey(secret),
+		Secret:    secret,
 		Providers: prepared.Providers,
 		Enabled:   prepared.Enabled,
 		CreatedAt: now,
@@ -54,6 +55,22 @@ func (k *Keys) Create(ctx context.Context, input accounts.CreateAPIKey) (account
 	stored.Secret = secret
 	stored.SecretOnce = true
 	return stored, nil
+}
+
+// Rotate mints a new secret for an existing key, keeping its name and grants.
+// The old secret stops working immediately.
+func (k *Keys) Rotate(ctx context.Context, id string) (accounts.APIKey, error) {
+	if _, err := k.store.GetAPIKey(ctx, id); err != nil {
+		return accounts.APIKey{}, err
+	}
+	secret, err := accounts.GenerateAPIKeySecret()
+	if err != nil {
+		return accounts.APIKey{}, err
+	}
+	if err := k.store.RotateAPIKeySecret(ctx, id, secret, accounts.APIKeyPrefix(secret), accounts.HashAPIKey(secret)); err != nil {
+		return accounts.APIKey{}, err
+	}
+	return k.store.GetAPIKey(ctx, id)
 }
 
 func (k *Keys) Get(ctx context.Context, id string) (accounts.APIKey, error) {

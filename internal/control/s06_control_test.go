@@ -222,6 +222,17 @@ func (s *fakeStore) InsertAPIKey(_ context.Context, key accounts.StoredAPIKey) (
 	s.keys[out.ID] = out
 	return out, nil
 }
+func (s *fakeStore) RotateAPIKeySecret(_ context.Context, id, secret, prefix, hash string) error {
+	s.log.add("store.RotateAPIKeySecret")
+	key, ok := s.keys[id]
+	if !ok {
+		return accounts.ErrAPIKeyNotFound
+	}
+	key.Prefix = prefix
+	key.Secret = secret
+	s.keys[id] = key
+	return nil
+}
 func (s *fakeStore) ListAPIKeys(context.Context) ([]accounts.APIKey, error) {
 	s.log.add("store.ListAPIKeys")
 	if s.listKeysErr != nil {
@@ -602,4 +613,26 @@ func equalCalls(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+func TestKeysRotateMintsANewSecretAndKeepsTheGrants(t *testing.T) {
+	store := newFakeStore(&callLog{})
+	keys := NewKeys(store)
+	created, err := keys.Create(context.Background(), accounts.CreateAPIKey{Name: "rotating", Providers: []string{"qoder"}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := keys.Rotate(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated.Secret == "" || rotated.Secret == created.Secret {
+		t.Fatalf("rotation did not mint a new secret: %q -> %q", created.Secret, rotated.Secret)
+	}
+	if rotated.Name != created.Name || len(rotated.Providers) != 1 || rotated.Providers[0] != "qoder" {
+		t.Fatalf("rotation changed the key's identity: %+v", rotated)
+	}
+	if _, err := keys.Rotate(context.Background(), "key_missing"); !errors.Is(err, accounts.ErrAPIKeyNotFound) {
+		t.Fatalf("rotate unknown id err = %v", err)
+	}
 }

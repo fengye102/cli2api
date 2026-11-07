@@ -40,9 +40,9 @@ func (s *Store) InsertAPIKey(ctx context.Context, key accounts.StoredAPIKey) (ac
 		return accounts.APIKey{}, err
 	}
 	_, err = s.db.ExecContext(ctx, `
-INSERT INTO api_keys (id, name, key_hash, prefix, providers_json, enabled, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		key.ID, key.Name, key.KeyHash, key.Prefix, string(payload), boolToInt(key.Enabled),
+INSERT INTO api_keys (id, name, key_hash, prefix, key_secret, providers_json, enabled, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		key.ID, key.Name, key.KeyHash, key.Prefix, key.Secret, string(payload), boolToInt(key.Enabled),
 		formatTime(key.CreatedAt), formatTime(key.UpdatedAt),
 	)
 	if err != nil {
@@ -77,7 +77,7 @@ WHERE id = ?`, key.Name, string(payload), boolToInt(key.Enabled), formatTime(key
 
 func (s *Store) ListAPIKeys(ctx context.Context) ([]accounts.APIKey, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, name, prefix, providers_json, enabled, last_used_at, created_at, updated_at
+SELECT id, name, prefix, key_secret, providers_json, enabled, last_used_at, created_at, updated_at
 FROM api_keys ORDER BY created_at DESC, id DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list api keys: %w", err)
@@ -96,7 +96,7 @@ FROM api_keys ORDER BY created_at DESC, id DESC`)
 
 func (s *Store) GetAPIKey(ctx context.Context, id string) (accounts.APIKey, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, name, prefix, providers_json, enabled, last_used_at, created_at, updated_at
+SELECT id, name, prefix, key_secret, providers_json, enabled, last_used_at, created_at, updated_at
 FROM api_keys WHERE id = ?`, strings.TrimSpace(id))
 	key, err := scanAPIKey(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -114,7 +114,7 @@ func (s *Store) LookupAPIKey(ctx context.Context, secret string) (accounts.APIKe
 		return accounts.APIKey{}, false, nil
 	}
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, name, prefix, providers_json, enabled, last_used_at, created_at, updated_at
+SELECT id, name, prefix, key_secret, providers_json, enabled, last_used_at, created_at, updated_at
 FROM api_keys WHERE key_hash = ?`, accounts.HashAPIKey(secret))
 	key, err := scanAPIKey(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -124,6 +124,23 @@ FROM api_keys WHERE key_hash = ?`, accounts.HashAPIKey(secret))
 		return accounts.APIKey{}, false, fmt.Errorf("lookup api key: %w", err)
 	}
 	return key, true, nil
+}
+
+// RotateAPIKeySecret replaces the secret behind an existing key: the name and
+// provider grants stay, the credential changes. Used for keys minted before the
+// console stored the plain text, which could otherwise never be shown again.
+func (s *Store) RotateAPIKeySecret(ctx context.Context, id, secret, prefix, hash string) error {
+	result, err := s.db.ExecContext(ctx, `
+UPDATE api_keys SET key_secret = ?, prefix = ?, key_hash = ?, updated_at = ?
+WHERE id = ?`, secret, prefix, hash, formatTime(time.Now().UTC()), strings.TrimSpace(id))
+	if err != nil {
+		return fmt.Errorf("rotate api key: %w", err)
+	}
+	changed, _ := result.RowsAffected()
+	if changed == 0 {
+		return accounts.ErrAPIKeyNotFound
+	}
+	return nil
 }
 
 func (s *Store) DeleteAPIKey(ctx context.Context, id string) error {
@@ -156,9 +173,10 @@ func scanAPIKey(row rowScanner) (accounts.APIKey, error) {
 	var providersJSON string
 	var lastUsed, created, updated sql.NullString
 	var enabled int
-	if err := row.Scan(&key.ID, &key.Name, &key.Prefix, &providersJSON, &enabled, &lastUsed, &created, &updated); err != nil {
+	if err := row.Scan(&key.ID, &key.Name, &key.Prefix, &key.Secret, &providersJSON, &enabled, &lastUsed, &created, &updated); err != nil {
 		return accounts.APIKey{}, err
 	}
+	key.Secret = strings.TrimSpace(key.Secret)
 	key.Enabled = enabled != 0
 	if strings.TrimSpace(providersJSON) != "" && providersJSON != "null" {
 		if err := json.Unmarshal([]byte(providersJSON), &key.Providers); err != nil {

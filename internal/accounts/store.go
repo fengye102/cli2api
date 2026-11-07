@@ -59,5 +59,6 @@ type AccountStore interface {
 	GetAPIKey(ctx context.Context, id string) (APIKey, error)
 	LookupAPIKey(ctx context.Context, secret string) (APIKey, bool, error)
 	DeleteAPIKey(ctx context.Context, id string) error
+	RotateAPIKeySecret(ctx context.Context, id, secret, prefix, hash string) error
 	TouchAPIKey(ctx context.Context, id string) error
 }

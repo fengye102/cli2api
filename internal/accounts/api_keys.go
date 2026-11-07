@@ -37,10 +37,13 @@ type UpdateAPIKey struct {
 }
 
 type StoredAPIKey struct {
-	ID        string
-	Name      string
-	Prefix    string
-	KeyHash   string
+	ID      string
+	Name    string
+	Prefix  string
+	KeyHash string
+	// Secret is the plain text key, kept so the console can show and copy it.
+	// KeyHash remains what authentication compares against.
+	Secret    string
 	Providers []string
 	Enabled   bool
 	CreatedAt time.Time

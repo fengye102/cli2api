@@ -3,8 +3,8 @@ import { HoldToConfirm } from '@/components/motion/HoldToConfirm'
 import { copyText } from '@/lib/clipboard'
 import { useEffect, useState } from 'react'
 import { Alert, Button, Card, Checkbox, Chip, Description, Form, Input, Label, Modal } from '@heroui/react'
-import { Copy, Key, Plus, TrashSimple, X } from '@phosphor-icons/react'
-import { createAPIKey, deleteAPIKey, fetchAPIKeys, updateAPIKey, type APIKeyRecord } from '@/api/keys'
+import { Check, Copy, Key, Plus, TrashSimple, X } from '@phosphor-icons/react'
+import { createAPIKey, deleteAPIKey, fetchAPIKeys, rotateAPIKey, updateAPIKey, type APIKeyRecord } from '@/api/keys'
 import { fetchProviders, type ProviderDescriptor } from '@/api/overview'
 import { BrandMark } from '@/components/BrandMark'
 import { ProviderMark } from '@/components/ProviderMark'
@@ -105,6 +105,7 @@ export function KeysPage() {
   const [editKey, setEditKey] = useState<APIKeyRecord | null>(null)
   const [revealed, setRevealed] = useState<APIKeyRecord | null>(null)
   const [copied, setCopied] = useState(false)
+  const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null)
 
   useEffect(() => {
     void fetchProviders().then((result) => {
@@ -143,12 +144,35 @@ export function KeysPage() {
     window.setTimeout(() => setCopied(false), 1200)
   }
 
+  // The card copy button is per key, so it needs its own feedback state: the
+  // dialog's `copied` flag would light up every card at once.
+  async function copyKeySecret(key: APIKeyRecord) {
+    if (!key.secret) return
+    await copyText(key.secret)
+    setCopiedKeyId(key.id)
+    window.setTimeout(() => setCopiedKeyId((current) => current === key.id ? null : current), 1200)
+  }
+
+  async function onRotate(target: APIKeyRecord) {
+    setBusyId(target.id)
+    try {
+      const rotated = await rotateAPIKey(target.id)
+      setKeys((current) => current.map((item) => item.id === target.id ? rotated : item))
+      setRevealed(rotated)
+      toast({ type: 'success', title: t('keysRotate') })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusyId('')
+    }
+  }
+
   async function onToggle(key: APIKeyRecord, enabled: boolean) {
     setBusyId(key.id)
     setKeys((current) => current.map((item) => item.id === key.id ? { ...item, enabled } : item))
     try {
       const updated = await updateAPIKey(key.id, { enabled })
-      setKeys((current) => current.map((item) => item.id === key.id ? { ...item, ...updated, secret: undefined } : item))
+      setKeys((current) => current.map((item) => item.id === key.id ? { ...item, ...updated } : item))
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       await load()
@@ -219,7 +243,28 @@ export function KeysPage() {
                 </Chip>
               </Card.Header>
               <Card.Content className="space-y-2.5 px-3 pb-2.5">
-                <div className="mono w-full rounded-lg bg-surface-secondary px-3 py-2 text-body text-foreground" title={key.prefix}>{key.prefix}</div>
+                <div className="flex items-stretch gap-1">
+                  <code
+                    className="mono min-w-0 flex-1 select-all break-all rounded-lg bg-surface-secondary px-3 py-2 text-body text-foreground"
+                    title={key.secret || key.prefix}
+                  >
+                    {key.secret || key.prefix}
+                  </code>
+                  <Button
+                    isIconOnly
+                    size="sm"
+                    variant="ghost"
+                    className="shrink-0 self-center"
+                    aria-label={t('keysCopy')}
+                    isDisabled={!key.secret}
+                    onPress={() => void copyKeySecret(key)}
+                  >
+                    {copiedKeyId === key.id ? <Check size={14} /> : <Copy size={14} />}
+                  </Button>
+                </div>
+                {key.secret ? null : (
+                  <p className="text-caption leading-5 text-muted">{t('keysLegacyHidden')}</p>
+                )}
                 <div className="flex flex-wrap items-center gap-1.5">
                   {(key.providers.length ? key.providers : ['all']).map((entry) => (
                     <Chip key={entry} size="sm" variant="soft">
@@ -236,6 +281,15 @@ export function KeysPage() {
               </Card.Content>
               <Card.Footer className="gap-1.5 bg-surface-secondary px-3 py-2">
                 <Button size="sm" variant="ghost" isDisabled={!optionsReady} onPress={() => setEditKey(key)}>{t('edit')}</Button>
+                {key.secret ? null : (
+                  <HoldToConfirm
+                    label={t('keysRotateHint')}
+                    isPending={busyId === key.id}
+                    onConfirm={() => void onRotate(key)}
+                  >
+                    <span className="px-1 text-caption">{t('keysRotate')}</span>
+                  </HoldToConfirm>
+                )}
                 <HoldToConfirm
                   label={t('holdToDelete')}
                   isPending={busyId === key.id}
@@ -266,7 +320,7 @@ export function KeysPage() {
         onClose={() => setCreateOpen(false)}
         onSave={async (input) => {
           const created = await createAPIKey(input)
-          setKeys((current) => [created, ...current.map((item) => ({ ...item, secret: undefined }))])
+          setKeys((current) => [created, ...current])
           setCreateOpen(false)
           setRevealed(created)
         }}
@@ -282,7 +336,7 @@ export function KeysPage() {
         onSave={async (input) => {
           if (!editKey) return
           const updated = await updateAPIKey(editKey.id, input)
-          setKeys((current) => current.map((item) => item.id === editKey.id ? { ...item, ...updated, secret: undefined } : item))
+          setKeys((current) => current.map((item) => item.id === editKey.id ? { ...item, ...updated } : item))
           setEditKey(null)
         }}
       />
