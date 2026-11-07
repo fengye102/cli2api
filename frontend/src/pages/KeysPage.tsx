@@ -418,7 +418,12 @@ function KeyEditorModal({
       <Modal.Backdrop variant="blur">
         <Modal.Container placement="center" size="lg" scroll="inside">
           <Modal.Dialog className="sm:min-w-[32rem]">
-            <Form onSubmit={submit}>
+            {/* The Form sits between the dialog and its sections, so it has to
+                be the shrinking flex column itself: without min-h-0 the body
+                cannot scroll and the footer (the submit button) is pushed
+                below the viewport once the provider grid grows past a screen
+                — 21 providers is enough to do it. */}
+            <Form onSubmit={submit} className="flex min-h-0 w-full flex-col">
               <Modal.Header className="items-start justify-between gap-4 px-6 pt-6">
                 <div>
                   <Modal.Heading className="text-section font-semibold">{title}</Modal.Heading>
@@ -426,7 +431,7 @@ function KeyEditorModal({
                 </div>
                 <Modal.CloseTrigger isDisabled={busy} aria-label={t('close')} className="grid size-9 place-items-center rounded-lg text-muted hover:bg-surface-secondary"><X size={18} /></Modal.CloseTrigger>
               </Modal.Header>
-              <Modal.Body className="space-y-5 px-6 pb-2 pt-1">
+              <Modal.Body className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 pb-2 pt-1">
                 {error ? (
                   <Alert status="danger">
                     <Alert.Indicator />
