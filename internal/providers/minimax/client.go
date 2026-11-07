@@ -343,6 +343,7 @@ func (c *Client) Adapter() providers.Adapter {
 		ImportExport: importer{},
 		Prober:       c,
 		Login:        c,
+		Checkin:      c,
 	}
 }
 

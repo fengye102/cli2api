@@ -61,6 +61,12 @@ const (
 	// It is the only quota surface the account exposes: no aggregate balance
 	// endpoint exists, so the console sums the packs.
 	CreditDetailsPath = "/minimax-cloud/api/v1/credit/details"
+	// SigninStatusPath reads the seven-day sign-in panel and SigninClaimPath
+	// claims today's reward. Both require a timezone_id query parameter; see
+	// checkin.go for why. These are the endpoints the bundled CLI's /checkin
+	// command calls, not something the web console exposes.
+	SigninStatusPath = "/minimax-cloud/api/v1/signin/status"
+	SigninClaimPath  = "/minimax-cloud/api/v1/signin/claim"
 
 	// refreshLead is how long before expiry the adapter renews a token on its
 	// own. Access tokens live ~12h; the hourly renewer therefore fires with
