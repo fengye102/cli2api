@@ -106,9 +106,11 @@ func TestQuotaFailoverStaysSingleAttemptWithoutSibling(t *testing.T) {
 	}
 }
 
-// A failure kind that is not account-scoped keeps its own contract: no pin
-// release, no extra attempt.
-func TestQuotaPinReleaseOnlyAppliesToQuota(t *testing.T) {
+// A dead credential is account-scoped too, and it is the failure most likely to
+// arrive while a healthy sibling sits in the other region: MiniMax's refresh
+// tokens are single use, so a consumed one turns into invalid_grant. Without
+// the pin release the request dies on 401 and the sibling is never asked.
+func TestAuthFailoverReleasesStickyRegionPin(t *testing.T) {
 	exec := ChatExecutor{Pool: newQuotaFailoverPool(), MaxAttempts: 4}
 	loop := routeLoop{
 		providerFilter: "minimax",
@@ -118,13 +120,71 @@ func TestQuotaPinReleaseOnlyAppliesToQuota(t *testing.T) {
 		index:          1,
 		excluded:       map[string]struct{}{"acc-global": {}},
 	}
-	invalid := Classified{Kind: KindInvalidRequest, Failover: false}
+	auth := Classified{Kind: KindAuth, Failover: true, Cooldown: 30 * time.Second}
 
-	if loop.mayFailover(exec, invalid, "MiniMax-M3", "acc-global") {
-		t.Fatal("a request-level rejection must not fail over")
+	if !loop.mayFailover(exec, auth, "MiniMax-M3", "acc-global") {
+		t.Fatal("an auth failure must fail over to the sibling account in the other region")
 	}
-	if loop.regionFilter != "global" || loop.attempts != 1 {
-		t.Fatalf("a request-level rejection must not widen the route: region=%q attempts=%d", loop.regionFilter, loop.attempts)
+	if loop.regionFilter != "" {
+		t.Fatalf("sticky region pin was not released: %q", loop.regionFilter)
+	}
+	if loop.attempts != 2 {
+		t.Fatalf("attempt budget must cover the sibling, got %d", loop.attempts)
+	}
+}
+
+// An account that is not ready is also account-scoped: the sibling region may
+// well be ready.
+func TestNotReadyFailoverReleasesStickyRegionPin(t *testing.T) {
+	exec := ChatExecutor{Pool: newQuotaFailoverPool(), MaxAttempts: 4}
+	loop := routeLoop{
+		providerFilter: "minimax",
+		regionFilter:   "global",
+		softRegion:     true,
+		attempts:       1,
+		index:          1,
+		excluded:       map[string]struct{}{"acc-global": {}},
+	}
+	notReady := Classified{Kind: KindNotReady, Failover: true, Cooldown: 10 * time.Second}
+
+	if !loop.mayFailover(exec, notReady, "MiniMax-M3", "acc-global") {
+		t.Fatal("a not-ready account must fail over to the sibling account in the other region")
+	}
+	if loop.regionFilter != "" {
+		t.Fatalf("sticky region pin was not released: %q", loop.regionFilter)
+	}
+}
+
+// Failure kinds that are about the request or the model keep their own
+// contract: no pin release, no extra attempt. A rate limit is deliberately in
+// this group — waiting out a per-account limit on the account that holds the
+// conversation beats hopping to another region.
+func TestPinReleaseOnlyAppliesToAccountScopedFailures(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		fail Classified
+	}{
+		{"request rejected", Classified{Kind: KindInvalidRequest, Failover: false}},
+		{"model unavailable", Classified{Kind: KindModelNotAvailable, Failover: false}},
+		{"rate limited", Classified{Kind: KindRateLimit, Failover: true, Cooldown: time.Minute}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			exec := ChatExecutor{Pool: newQuotaFailoverPool(), MaxAttempts: 4}
+			loop := routeLoop{
+				providerFilter: "minimax",
+				regionFilter:   "global",
+				softRegion:     true,
+				attempts:       1,
+				index:          1,
+				excluded:       map[string]struct{}{"acc-global": {}},
+			}
+			if loop.mayFailover(exec, testCase.fail, "MiniMax-M3", "acc-global") {
+				t.Fatal("failure must not widen the route")
+			}
+			if loop.regionFilter != "global" || loop.attempts != 1 {
+				t.Fatalf("route was widened: region=%q attempts=%d", loop.regionFilter, loop.attempts)
+			}
+		})
 	}
 }
 

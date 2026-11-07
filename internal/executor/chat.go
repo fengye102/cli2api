@@ -873,15 +873,27 @@ func (l routeLoop) canFailover(classified Classified) bool {
 	return classified.Failover && l.index < l.attempts
 }
 
+// accountScopedFailure reports whether a failure is about the account rather
+// than the request or the model. These are the failures worth escaping a
+// sticky region pin for: the sibling account in the other region has its own
+// credential, its own quota, and its own readiness.
+func accountScopedFailure(kind string) bool {
+	switch kind {
+	case accounts.KindQuota, accounts.KindAuth, accounts.KindNotReady:
+		return true
+	}
+	return false
+}
+
 // mayFailover decides whether this failure retries on another account. It also
-// releases a sticky region pin when the failure is a quota refusal: quota is
-// per account, so an exhausted account in one region says nothing about the
-// same model on an account in the other region. Releasing the pin only widens
-// the candidate set (the attempt budget is recomputed from the model-aware
-// route count), so a request with no alternative still ends on the original
-// quota error.
+// releases a sticky region pin when the failure is account-scoped: a dead
+// credential, an exhausted balance, or an account that is not ready says
+// nothing about the same model on an account in the other region. Releasing the
+// pin only widens the candidate set (the attempt budget is recomputed from the
+// model-aware route count), so a request with no alternative still ends on the
+// original error.
 func (l *routeLoop) mayFailover(e ChatExecutor, classified Classified, publicModel, failedID string) bool {
-	if classified.Kind == accounts.KindQuota && l.softRegion && l.regionFilter != "" {
+	if accountScopedFailure(classified.Kind) && l.softRegion && l.regionFilter != "" {
 		l.regionFilter = ""
 		l.softRegion = false
 		// The budget counts attempts, not candidates: the hops already spent
